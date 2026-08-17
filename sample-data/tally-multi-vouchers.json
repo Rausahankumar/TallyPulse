@@ -1,0 +1,179 @@
+{
+  "tallymessage": [
+    {
+      "metadata": {
+        "type": "Voucher",
+        "remoteid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365",
+        "vchkey": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-0000b45d:00000040",
+        "vchtype": "Sales",
+        "action": "Create",
+        "objview": "Invoice Voucher View"
+      },
+      "guid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365",
+      "date": "20260601",
+      "referencedate": "20260601",
+      "vouchernumber": "SA/11/2025-26",
+      "partyname": "Balaji Retail Store",
+      "partyledgername": "Balaji Retail Store",
+      "basicbuyername": "Balaji Retail Store",
+      "taxunitname": "Nirmal FMCG Traders Ltd",
+      "cmpgststate": "Delhi",
+      "cmpgstregistrationtype": "Regular",
+      "dispatchfromname": "Nirmal FMCG Traders Ltd",
+      "statename": "Delhi",
+      "enteredby": "a",
+      "countryofresidence": "India",
+      "partygstin": "07574383208",
+      "placeofsupply": "Delhi",
+      "vchentrymode": "Item Invoice",
+      "isinvoice": true,
+      "iscancelled": false,
+      "isoptional": false,
+      "allinventoryentries": [
+        {
+          "stockitemname": "Rice 10kg",
+          "actualqty": "10 Nos",
+          "billedqty": "10 Nos",
+          "rate": "120 / Nos",
+          "amount": "1200.00",
+          "batchallocations": [],
+          "accountingallocations": [],
+          "ratedetails": []
+        }
+      ],
+      "ledgerentries": [
+        {
+          "ledgername": "Sales",
+          "amount": "1200.00",
+          "ispartyledger": false,
+          "isdeemedpositive": true
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "type": "Voucher",
+        "remoteid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365",
+        "vchkey": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-0000b45d:00000040",
+        "vchtype": "Sales",
+        "action": "Create",
+        "objview": "Invoice Voucher View"
+      },
+      "guid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365",
+      "date": "20260601",
+      "referencedate": "20260601",
+      "vouchernumber": "SA/11/2025-26",
+      "partyname": "Balaji Retail Store",
+      "partyledgername": "Balaji Retail Store",
+      "basicbuyername": "Balaji Retail Store",
+      "taxunitname": "Nirmal FMCG Traders Ltd",
+      "cmpgststate": "Delhi",
+      "cmpgstregistrationtype": "Regular",
+      "dispatchfromname": "Nirmal FMCG Traders Ltd",
+      "statename": "Delhi",
+      "enteredby": "a",
+      "countryofresidence": "India",
+      "partygstin": "07574383208",
+      "placeofsupply": "Delhi",
+      "vchentrymode": "Item Invoice",
+      "isinvoice": true,
+      "iscancelled": false,
+      "isoptional": false,
+      "allinventoryentries": [
+        {
+          "stockitemname": "Rice 10kg",
+          "actualqty": "10 Nos",
+          "billedqty": "10 Nos",
+          "rate": "120 / Nos",
+          "amount": "1200.00",
+          "batchallocations": [],
+          "accountingallocations": [],
+          "ratedetails": []
+        }
+      ],
+      "ledgerentries": [
+        {
+          "ledgername": "Sales",
+          "amount": "1200.00",
+          "ispartyledger": false,
+          "isdeemedpositive": true
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "type": "Voucher",
+        "remoteid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000366",
+        "vchkey": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-0000b45d:00000041",
+        "vchtype": "Sales",
+        "action": "Create",
+        "objview": "Invoice Voucher View"
+      },
+      "guid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000366",
+      "date": "20260602",
+      "referencedate": "20260602",
+      "vouchernumber": "SA/12/2025-26",
+      "partyname": "Green Valley Mart",
+      "partyledgername": "Green Valley Mart",
+      "basicbuyername": "Green Valley Mart",
+      "taxunitname": "Nirmal FMCG Traders Ltd",
+      "cmpgststate": "Delhi",
+      "cmpgstregistrationtype": "Regular",
+      "dispatchfromname": "Nirmal FMCG Traders Ltd",
+      "statename": "Delhi",
+      "enteredby": "a",
+      "countryofresidence": "India",
+      "partygstin": "07574383209",
+      "placeofsupply": "Delhi",
+      "vchentrymode": "Item Invoice",
+      "isinvoice": true,
+      "iscancelled": false,
+      "isoptional": false,
+      "allinventoryentries": [
+        {
+          "stockitemname": "Wheat Flour 25kg",
+          "actualqty": "12 Nos",
+          "billedqty": "12 Nos",
+          "rate": "180 / Nos",
+          "amount": "2160.00",
+          "batchallocations": [],
+          "accountingallocations": [],
+          "ratedetails": []
+        }
+      ],
+      "ledgerentries": [
+        {
+          "ledgername": "Sales",
+          "amount": "2160.00",
+          "ispartyledger": false,
+          "isdeemedpositive": true
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "type": "Voucher",
+        "remoteid": "BROKEN-VOUCHER-INVALID",
+        "vchkey": "BROKEN-KEY",
+        "vchtype": "Sales",
+        "action": "Create",
+        "objview": "Invoice Voucher View"
+      },
+      "guid": "BROKEN-GUID",
+      "date": "20260604",
+      "referencedate": "20260604",
+      "vouchernumber": "SA/14/2025-26",
+      "partyname": "Broken Vendor",
+      "partyledgername": "Broken Vendor",
+      "allinventoryentries": [
+        {
+          "stockitemname": "Malformed Item",
+          "actualqty": "bad-value",
+          "rate": "bad-rate",
+          "amount": "invalid-amount"
+        }
+      ],
+      "ledgerentries": []
+    }
+  ]
+}
