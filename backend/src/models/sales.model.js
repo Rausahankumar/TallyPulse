@@ -1,133 +1,137 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const salesSchema = new mongoose.Schema(
   {
     tenantId: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: String,
       required: true,
-      indexed: true,
+      index: true,
     },
-    source: {
-      sourceType: {
-        type: String,
-        default: 'tally',
-        enum: ['tally'],
-      },
-      companyGuid: {
+
+    header: {
+      voucherNo: {
         type: String,
         required: true,
+        trim: true,
       },
-      companyName: {
-        type: String,
-        required: true,
-      },
-      sourceAlterId: {
-        type: String,
-        required: true,
-      },
-    },
-    invoice: {
-      number: {
-        type: String,
-        required: true,
-      },
-      date: {
+
+      voucherDate: {
         type: Date,
         required: true,
       },
-      type: {
+
+      voucherType: {
         type: String,
         required: true,
-        enum: ['sales', 'credit-note', 'debit-note'],
+        trim: true,
+      },
+
+      voucherTotalAmount: {
+        type: Number,
+        required: true,
+      },
+
+      narration: {
+        type: String,
+        default: "",
+      },
+
+      partyName: {
+        type: String,
+        required: true,
+        trim: true,
       },
     },
-    customer: {
-      sourceId: {
-        type: String,
-        required: true,
-      },
-      name: {
-        type: String,
-        required: true,
-      },
-    },
-    items: [
+
+    inventory: [
       {
-        sourceId: {
+        itemName: {
           type: String,
           required: true,
+          trim: true,
         },
-        name: {
-          type: String,
-          required: true,
-        },
+
         quantity: {
           type: Number,
           required: true,
-          min: 0,
         },
-        unit: {
-          type: String,
-          required: true,
-        },
+
         rate: {
           type: Number,
           required: true,
-          min: 0,
         },
+
         amount: {
           type: Number,
           required: true,
-          min: 0,
+        },
+
+        discountPercentage: {
+          type: Number,
+          default: 0,
+        },
+
+        discountAmount: {
+          type: Number,
+          default: 0,
         },
       },
     ],
-    totals: {
-      taxable: {
-        type: Number,
-        required: true,
-        default: 0,
-        min: 0,
+
+    ledgers: [
+      {
+        ledgerName: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+
+        ledgerAmount: {
+          type: Number,
+          required: true,
+        },
+
+        entryType: {
+          type: String,
+          required: true,
+          enum: ["Debit", "Credit"],
+        },
       },
-      tax: {
-        type: Number,
-        required: true,
-        default: 0,
-        min: 0,
-      },
-      discount: {
-        type: Number,
-        required: true,
-        default: 0,
-        min: 0,
-      },
-      grandTotal: {
-        type: Number,
-        required: true,
-        default: 0,
-        min: 0,
-      },
+    ],
+
+    // Tally sync identity. Populated by the incremental sync worker (and,
+    // when present in the source JSON, by manual imports too). Optional /
+    // null for documents created before this existed or via a plain file
+    // upload with no AlterID in the payload.
+    tallyGuid: {
+      type: String,
+      default: null,
     },
-    sync: {
-      syncedAt: {
-        type: Date,
-        required: true,
-        default: Date.now,
-      },
-      sourceAlterId: {
-        type: String,
-        required: true,
-      },
+
+    tallyAlterId: {
+      type: Number,
+      default: null,
+    },
+
+    // "cancelled"/"deleted" are soft states driven by Tally's $IsCancelled /
+    // $IsDeleted flags — the document is never removed from MongoDB when
+    // Tally reports either, to preserve the audit trail. See
+    // salesMapper.js and tallyParser.js for what's confirmed vs.
+    // unverified about $IsDeleted specifically.
+    voucherStatus: {
+      type: String,
+      enum: ["active", "cancelled", "deleted"],
+      default: "active",
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
-// Indexes
-salesSchema.index({ tenantId: 1 });
-salesSchema.index({ tenantId: 1, 'invoice.number': 1 }, { unique: true });
-salesSchema.index({ 'sync.sourceAlterId': 1 });
+salesSchema.index(
+  { tenantId: 1, "header.voucherNo": 1 },
+  { unique: true }
+);
 
-const Sales = mongoose.model('Sales', salesSchema);
-
-module.exports = Sales;
+module.exports = mongoose.model("Sale", salesSchema);

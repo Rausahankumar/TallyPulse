@@ -1,0 +1,520 @@
+    {
+        "metadata": {
+            "type": "Voucher", 
+            "remoteid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365", 
+            "vchkey": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-0000b45d:00000040", 
+            "vchtype": "Sales", 
+            "action": "Create", 
+            "objview": "Invoice Voucher View"
+        }, 
+        "address": [
+            {
+                "metadata": true, 
+                "type": "String"
+            }, 
+            "Bhikaji Cama Place"
+        ], 
+        "basicbuyeraddress": [
+            {
+                "metadata": true, 
+                "type": "String"
+            }, 
+            "Bhikaji Cama Place"
+        ], 
+        "oldauditentryids": [
+            {
+                "metadata": true, 
+                "type": "Number"
+            }, 
+            "-1"
+        ], 
+        "date": "20260601", 
+        "referencedate": "20260601", 
+        "vchstatusdate": "20260601", 
+        "guid": "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365", 
+        "gstregistrationtype": "Regular", 
+        "vatdealertype": "Regular", 
+        "statename": "Delhi", 
+        "enteredby": "a", 
+        "countryofresidence": "India", 
+        "partygstin": "07574383208", 
+        "placeofsupply": "Delhi", 
+        "taxunitname": "Nirmal FMCG Traders Ltd", 
+        "vouchertypename": "Sales", 
+        "partyname": "Balaji Retail Store", 
+        "gstregistration": {
+            "value": " Registration", 
+            "taxtype": "GST", 
+            "taxregistration": ""
+        }, 
+        "partyledgername": "Balaji Retail Store", 
+        "vouchernumber": "SA/11/2025-26", 
+        "basicbuyername": "Balaji Retail Store", 
+        "cmpgstregistrationtype": "Regular", 
+        "partymailingname": "Balaji Retail Store", 
+        "dispatchfromname": "Nirmal FMCG Traders Ltd", 
+        "dispatchfromstatename": "Delhi", 
+        "consigneegstin": "07574383208", 
+        "consigneemailingname": "Balaji Retail Store", 
+        "consigneestatename": "Delhi", 
+        "cmpgststate": "Delhi", 
+        "consigneecountryname": "India", 
+        "basicbasepartyname": "Balaji Retail Store", 
+        "numberingstyle": "Auto Retain", 
+        "cstformissuetype": "\u0004 Not Applicable", 
+        "cstformrecvtype": "\u0004 Not Applicable", 
+        "fbtpaymenttype": "Default", 
+        "persistedview": "Invoice Voucher View", 
+        "typeofexcisevoucher": "Non-Excise", 
+        "vchstatustaxadjustment": "Default", 
+        "vchstatusvouchertype": "Sales", 
+        "vchstatustaxunit": " Registration", 
+        "basicdatetimeofinvoice": "1-Jun-26 at 17:22", 
+        "vchgstclass": "\u0004 Not Applicable", 
+        "buyerpinnumber": "3812748", 
+        "consigneepinnumber": "3812748", 
+        "vchentrymode": "Item Invoice", 
+        "diffactualqty": false, 
+        "ismstfromsync": false, 
+        "isdeleted": false, 
+        "issecurityonwhenentered": false, 
+        "asoriginal": false, 
+        "audited": false, 
+        "iscommonparty": false, 
+        "forjobcosting": false, 
+        "isoptional": false, 
+        "effectivedate": "20260601", 
+        "useforexcise": false, 
+        "isforjobworkin": false, 
+        "allowconsumption": false, 
+        "useforinterest": false, 
+        "useforgainloss": false, 
+        "useforgodowntransfer": false, 
+        "useforcompound": false, 
+        "useforservicetax": false, 
+        "isreversechargeapplicable": false, 
+        "issystem": false, 
+        "isfetchedonly": false, 
+        "isgstoverridden": false, 
+        "iscancelled": false, 
+        "isonhold": false, 
+        "issummary": false, 
+        "isecommercesupply": false, 
+        "isboenotapplicable": false, 
+        "isgstsecsevenapplicable": false, 
+        "ignoreeinvvalidation": false, 
+        "cmpgstisothterritoryassessee": false, 
+        "partygstisothterritoryassessee": true, 
+        "irnjsonexported": false, 
+        "irncancelled": false, 
+        "ignoregstconflictinmig": false, 
+        "isopbaltransaction": false, 
+        "ignoregstformatvalidation": false, 
+        "iseligibleforitc": true, 
+        "ignoregstoptionaluncertain": false, 
+        "isgstrefund": false, 
+        "isewaybillexcluded": false, 
+        "isbuyerpeppolregistered": false, 
+        "isvatoverridden": false, 
+        "iseinvoverridden": false, 
+        "updatesummaryvalues": false, 
+        "isewaybillapplicable": false, 
+        "isdeletedretained": false, 
+        "isnull": false, 
+        "isexcisevoucher": false, 
+        "excisetaxoverride": false, 
+        "usefortaxunittransfer": false, 
+        "isexer1nopoverwrite": false, 
+        "isexf2nopoverwrite": false, 
+        "isexer3nopoverwrite": false, 
+        "ignoreposvalidation": false, 
+        "exciseopening": false, 
+        "useforfinalproduction": false, 
+        "istdsoverridden": false, 
+        "istcsoverridden": false, 
+        "istdstcscashvch": false, 
+        "includeadvpymtvch": false, 
+        "issubworkscontract": false, 
+        "ignoreorigvchdate": false, 
+        "isvatpaidatcustoms": false, 
+        "isdeclaredtocustoms": false, 
+        "vatadvancepayment": false, 
+        "vatadvpay": false, 
+        "iscstdelcaredgoodssales": false, 
+        "isvatrestaxinv": false, 
+        "isservicetaxoverridden": false, 
+        "isisdvoucher": false, 
+        "isexciseoverridden": false, 
+        "isexcisesupplyvch": false, 
+        "gstnotexported": false, 
+        "ignoregstinvalidation": false, 
+        "ovrdnewaybillapplicability": false, 
+        "isvatprincipalaccount": false, 
+        "vchstatusisvchnumused": false, 
+        "vchgststatusisincluded": false, 
+        "vchgststatusisuncertain": true, 
+        "vchgststatusisexcluded": false, 
+        "vchgststatusisapplicable": true, 
+        "vchgststatusisgstr2breconciled": false, 
+        "vchgststatusisgstr2bonlyinportal": false, 
+        "vchgststatusisgstr2bonlyinbooks": false, 
+        "vchgststatusisgstr2bmismatch": false, 
+        "vchgststatusisgstr2bindiffperiod": false, 
+        "vchgststatusisreteffdateoverrdn": false, 
+        "vchgststatusisoverrdn": false, 
+        "vchgststatusisstatindiffdate": false, 
+        "vchgststatusisretindiffdate": false, 
+        "vchgststatusmainsectionexcluded": false, 
+        "vchgststatusisbranchtransferout": false, 
+        "vchgststatusissystemsummary": false, 
+        "vchstatusisunregisteredrcm": false, 
+        "vchstatusisoptional": false, 
+        "vchstatusiscancelled": false, 
+        "vchstatusisdeleted": false, 
+        "vchstatusisopeningbalance": false, 
+        "vchstatusisfetchedonly": false, 
+        "vchgststatusisoptionaluncertain": false, 
+        "vchstatusisreacceptforhsndone": false, 
+        "vchstatusisreaccephsnsixonedone": true, 
+        "paymentlinkhasmultiref": false, 
+        "isshippingwithinstate": false, 
+        "isoverseastouristtrans": false, 
+        "isdesignatedzoneparty": false, 
+        "hascashflow": false, 
+        "ispostdated": false, 
+        "usetrackingnumber": false, 
+        "isinvoice": true, 
+        "mfgjournal": false, 
+        "hasdiscounts": false, 
+        "aspayslip": false, 
+        "iscostcentre": false, 
+        "isstxnonrealizedvch": false, 
+        "isexcisemanufactureron": false, 
+        "isblankcheque": false, 
+        "isvoid": false, 
+        "orderlinestatus": false, 
+        "vatisagnstcancsales": false, 
+        "vatispurcexempted": false, 
+        "isvatrestaxinvoice": false, 
+        "vatisassesablecalcvch": false, 
+        "isvatdutypaid": true, 
+        "isdeliverysameasconsignee": false, 
+        "isdispatchsameasconsignor": false, 
+        "isdeletedvchretained": false, 
+        "vchonlyaddlinfoupdated": false, 
+        "changevchmode": false, 
+        "uaeeinvisbillprepaidamtovrdn": false, 
+        "resetirnqrcode": false, 
+        "isvchexchanged": false, 
+        "alterid": " 1437", 
+        "masterid": " 869", 
+        "voucherkey": "198311524958272", 
+        "voucherretainkey": "45", 
+        "vouchernumberseries": "Default", 
+        "ewaybilldetails": [
+            {
+                "consigneeaddress": [
+                    {
+                        "metadata": true, 
+                        "type": "String"
+                    }, 
+                    "Bhikaji Cama Place"
+                ], 
+                "documenttype": "Tax Invoice", 
+                "subtype": "Supply", 
+                "shippedfromstate": "Delhi", 
+                "shippedtostate": "Other Territory", 
+                "iscancelled": false, 
+                "ignoregstinvalidation": false, 
+                "iscancelpending": false, 
+                "ignoregenerationvalidation": false, 
+                "isexportedforgeneration": false, 
+                "intrastateapplicability": false, 
+                "transportdetails": [
+                    {
+                        "oldvehicletype": "\u0004 Not Applicable", 
+                        "ignorevehiclenovalidation": false, 
+                        "istransidpending": false, 
+                        "istransidupdated": false, 
+                        "ignoretransidvalidation": false, 
+                        "isexportedfortransporterid": false, 
+                        "ispartbpending": false, 
+                        "ispartbupdated": false, 
+                        "ignorepartbvalidation": false, 
+                        "isexportedforpartb": false
+                    }
+                ]
+            }
+        ], 
+        "allinventoryentries": [
+            {
+                "stockitemname": "AMD Ryzen  Processor", 
+                "gstovrdnineligibleitc": "\u0004 Not Applicable", 
+                "gstovrdnisrevchargeappl": "\u0004 Not Applicable", 
+                "gstovrdntaxability": "Taxable", 
+                "gstovrdntypeofsupply": "Goods", 
+                "gstrateinferapplicability": "Specify Details Here", 
+                "gsthsninferapplicability": "As per Masters/Company", 
+                "gstovrdnistaxonmrpapplicable": "\u0004 Not Applicable", 
+                "isdeemedpositive": false, 
+                "isrcmapplicable": false, 
+                "isgstassessablevalueoverridden": false, 
+                "strdisgstapplicable": false, 
+                "contentnegispos": false, 
+                "islastdeemedpositive": false, 
+                "isautonegate": false, 
+                "iscustomsclearance": false, 
+                "istrackcomponent": false, 
+                "istrackproduction": false, 
+                "isprimaryitem": false, 
+                "isscrap": false, 
+                "rate": "2500.00/Nos", 
+                "amount": "500000.00", 
+                "actualqty": " 200 Nos", 
+                "billedqty": " 200 Nos", 
+                "batchallocations": [
+                    {
+                        "godownname": "Jflkdsaj", 
+                        "batchname": "Primary Batch", 
+                        "destinationgodownname": "Jflkdsaj", 
+                        "indentno": "\u0004 Not Applicable", 
+                        "orderno": "\u0004 Not Applicable", 
+                        "trackingnumber": "852852", 
+                        "dynamiccstiscleared": false, 
+                        "amount": "500000.00", 
+                        "actualqty": " 200 Nos", 
+                        "billedqty": " 200 Nos"
+                    }
+                ], 
+                "accountingallocations": [
+                    {
+                        "oldauditentryids": [
+                            {
+                                "metadata": true, 
+                                "type": "Number"
+                            }, 
+                            "-1"
+                        ], 
+                        "ledgername": "GST  Sales", 
+                        "gstclass": "\u0004 Not Applicable", 
+                        "gstovrdnistaxonmrpapplicable": "\u0004 Not Applicable", 
+                        "isdeemedpositive": false, 
+                        "ledgerfromitem": false, 
+                        "removezeroentries": false, 
+                        "isrcmapplicable": false, 
+                        "issystem": false, 
+                        "ispartyledger": false, 
+                        "gstoverridden": false, 
+                        "isgstassessablevalueoverridden": false, 
+                        "strdisgstapplicable": false, 
+                        "strdgstispartyledger": false, 
+                        "strdgstisdutyledger": false, 
+                        "contentnegispos": false, 
+                        "islastdeemedpositive": false, 
+                        "iscapvattaxaltered": false, 
+                        "iscapvatnotclaimed": false, 
+                        "amount": "500000.00"
+                    }
+                ], 
+                "ratedetails": [
+                    {
+                        "gstratedutyhead": "CGST", 
+                        "gstratevaluationtype": "Based on Value", 
+                        "gstrate": " 7.50"
+                    }, 
+                    {
+                        "gstratedutyhead": "SGST/UTGST", 
+                        "gstratevaluationtype": "Based on Value", 
+                        "gstrate": " 7.50"
+                    }, 
+                    {
+                        "gstratedutyhead": "IGST", 
+                        "gstratevaluationtype": "Based on Value", 
+                        "gstrate": " 15"
+                    }, 
+                    {
+                        "gstratedutyhead": "Cess", 
+                        "gstratevaluationtype": "\u0004 Not Applicable"
+                    }, 
+                    {
+                        "gstratedutyhead": "State Cess", 
+                        "gstratevaluationtype": "Based on Value"
+                    }
+                ], 
+                "udf:_udf_788530155": [
+                    {
+                        "metadata": true, 
+                        "desc": "", 
+                        "is_list": true, 
+                        "type": "String", 
+                        "index": "1002"
+                    }, 
+                    {
+                        "desc": "", 
+                        "value": "HR12J9182"
+                    }
+                ]
+            }
+        ], 
+        "invoicedelnotes": [
+            {
+                "basicshippingdate": "20260601", 
+                "basicshipdeliverynote": "854758"
+            }
+        ], 
+        "ledgerentries": [
+            {
+                "oldauditentryids": [
+                    {
+                        "metadata": true, 
+                        "type": "Number"
+                    }, 
+                    "-1"
+                ], 
+                "ledgername": "Balaji Retail Store", 
+                "gstclass": "\u0004 Not Applicable", 
+                "gstovrdnistaxonmrpapplicable": "\u0004 Not Applicable", 
+                "isdeemedpositive": true, 
+                "ledgerfromitem": false, 
+                "removezeroentries": false, 
+                "isrcmapplicable": false, 
+                "issystem": false, 
+                "ispartyledger": true, 
+                "gstoverridden": false, 
+                "isgstassessablevalueoverridden": false, 
+                "strdisgstapplicable": false, 
+                "strdgstispartyledger": false, 
+                "strdgstisdutyledger": false, 
+                "contentnegispos": false, 
+                "islastdeemedpositive": true, 
+                "iscapvattaxaltered": false, 
+                "iscapvatnotclaimed": false, 
+                "amount": "-5500000.00", 
+                "billallocations": [
+                    {
+                        "name": "SA/11/2025-26", 
+                        "billtype": "New Ref", 
+                        "tdsdeducteeisspecialrate": false, 
+                        "amount": "-5500000.00"
+                    }
+                ]
+            }, 
+            {
+                "oldauditentryids": [
+                    {
+                        "metadata": true, 
+                        "type": "Number"
+                    }, 
+                    "-1"
+                ], 
+                "rateofinvoicetax": [
+                    {
+                        "metadata": true, 
+                        "type": "Number"
+                    }, 
+                    " 7.50"
+                ], 
+                "roundtype": "\u0004 Not Applicable", 
+                "ledgername": "SGST", 
+                "gstclass": "\u0004 Not Applicable", 
+                "gstovrdnistaxonmrpapplicable": "\u0004 Not Applicable", 
+                "isdeemedpositive": false, 
+                "ledgerfromitem": false, 
+                "removezeroentries": false, 
+                "isrcmapplicable": false, 
+                "issystem": false, 
+                "ispartyledger": false, 
+                "gstoverridden": false, 
+                "isgstassessablevalueoverridden": false, 
+                "strdisgstapplicable": false, 
+                "strdgstispartyledger": false, 
+                "strdgstisdutyledger": false, 
+                "contentnegispos": false, 
+                "islastdeemedpositive": false, 
+                "iscapvattaxaltered": false, 
+                "iscapvatnotclaimed": false, 
+                "amount": "5000000.00", 
+                "vatexpamount": "5000000.00"
+            }
+        ], 
+        "gst": [
+            {
+                "purposetype": "GST", 
+                "stat": [
+                    {
+                        "purposetype": "GST", 
+                        "statkey": "2026\u0005205\u0005Outward Invoice\u0005SA/11/2025-26", 
+                        "isfetchedonly": false, 
+                        "isdeleted": false, 
+                        "tallycontentuser": [
+                        ]
+                    }
+                ]
+            }
+        ], 
+        "udf:_udf_671089649": [
+            {
+                "metadata": true, 
+                "desc": "", 
+                "is_list": true, 
+                "type": "Number", 
+                "index": "1008"
+            }, 
+            {
+                "desc": "", 
+                "value": " 4"
+            }
+        ], 
+        "udf:_udf_671089650": [
+            {
+                "metadata": true, 
+                "desc": "", 
+                "is_list": true, 
+                "type": "Number", 
+                "index": "1009"
+            }, 
+            {
+                "desc": "", 
+                "value": " 43"
+            }
+        ], 
+        "udf:_udf_754975723": [
+            {
+                "metadata": true, 
+                "desc": "", 
+                "is_list": true, 
+                "type": "Date", 
+                "index": "1002"
+            }, 
+            {
+                "desc": "", 
+                "value": "20260701"
+            }
+        ], 
+        "udf:_udf_754975728": [
+            {
+                "metadata": true, 
+                "desc": "", 
+                "is_list": true, 
+                "type": "Date", 
+                "index": "1007"
+            }, 
+            {
+                "desc": "", 
+                "value": "20260801"
+            }
+        ], 
+        "udf:_udf_754975731": [
+            {
+                "metadata": true, 
+                "desc": "", 
+                "is_list": true, 
+                "type": "Date", 
+                "index": "1010"
+            }, 
+            {
+                "desc": "", 
+                "value": "20260601"
+            }
+        ]
+    }

@@ -1,12 +1,16 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-async function connectDb() {
-    try {
-        await mongoose.connect('mongodb+srv://tiwariraushan60_db_user:A45QBLDjDtJ7Mj6q@cluster0.j51zlhr.mongodb.net/users')
-        console.log('MongoDB connected successfully');
-    } catch (error) {
-        console.log(error);
-    }
-}
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI);
 
-module.exports = connectDb;
+     console.log("MongoDB Connected");
+    // console.log("DB Name:", mongoose.connection.name);
+    // console.log("Ready State:", mongoose.connection.readyState);
+  } catch (error) {
+    console.error("MongoDB Connection Error:", error.message);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
