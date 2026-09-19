@@ -1,10 +1,10 @@
-const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const Company = require("../models/company");
 const UserCompanyAccess = require("../models/userCompanyAccess.model");
 const { verifyOpenTallyCompany } = require("../services/auth/tallyCompanyGuard");
+const { ensureCompanyForGuid } = require("../services/auth/companyIdentity");
 
 const register = async (req, res) => {
   try {
@@ -54,7 +54,9 @@ const register = async (req, res) => {
       companyGuid: companyGuId,
     });
 
-    if (existingCompany) {
+    // An INACTIVE company is not "already registered": the same GUID keeps
+    // its tenant (see ensureCompanyForGuid below).
+    if (existingCompany && existingCompany.isActive) {
       return res.status(400).json({
         success: false,
         message: "Company is already registered",
@@ -70,49 +72,32 @@ const register = async (req, res) => {
     );
 
     // -----------------------------
-    // Generate tenantId
+    // Create Company (or reuse this GUID's existing tenant)
     // -----------------------------
-    const tenantId =
-      new mongoose.Types.ObjectId().toString();
-
-    console.log(
-      "===== COMPANY CREATE DEBUG ====="
-    );
-
-    console.log(
-      "Generated tenantId:",
-      tenantId
-    );
-
-    console.log(
-      "Company object before create:",
-      {
-        companyName,
-        sourceType: "tally",
-        companyGuid: companyGuId,
-        tenantId,
-        isActive: true,
-      }
-    );
-
-    console.log(
-      "Company schema paths:",
-      Object.keys(Company.schema.paths)
-    );
-
-    console.log(
-      "================================"
-    );
-
-    // -----------------------------
-    // Create Company
-    // -----------------------------
-    const company = await Company.create({
-      companyName,
-      sourceType: "tally",
+    // The GUID keeps its tenant across remove/re-register, so already-synced
+    // data and checkpoints are not orphaned. Reusing an existing tenant is
+    // only allowed after live proof the company is open in Tally.
+    const ensured = await ensureCompanyForGuid({
       companyGuid: companyGuId,
+      companyName,
+      proveTallyPossession: () => verifyOpenTallyCompany(companyGuId),
+    });
+
+    if (!ensured.ok) {
+      return res.status(ensured.status).json({
+        success: false,
+        message: ensured.message,
+      });
+    }
+
+    const company = ensured.company;
+    const tenantId = company.tenantId;
+
+    console.log("Company tenant:", {
       tenantId,
-      isActive: true,
+      created: ensured.created,
+      reactivated: ensured.reactivated,
+      tenantReused: ensured.tenantReused,
     });
 
     console.log(
@@ -379,18 +364,24 @@ const addCompany = async (req, res) => {
     // Reuse the Company record if this GUID is already registered
     // (e.g. a teammate connecting to the same real Tally company);
     // otherwise create it fresh - same shape register() creates.
-    let company = await Company.findOne({ companyGuid: companyGuId });
+    // An inactive/removed company keeps its tenant (and therefore its
+    // checkpoints and data): see ensureCompanyForGuid. Tally possession was
+    // just proven by the guard above.
+    const ensured = await ensureCompanyForGuid({
+      companyGuid: companyGuId,
+      companyName,
+      requesterUserId: user._id,
+      proveTallyPossession: async () => guard,
+    });
 
-    if (!company) {
-      const tenantId = new mongoose.Types.ObjectId().toString();
-      company = await Company.create({
-        companyName,
-        sourceType: "tally",
-        companyGuid: companyGuId,
-        tenantId,
-        isActive: true,
+    if (!ensured.ok) {
+      return res.status(ensured.status).json({
+        success: false,
+        message: ensured.message,
       });
     }
+
+    const company = ensured.company;
 
     const existingAccess = await UserCompanyAccess.findOne({
       userId: user._id,
@@ -398,6 +389,20 @@ const addCompany = async (req, res) => {
     });
 
     if (existingAccess) {
+      // A previous member reconnecting a deactivated company: it was just
+      // reactivated above with its tenant, checkpoints and data intact.
+      if (ensured.reactivated) {
+        return res.status(200).json({
+          success: true,
+          message: "Company reactivated.",
+          data: {
+            companyGuid: company.companyGuid,
+            companyName: company.companyName,
+            tenantId: company.tenantId,
+          },
+        });
+      }
+
       return res.status(400).json({
         success: false,
         message: "This company is already connected to your account.",
