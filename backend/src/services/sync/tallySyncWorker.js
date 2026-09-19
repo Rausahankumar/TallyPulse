@@ -5,7 +5,14 @@ const SyncCheckpoint = require("../../models/syncCheckpoint.model");
 const {
   getSalesVouchersSinceAlterId,
   getPurchaseVouchersSinceAlterId,
+  getPendingVoucherAlterIds,
 } = require("../odbc/odbcService");
+const { parseTallyId } = require("../parser/tallyParser");
+const {
+  resolveBatchSize,
+  computeBatchWindow,
+  findMissingAlterIds,
+} = require("./batchWindow");
 const {
   extractVoucherCollection,
   processSingleVoucher,
@@ -49,10 +56,15 @@ const {
 // classificationKey selects which side of voucherTypeClassifier's per-
 // company result (sales/purchase) this module's fetch should use — see
 // resolveClassificationForModule below.
+//
+// fetchPendingAlterIds (optional) is the light probe used to bound each
+// tick's batch - see batchWindow.js. A module without it is fetched
+// unbounded, exactly as before.
 const SALES_SYNC_MODULE = {
   voucherType: "Sales",
   classificationKey: "sales",
   fetchVouchersSinceAlterId: getSalesVouchersSinceAlterId,
+  fetchPendingAlterIds: getPendingVoucherAlterIds,
   processVoucher: processSingleVoucher,
 };
 
@@ -60,6 +72,7 @@ const PURCHASE_SYNC_MODULE = {
   voucherType: "Purchase",
   classificationKey: "purchase",
   fetchVouchersSinceAlterId: getPurchaseVouchersSinceAlterId,
+  fetchPendingAlterIds: getPendingVoucherAlterIds,
   processVoucher: processSinglePurchaseVoucher,
 };
 
@@ -67,6 +80,12 @@ const SYNC_MODULES = [SALES_SYNC_MODULE, PURCHASE_SYNC_MODULE];
 
 const DEFAULT_INTERVAL_SECONDS =
   Number(process.env.TALLY_SYNC_INTERVAL_SECONDS) || 60;
+
+// Max vouchers requested from Tally per {company, voucher type} per tick.
+// A larger backlog drains over successive ticks. Configurable via
+// TALLY_SYNC_BATCH_SIZE (positive integer; invalid values fall back to the
+// default rather than disabling bounding).
+const DEFAULT_SYNC_BATCH_SIZE = resolveBatchSize(process.env.TALLY_SYNC_BATCH_SIZE);
 
 // If a lock has been held longer than this, assume the process that took
 // it crashed mid-run and reclaim it, rather than wedging that company's
@@ -163,11 +182,20 @@ async function releaseLock(
 async function runSyncForCompanyModule(
   company,
   syncModule,
-  { intervalSeconds = DEFAULT_INTERVAL_SECONDS } = {}
+  {
+    intervalSeconds = DEFAULT_INTERVAL_SECONDS,
+    batchSize = DEFAULT_SYNC_BATCH_SIZE,
+  } = {}
 ) {
   const tenantId = company.tenantId;
   const companyGuid = company.companyGuid;
-  const { voucherType, classificationKey, fetchVouchersSinceAlterId, processVoucher } = syncModule;
+  const {
+    voucherType,
+    classificationKey,
+    fetchVouchersSinceAlterId,
+    fetchPendingAlterIds,
+    processVoucher,
+  } = syncModule;
 
   await ensureCheckpointExists(tenantId, companyGuid, voucherType);
 
@@ -267,10 +295,74 @@ async function runSyncForCompanyModule(
       };
     }
 
+    // Bound this tick's batch (see batchWindow.js). A light probe lists the
+    // pending AlterIDs; a backlog larger than `batchSize` is fetched as one
+    // slice (checkpoint, cutOff] and the rest drains on later ticks. A
+    // small backlog is fetched with no cap, exactly as before. If the probe
+    // itself fails, the tick fails closed - it never falls back to the
+    // unbounded request this exists to prevent - and the checkpoint stays
+    // untouched.
+    let upToAlterId;
+    let pendingTotal;
+    // AlterIDs the probe selected for THIS fetch; the fetch must return all
+    // of them before the checkpoint may advance. Undefined for a module
+    // with no probe (nothing to validate against).
+    let expectedAlterIds;
+
+    if (typeof fetchPendingAlterIds === "function") {
+      const probeResponse = await fetchPendingAlterIds({
+        afterAlterId: checkpoint.lastAlterId,
+        baseUrl,
+        voucherTypeNames: classResult.typeNames,
+      });
+
+      const probePayload =
+        typeof probeResponse === "string"
+          ? JSON.parse(probeResponse)
+          : probeResponse;
+
+      const probeRows = extractVoucherCollection(probePayload);
+      const pendingAlterIds = probeRows
+        .map((row) => parseTallyId(row && (row.alterid ?? row.alterId)))
+        .filter((id) => id !== null);
+
+      if (probeRows.length > 0 && pendingAlterIds.length === 0) {
+        throw new Error(
+          "Could not read AlterIDs from the pending-vouchers probe; refusing to fetch an unbounded batch."
+        );
+      }
+
+      const window = computeBatchWindow(pendingAlterIds, batchSize);
+      pendingTotal = window.pending;
+
+      if (window.pending === 0) {
+        // Nothing changed since the last checkpoint - the normal steady
+        // state, so most ticks end here after one light request.
+        await releaseLock(tenantId, companyGuid, voucherType, { status: "success" });
+        return {
+          processed: 0,
+          created: 0,
+          updated: 0,
+          duplicates: 0,
+          skipped: 0,
+          failed: 0,
+        };
+      }
+
+      if (window.bounded) {
+        upToAlterId = window.upToAlterId;
+      }
+
+      expectedAlterIds = window.bounded
+        ? pendingAlterIds.filter((id) => id <= upToAlterId)
+        : pendingAlterIds;
+    }
+
     const tallyResponse = await fetchVouchersSinceAlterId({
       afterAlterId: checkpoint.lastAlterId,
       baseUrl,
       voucherTypeNames: classResult.typeNames,
+      ...(upToAlterId !== undefined ? { upToAlterId } : {}),
     });
 
     const parsedPayload =
@@ -279,6 +371,26 @@ async function runSyncForCompanyModule(
         : tallyResponse;
 
     const vouchers = extractVoucherCollection(parsedPayload);
+
+    // Fetch completeness: checked BEFORE anything is persisted or the
+    // checkpoint considered. A partial response that still parses (or a
+    // voucher edited between probe and fetch) would otherwise let the
+    // checkpoint jump past vouchers that were never imported. Failing here
+    // leaves the checkpoint untouched and writes nothing; the next tick
+    // re-probes and retries, so nothing is lost and no state needs undoing.
+    if (expectedAlterIds !== undefined) {
+      const returnedAlterIds = vouchers
+        .map((voucher) => parseTallyId(voucher && (voucher.alterid ?? voucher.alterId)))
+        .filter((id) => id !== null);
+
+      const missing = findMissingAlterIds(expectedAlterIds, returnedAlterIds);
+
+      if (missing.length > 0) {
+        throw new Error(
+          `Incomplete Tally fetch: ${missing.length} of ${expectedAlterIds.length} expected AlterID(s) were not returned (first missing: ${missing[0]}). Checkpoint not advanced; will retry.`
+        );
+      }
+    }
 
     if (!vouchers.length) {
       // Nothing changed since the last checkpoint. Normal steady state,
@@ -333,6 +445,7 @@ async function runSyncForCompanyModule(
       duplicates,
       skipped: skippedCount,
       failed,
+      ...(pendingTotal !== undefined ? { pendingTotal } : {}),
     };
 
     if (failed > 0) {
@@ -348,9 +461,18 @@ async function runSyncForCompanyModule(
       return batchResult;
     }
 
+    // A bounded batch is complete up to its cut-off (every pending voucher
+    // in (checkpoint, cutOff] was fetched and persisted, and the cut-off is
+    // the AlterID of a voucher that exists), so advance to it even if the
+    // last few vouchers carried no AlterID in their result (e.g. a skipped
+    // tombstone) - otherwise such a batch could never make progress. An
+    // unbounded batch advances exactly as before.
+    const advanceTo =
+      upToAlterId !== undefined ? Math.max(maxAlterId, upToAlterId) : maxAlterId;
+
     await releaseLock(tenantId, companyGuid, voucherType, {
       status: "success",
-      advanceTo: maxAlterId,
+      advanceTo,
     });
 
     return batchResult;
@@ -427,7 +549,7 @@ async function runSyncForAllCompanies(
             result.failed)
         ) {
           console.log(
-            `[tallySyncWorker] ${company.companyGuid} (${syncModule.voucherType}): processed=${result.processed} created=${result.created} updated=${result.updated} duplicates=${result.duplicates} skipped=${result.skipped} failed=${result.failed}`
+            `[tallySyncWorker] ${company.companyGuid} (${syncModule.voucherType}): processed=${result.processed} created=${result.created} updated=${result.updated} duplicates=${result.duplicates} skipped=${result.skipped} failed=${result.failed}${result.pendingTotal !== undefined && result.pendingTotal > result.processed ? ` (backlog: ${result.pendingTotal} pending, draining in batches)` : ""}`
           );
         }
       } catch (error) {

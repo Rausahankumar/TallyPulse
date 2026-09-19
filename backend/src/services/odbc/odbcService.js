@@ -249,6 +249,28 @@ function buildVoucherTypeNameFilterClause(voucherTypeNames) {
     .join(" OR ");
 }
 
+// "$AlterID > threshold", optionally capped with "AND $AlterID <= upTo" so a
+// caller can request one bounded slice of a large backlog instead of
+// everything since the checkpoint. With no cap the clause is exactly what
+// the incremental queries always used.
+function buildAlterIdRangeClause(afterAlterId, upToAlterId) {
+  const threshold = Number(afterAlterId) || 0;
+
+  if (upToAlterId === undefined || upToAlterId === null) {
+    return `($AlterID > ${threshold})`;
+  }
+
+  const upper = Number(upToAlterId);
+
+  if (!Number.isFinite(upper) || upper <= threshold) {
+    throw new Error(
+      `Invalid AlterID window: upToAlterId (${upToAlterId}) must be a number greater than afterAlterId (${threshold}).`
+    );
+  }
+
+  return `($AlterID > ${threshold}) AND ($AlterID <= ${upper})`;
+}
+
 function requireVoucherTypeNames(voucherTypeNames, fnName) {
   if (!Array.isArray(voucherTypeNames) || voucherTypeNames.length === 0) {
     throw new Error(
@@ -489,12 +511,15 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 // with a single explicit AND/OR formula combining the AlterID threshold
 // with every resolved type name - confirmed live this correctly aggregates
 // across multiple distinct voucher-type names in one query.
-const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
+// Optional `upToAlterId` bounds the fetch to (afterAlterId, upToAlterId] so
+// the sync worker can drain a large backlog in slices (see
+// batchWindow.js) instead of requesting everything at once.
+const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
   try {
 
     requireVoucherTypeNames(voucherTypeNames, "getSalesVouchersSinceAlterId");
 
-    const threshold = Number(afterAlterId) || 0;
+    const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
     const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
 
     const requestBody = {
@@ -540,7 +565,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucher
               },
 
               value:
-                `($AlterID > ${threshold}) AND (${typeNameClause})`
+                `${alterIdClause} AND (${typeNameClause})`
             }
           ],
 
@@ -586,12 +611,12 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucher
 // voucherTypeNames set instead - see that function's comment for the full
 // rationale. Kept as its own self-contained function (not a shared builder
 // with the Sales version) to match this file's existing style.
-const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
+const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
   try {
 
     requireVoucherTypeNames(voucherTypeNames, "getPurchaseVouchersSinceAlterId");
 
-    const threshold = Number(afterAlterId) || 0;
+    const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
     const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
 
     const requestBody = {
@@ -637,7 +662,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
               },
 
               value:
-                `($AlterID > ${threshold}) AND (${typeNameClause})`
+                `${alterIdClause} AND (${typeNameClause})`
             }
           ],
 
@@ -667,6 +692,104 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
 
     console.error(
       "TALLY PURCHASE ALTERID API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
+// GET PENDING ALTERIDS (batch planning for incremental sync)
+// ============================================================
+//
+// Light probe used by the sync worker to size a batch BEFORE fetching full
+// vouchers: same filter as the incremental fetch, but only VoucherTypeName
+// + AlterID are requested - no inventoryentries/ledgerentries walk, which
+// is what makes a full fetch of thousands of vouchers exceed the 30s
+// timeout. Works for any voucher class (the caller passes that class's
+// resolved voucherTypeNames), so there is one function, not one per type.
+const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
+  try {
+
+    requireVoucherTypeNames(voucherTypeNames, "getPendingVoucherAlterIds");
+
+    const alterIdClause = buildAlterIdRangeClause(afterAlterId);
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
+
+    const requestBody = {
+
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS Pending AlterIDs Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "Voucher"
+                },
+
+                {
+                  "Native Method": "VoucherTypeName, AlterID"
+                },
+
+                {
+                  "Filter": "RTS Pending AlterIDs Filter"
+                }
+              ]
+            },
+
+            {
+              metadata: {
+                name: "RTS Pending AlterIDs Filter",
+                type: "System",
+                sys_type: "Formulae",
+                ismodify: true
+              },
+
+              value:
+                `${alterIdClause} AND (${typeNameClause})`
+            }
+          ],
+
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Pending AlterIDs Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      "TALLY PENDING ALTERIDS API ERROR:",
       error.response?.data || error.message
     );
 
@@ -798,6 +921,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
 module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
+  getPendingVoucherAlterIds,
   getSalesVouchers,
   getSalesVouchersSinceAlterId,
   getAllSalesVoucherGuids,
