@@ -123,6 +123,25 @@ function resolveDateBound(input, fallback) {
 // GET COMPANY INFO
 // ============================================================
 
+// Fixed during QA (2026-09-17→18): the previous version of this function
+// used a Report -> Form -> Part -> Line -> Field TDL chain that was never
+// bound to any Collection, so Tally had no object to iterate and this
+// always returned an empty {} regardless of what was open - it could
+// never actually confirm a company, let alone expose a GUID.
+//
+// This uses "Type": "Company" as a real TDL Collection instead, which
+// Tally resolves against whatever company/companies are currently open in
+// this session. Confirmed live against a real TallyPrime instance: this
+// returns the open company's native $Guid, e.g.
+// "09f68f6a-ace7-4ab4-bee8-ddea59ad0731" - the exact same value Tally
+// already uses as the prefix of every voucher's own tallyGuid
+// (see tallySyncWorker's synced records, e.g.
+// "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365"), which is strong
+// corroborating evidence this is Tally's real internal company identity,
+// not an inferred or approximated value. When no company is open (or the
+// one open can't be resolved), Tally returns an empty collection ([]) -
+// confirmed live - rather than an error, so callers must treat an empty
+// array as "no company open," not fold it into a connection failure.
 const getCompanyInfo = async ({ baseUrl } = {}) => {
   try {
     const requestBody = {
@@ -138,65 +157,17 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
           definitions: [
             {
               metadata: {
-                name: "RTS Company Report",
-                type: "Report"
+                name: "RTS Company Guid Collection",
+                type: "Collection"
               },
 
               attributes: [
                 {
-                  "Form": "RTS Company Form"
-                }
-              ]
-            },
+                  "Type": "Company"
+                },
 
-            {
-              metadata: {
-                name: "RTS Company Form",
-                type: "Form"
-              },
-
-              attributes: [
                 {
-                  "Parts": "RTS Company Part"
-                }
-              ]
-            },
-
-            {
-              metadata: {
-                name: "RTS Company Part",
-                type: "Part"
-              },
-
-              attributes: [
-                {
-                  "Lines": "RTS Company Line"
-                }
-              ]
-            },
-
-            {
-              metadata: {
-                name: "RTS Company Line",
-                type: "Line"
-              },
-
-              attributes: [
-                {
-                  "Fields": "RTS Company Name"
-                }
-              ]
-            },
-
-            {
-              metadata: {
-                name: "RTS Company Name",
-                type: "Field"
-              },
-
-              attributes: [
-                {
-                SetAs: "$Name"
+                  "Native Method": "Name, Guid"
                 }
               ]
             }
@@ -213,8 +184,8 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
           "Content-Type": "application/json",
           "Version": "1",
           "TallyRequest": "Export",
-          "Type": "Data",
-          "ID": "RTS Company Report"
+          "Type": "Collection",
+          "ID": "RTS Company Guid Collection"
         }
       }
     );
@@ -233,11 +204,154 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
 
 
 // ============================================================
+// VOUCHER-TYPE-NAME FILTER HELPERS (generic Sales/Purchase classification)
+// ============================================================
+//
+// Replaces the old "Child Of": "$$VchTypeSales" / "$$VchTypePurchase"
+// pattern. Confirmed live against a customized company that "Child Of" on
+// the "Vouchers:VoucherType" collection does NOT walk the voucher-type
+// parent hierarchy - it only matches vouchers whose own VoucherTypeName is
+// an exact match. Callers now resolve the full set of voucher-type names
+// that belong to a company's Sales/Purchase class via
+// voucherTypeClassifier.js (parent-chain walk over the VoucherType master,
+// keyed off Tally's own immutable reservedname metadata) and pass that
+// resolved list in here. This file has no knowledge of any customer's
+// specific voucher-type names - it only combines whatever list it's given
+// into a single Tally filter formula.
+
+// Voucher type names come from Tally's own metadata, not arbitrary user
+// input, but this is a cheap defensive guard: there's no confirmed-safe
+// escape sequence for a literal double quote inside a Tally TDL formula
+// string literal, so a name containing one is excluded rather than risking
+// a malformed (or injectable) formula.
+function isSafeVoucherTypeNameForFormula(name) {
+  return typeof name === "string" && name.length > 0 && !name.includes('"');
+}
+
+// Builds a single "($VoucherTypeName = "A") OR ($VoucherTypeName = "B") OR ..."
+// clause. Confirmed live: this correctly aggregates vouchers across
+// multiple distinct voucher-type names in one query (e.g. a company
+// recording sales under both "Sales" and "Invoice" returned the exact sum
+// of each name's individual count).
+function buildVoucherTypeNameFilterClause(voucherTypeNames) {
+  const safeNames = (voucherTypeNames || []).filter(
+    isSafeVoucherTypeNameForFormula
+  );
+
+  if (!safeNames.length) {
+    throw new Error(
+      "No usable voucher type names to build a Tally filter from. Refusing to query with an empty/unsafe voucher-type-name set."
+    );
+  }
+
+  return safeNames
+    .map((name) => `$VoucherTypeName = "${name}"`)
+    .join(" OR ");
+}
+
+function requireVoucherTypeNames(voucherTypeNames, fnName) {
+  if (!Array.isArray(voucherTypeNames) || voucherTypeNames.length === 0) {
+    throw new Error(
+      `${fnName} requires a resolved, non-empty voucherTypeNames array. ` +
+        "Callers must resolve classification via voucherTypeClassifier first - " +
+        "this function does not fall back to $$VchTypeSales/$$VchTypePurchase."
+    );
+  }
+}
+
+
+// ============================================================
+// GET VOUCHER TYPE MASTERS (for generic Sales/Purchase classification)
+// ============================================================
+//
+// Confirmed live against TallyPrime: "Type": "VoucherType" is a flat
+// master collection - every voucher type in the company, each carrying its
+// own "parent" (one level up) plus Tally's own ambient
+// metadata.reservedname (returned automatically, without needing to ask
+// for it via Native Method). reservedname is a permanent internal
+// system-class tag that survives renaming - confirmed live on a company
+// where the reserved "Sales" root had been renamed to "Online Sales":
+// metadata.name was "Online Sales" but metadata.reservedname was still
+// "Sales". voucherTypeClassifier.js is the only consumer of this
+// function's output.
+const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
+  try {
+    const requestBody = {
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS VoucherType Master Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "VoucherType"
+                },
+
+                {
+                  "Native Method": "Name, Parent"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS VoucherType Master Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+    console.error(
+      "TALLY VOUCHERTYPE MASTER API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
 // GET SALES VOUCHERS
 // ============================================================
 
-const getSalesVouchers = async ({ fromDate, toDate, baseUrl } = {}) => {
+// `voucherTypeNames` must be pre-resolved by voucherTypeClassifier.js -
+// same generic classification the incremental sync worker and
+// reconciliation use, not a hardcoded literal. Replaces the old
+// "Child Of": "$$VchTypeSales" attribute (confirmed live to only match
+// vouchers named exactly "Sales") with a single explicit AND/OR formula
+// combining the date range with every resolved type name - same pattern
+// as getSalesVouchersSinceAlterId below.
+const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } = {}) => {
   try {
+
+    requireVoucherTypeNames(voucherTypeNames, "getSalesVouchers");
 
     const today = new Date();
     const from = resolveDateBound(fromDate, today);
@@ -245,6 +359,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl } = {}) => {
 
     const fromLiteral = formatTallyDate(from);
     const toLiteral = formatTallyDate(to);
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
 
     const requestBody = {
 
@@ -266,11 +381,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl } = {}) => {
 
               attributes: [
                 {
-                  "Type": "Vouchers:VoucherType"
-                },
-
-                {
-                  "Child Of": "$$VchTypeSales"
+                  "Type": "Voucher"
                 },
 
                 {
@@ -293,7 +404,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl } = {}) => {
               },
 
               value:
-                `$Date >= ($$Date:"${fromLiteral}") AND $Date <= ($$Date:"${toLiteral}")`
+                `($Date >= ($$Date:"${fromLiteral}") AND $Date <= ($$Date:"${toLiteral}")) AND (${typeNameClause})`
             },
             {
               metadata: {
@@ -370,10 +481,21 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl } = {}) => {
 // never changes. Confirmed against a live TallyPrime instance that
 // $AlterID is both present on every voucher and genuinely filterable
 // server-side (not just accepted and ignored).
-const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl } = {}) => {
+// `voucherTypeNames` must be pre-resolved by voucherTypeClassifier.js
+// (the concrete set of voucher-type names that belong to this company's
+// Sales class, discovered from its own VoucherType master - never a
+// hardcoded literal). Replaces the old "Child Of": "$$VchTypeSales"
+// attribute (confirmed live to only match vouchers named exactly "Sales")
+// with a single explicit AND/OR formula combining the AlterID threshold
+// with every resolved type name - confirmed live this correctly aggregates
+// across multiple distinct voucher-type names in one query.
+const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
   try {
 
+    requireVoucherTypeNames(voucherTypeNames, "getSalesVouchersSinceAlterId");
+
     const threshold = Number(afterAlterId) || 0;
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
 
     const requestBody = {
 
@@ -395,11 +517,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl } = {}) 
 
               attributes: [
                 {
-                  "Type": "Vouchers:VoucherType"
-                },
-
-                {
-                  "Child Of": "$$VchTypeSales"
+                  "Type": "Voucher"
                 },
 
                 {
@@ -422,7 +540,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl } = {}) 
               },
 
               value:
-                `$AlterID > ${threshold}`
+                `($AlterID > ${threshold}) AND (${typeNameClause})`
             }
           ],
 
@@ -460,8 +578,229 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl } = {}) 
 };
 
 
+// ============================================================
+// GET PURCHASE VOUCHERS SINCE ALTERID (incremental sync)
+// ============================================================
+//
+// Mirrors getSalesVouchersSinceAlterId exactly, with the Purchase-class
+// voucherTypeNames set instead - see that function's comment for the full
+// rationale. Kept as its own self-contained function (not a shared builder
+// with the Sales version) to match this file's existing style.
+const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
+  try {
+
+    requireVoucherTypeNames(voucherTypeNames, "getPurchaseVouchersSinceAlterId");
+
+    const threshold = Number(afterAlterId) || 0;
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
+
+    const requestBody = {
+
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS Purchase AlterID Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "Voucher"
+                },
+
+                {
+                  "Native Method":
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , ledgerentries.*"
+                },
+
+                {
+                  "Filter": "RTS Purchase AlterID Filter"
+                }
+              ]
+            },
+
+            {
+              metadata: {
+                name: "RTS Purchase AlterID Filter",
+                type: "System",
+                sys_type: "Formulae",
+                ismodify: true
+              },
+
+              value:
+                `($AlterID > ${threshold}) AND (${typeNameClause})`
+            }
+          ],
+
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Purchase AlterID Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      "TALLY PURCHASE ALTERID API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
+// GET ALL SALES / PURCHASE VOUCHER GUIDS (reconciliation)
+// ============================================================
+//
+// Lightest possible query for the reconciliation safety-net: no
+// AlterID filter (deliberately - a deleted voucher never shows up
+// regardless of AlterID, confirmed against a live TallyPrime instance,
+// so filtering by AlterID here would defeat the purpose), and
+// "Guid" is the only field explicitly requested in Native Method.
+// Confirmed live that Tally still returns its own base field set
+// regardless (metadata/date/vouchernumber/masterid/etc. always come
+// through) - there is no way to get a narrower payload than this via
+// this API, since Native Method only ADDS fields, it doesn't restrict
+// the response to just what's asked for. Still meaningfully lighter
+// than the incremental fetch: no inventoryentries/ledgerentries walk.
+//
+// Returns the full parsed voucher objects (not just bare guid strings)
+// so callers can extract $Guid via the same unwrap-aware parsing the
+// rest of the codebase already uses, rather than assuming a raw shape.
+//
+// Like the AlterID fetch functions above, `voucherTypeNames` must be
+// pre-resolved by voucherTypeClassifier.js - this replaces the old
+// "Child Of": "$$VchTypeSales"/"$$VchTypePurchase" attribute (confirmed
+// live to only match vouchers named exactly "Sales"/"Purchase") with an
+// explicit OR formula over every resolved type name. Confirmed live this
+// still returns the plain "guid" string field the rest of the codebase
+// (extractGuidSet in reconciliation.js) already expects.
+function buildAllGuidsRequestBody(voucherTypeNames, collectionName) {
+  const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
+  const filterName = `${collectionName} Filter`;
+
+  return {
+    static_variables: [
+      { name: "svExportFormat", value: "jsonex" }
+    ],
+    tdlmessage: [
+      {
+        definitions: [
+          {
+            metadata: { name: collectionName, type: "Collection" },
+            attributes: [
+              { "Type": "Voucher" },
+              { "Native Method": "Guid" },
+              { "Filter": filterName }
+            ]
+          },
+          {
+            metadata: {
+              name: filterName,
+              type: "System",
+              sys_type: "Formulae",
+              ismodify: true
+            },
+            value: typeNameClause
+          }
+        ]
+      }
+    ]
+  };
+}
+
+const getAllSalesVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) => {
+  try {
+    requireVoucherTypeNames(voucherTypeNames, "getAllSalesVoucherGuids");
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      buildAllGuidsRequestBody(voucherTypeNames, "RTS Sales All Guids Collection"),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Sales All Guids Collection"
+        },
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+  } catch (error) {
+    console.error(
+      "TALLY SALES ALL-GUIDS API ERROR:",
+      error.response?.data || error.message
+    );
+    throw error;
+  }
+};
+
+const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) => {
+  try {
+    requireVoucherTypeNames(voucherTypeNames, "getAllPurchaseVoucherGuids");
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      buildAllGuidsRequestBody(voucherTypeNames, "RTS Purchase All Guids Collection"),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Purchase All Guids Collection"
+        },
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+  } catch (error) {
+    console.error(
+      "TALLY PURCHASE ALL-GUIDS API ERROR:",
+      error.response?.data || error.message
+    );
+    throw error;
+  }
+};
+
+
 module.exports = {
   getCompanyInfo,
+  getVoucherTypeMasters,
   getSalesVouchers,
-  getSalesVouchersSinceAlterId
+  getSalesVouchersSinceAlterId,
+  getAllSalesVoucherGuids,
+  getAllPurchaseVoucherGuids,
+  getPurchaseVouchersSinceAlterId
 };

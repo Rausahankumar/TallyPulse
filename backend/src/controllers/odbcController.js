@@ -187,6 +187,10 @@ const {
   getCompanyInfo,
   getSalesVouchers,
 } = require("../services/odbc/odbcService");
+const { extractOpenCompanies } = require("../services/parser/tallyParser");
+const {
+  resolveVoucherTypeClassification,
+} = require("../services/tally/voucherTypeClassifier");
 
 
 // ============================================================
@@ -219,15 +223,51 @@ const testTallyConnection = async (req, res) => {
 // GET SALES
 // ============================================================
 
+// No auth/tenant context on this route (a legacy diagnostic endpoint, not
+// the real tenant-scoped /api/import/tally-live path) - so unlike that
+// path, there's no companyGuId to resolve a Company from. Instead it
+// resolves classification for whichever company Tally currently has
+// open, same generic voucherTypeClassifier the rest of the app uses,
+// never a hardcoded name and never a silent fallback to $$VchTypeSales.
 const getSales = async (req, res) => {
 
   console.log("GET SALES API HIT");
 
   try {
 
+    const openCompanies = extractOpenCompanies(await getCompanyInfo());
+
+    if (!openCompanies.length) {
+      return res.status(400).json({
+        success: false,
+        message: "No company is currently open in TallyPrime.",
+      });
+    }
+
+    const classification = await resolveVoucherTypeClassification({
+      companyGuid: openCompanies[0].guid,
+    });
+
+    const salesClass = classification.sales;
+
+    if (!salesClass || salesClass.status !== "ok") {
+      const reasonPrefix =
+        salesClass && salesClass.status === "needs_configuration"
+          ? "NEEDS_CONFIGURATION"
+          : "CLASSIFICATION_ERROR";
+
+      return res.status(400).json({
+        success: false,
+        message: `${reasonPrefix}: ${
+          (salesClass && salesClass.reason) ||
+          "Could not resolve Sales voucher-type classification for this company."
+        }`,
+      });
+    }
+
     console.log("Sending request to Tally...");
 
-    const data = await getSalesVouchers();
+    const data = await getSalesVouchers({ voucherTypeNames: salesClass.typeNames });
 
     console.log("Tally response received");
 

@@ -4,10 +4,14 @@ const dotenv = require("dotenv");
 
 const connectDB = require("./src/config/db");
 const { startTallySyncWorker } = require("./src/services/sync/tallySyncWorker");
+const { startReconciliationWorker } = require("./src/services/sync/reconciliationWorker");
 
 const authRoutes = require("./src/routes/authRoutes");
 const importRoutes = require("./src/routes/importRoutes");
 const odbcRoutes = require("./src/routes/odbcRoutes");
+const chatRoutes = require("./src/routes/chatRoutes");
+const syncRoutes = require("./src/routes/syncRoutes");
+const analyticsRoutes = require("./src/routes/analyticsRoutes");
 
 
 //console.log("Odbc routes" , typeof odbcRoutes);
@@ -19,6 +23,10 @@ dotenv.config();
 // connectDB() has actually resolved - not before.
 connectDB().then(() => {
   startTallySyncWorker();
+  // Separate job, separate cadence, separate checkpoint model - the
+  // deletion-reconciliation safety-net (see reconciliation.js). Does not
+  // touch or depend on the incremental sync worker above.
+  startReconciliationWorker();
 });
 
 const app = express();
@@ -41,6 +49,9 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/import", importRoutes);
 app.use("/api/odbc", odbcRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/sync", syncRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 
 // 404 Handler

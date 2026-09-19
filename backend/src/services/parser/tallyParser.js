@@ -257,7 +257,17 @@ function parseTallyVoucher(voucher) {
     .filter(Boolean);
 
   const inventoryTotal = parsedInventory.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const ledgerTotal = parsedLedgers.reduce((sum, item) => sum + Math.abs(Number(item.ledgerAmount || 0)), 0);
+
+  // Fallback used only when there's no inventory (e.g. an accounting-only
+  // voucher - common for Purchase, possible for Sales too). In that case
+  // the top-level ledger list is a complete, balanced double-entry set:
+  // sum(debits) == sum(credits) == the true total, so sum(|amount|) is
+  // always exactly 2x the total, by definition of double-entry
+  // bookkeeping - never an approximation. (When inventory exists, this
+  // branch isn't reached: ledgerentries there only carries the remainder
+  // not already posted via inventory->accountingallocations, so it isn't
+  // itself a complete balanced set and inventoryTotal is used instead.)
+  const ledgerTotal = parsedLedgers.reduce((sum, item) => sum + Math.abs(Number(item.ledgerAmount || 0)), 0) / 2;
   const voucherTotalAmount = inventoryTotal || ledgerTotal || 0;
 
   // Sync-identity fields. These are read directly off the raw voucher and
@@ -295,8 +305,26 @@ function parseTallyVoucher(voucher) {
   };
 }
 
+// Extracts {name, guid} for every company object Tally's "Type": "Company"
+// collection currently reports (odbcService.getCompanyInfo's raw response
+// shape: {status, data:{collection:[{name:{value},guid:{value},...}]}}).
+// Real identities only, straight off Tally's own response - never invents
+// or approximates a guid when one isn't present.
+function extractOpenCompanies(rawTallyResponse) {
+  const collection = rawTallyResponse?.data?.collection;
+  if (!Array.isArray(collection)) return [];
+
+  return collection
+    .map((entry) => ({
+      name: safeString(entry?.name).trim(),
+      guid: safeString(entry?.guid).trim(),
+    }))
+    .filter((company) => company.guid);
+}
+
 module.exports = {
   parseTallyVoucher,
+  extractOpenCompanies,
   parseTallyDate,
   parseQuantity,
   parseRate,

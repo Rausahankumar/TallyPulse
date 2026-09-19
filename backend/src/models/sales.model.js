@@ -129,9 +129,28 @@ const salesSchema = new mongoose.Schema(
   }
 );
 
+// Identity: {tenantId, tallyGuid} - Tally's own stable per-voucher-master
+// identifier, NOT voucherNo. Two distinct voucher masters can legitimately
+// share a voucherNo (confirmed empirically against a live TallyPrime
+// instance - see migrate-voucher-identity.js for the full rationale).
+// Partial (tallyGuid must be a real string) so legacy/guid-less documents
+// never collide on a shared "null" identity.
 salesSchema.index(
-  { tenantId: 1, "header.voucherNo": 1 },
-  { unique: true }
+  { tenantId: 1, tallyGuid: 1 },
+  { unique: true, partialFilterExpression: { tallyGuid: { $type: "string" } } }
 );
+
+// voucherNo is now a plain business/display field, not identity - kept
+// indexed (non-unique) for lookups, not for uniqueness.
+salesSchema.index({ tenantId: 1, "header.voucherNo": 1 });
+
+// Matches analyticsScope.buildVoucherMatchStage's filter shape exactly
+// ({tenantId, voucherStatus, header.voucherDate range}) - every analytics
+// query goes through that one function, so this is the index that
+// actually serves them, rather than falling back to a tenantId-only scan
+// filtered in memory. Added because it was identified as a real gap
+// (analytics worked correctly at today's small data volume without it,
+// but would not scale) - not a broad index redesign.
+salesSchema.index({ tenantId: 1, voucherStatus: 1, "header.voucherDate": 1 });
 
 module.exports = mongoose.model("Sale", salesSchema);

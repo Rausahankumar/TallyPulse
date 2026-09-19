@@ -81,6 +81,14 @@ const IMPORT_ERROR_MESSAGE_MATCHES = [
   "Company is inactive",
   "No Tally voucher data found",
   "Invalid date",
+  "No company is currently open in TallyPrime",
+  "does not match the Company GUID you entered",
+  // Generic voucher-type classification (see voucherTypeClassifier.js):
+  // this company's Sales voucher types couldn't be cleanly resolved, or
+  // the classification fetch itself failed - a client-actionable/company-
+  // configuration problem, not a TallyPulse server bug.
+  "NEEDS_CONFIGURATION",
+  "CLASSIFICATION_ERROR",
 ];
 
 const respondToImportError = (res, error) => {

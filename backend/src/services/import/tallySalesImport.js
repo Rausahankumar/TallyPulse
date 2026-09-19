@@ -4,9 +4,13 @@ const path = require("path");
 const Company = require("../../models/company");
 const Sale = require("../../models/sales.model");
 
-const { parseTallyVoucher } = require("../parser/tallyParser");
 const { mapTallySale } = require("../mapper/salesMapper");
 const { getSalesVouchers } = require("../odbc/odbcService");
+const { createVoucherPersistence } = require("../sync/voucherPersistence");
+const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
+const {
+  resolveVoucherTypeClassification,
+} = require("../tally/voucherTypeClassifier");
 
 
 function sanitizeJsonText(rawText) {
@@ -287,249 +291,17 @@ function extractVoucherCollection(payload) {
 // import, and the incremental sync worker — the one shared persistence
 // path required by all three.
 //
-// Possible outcomes:
-//   "created"   - no prior document existed; inserted.
-//   "updated"   - a prior document existed and this write changed it
-//                 (newer $AlterID, or no comparable AlterID on either side
-//                 so we can't cheaply prove nothing changed).
-//   "duplicate" - a prior document existed and its $AlterID is already >=
-//                 the incoming one; no write performed (idempotent retry
-//                 / re-poll of the same delta).
-//   "skipped"   - the voucher couldn't be fully mapped (missing required
-//                 header fields), but it carries a cancel/delete signal
-//                 and no matching document exists yet to update — nothing
-//                 meaningful to do.
-//   "failed"    - a genuine error: couldn't be mapped and carries no
-//                 cancel/delete signal, or an unexpected exception.
-async function processSingleVoucher(
-  voucher,
-  tenantId
-) {
-  const voucherNo =
-    voucher &&
-    voucher.vouchernumber
-      ? voucher.vouchernumber
-      : null;
-
-  try {
-    if (
-      !voucher ||
-      typeof voucher !== "object"
-    ) {
-      throw new Error(
-        "Voucher entry is not an object."
-      );
-    }
-
-    // parseTallyVoucher never throws for sparse/incomplete records — it
-    // always returns usable sync flags (guid/alterId/isCancelled/
-    // isDeleted) even when header fields are missing. Only mapTallySale
-    // (below) requires the header to be complete.
-    const parsedVoucher =
-      parseTallyVoucher(voucher);
-
-    let mappedSale;
-
-    try {
-      mappedSale = mapTallySale(
-        parsedVoucher,
-        { tenantId }
-      );
-    } catch (mapError) {
-      return await handleUnmappableVoucher({
-        tenantId,
-        voucherNo,
-        parsedVoucher,
-        mapError,
-      });
-    }
-
-    const doc =
-      new Sale(mappedSale);
-
-    await doc.validate();
-
-    const resolvedVoucherNo =
-      mappedSale.header &&
-      mappedSale.header.voucherNo
-        ? mappedSale.header.voucherNo
-        : voucherNo;
-
-    const filter = {
-      tenantId,
-      "header.voucherNo":
-        resolvedVoucherNo,
-    };
-
-    const existingSale =
-      await Sale.findOne(filter)
-        .select("_id tallyAlterId")
-        .lean();
-
-    // Idempotency guard: only meaningful when BOTH sides carry a
-    // comparable $AlterID (i.e. this voucher came from the AlterID-based
-    // sync path, not a plain file upload). If the incoming AlterID is not
-    // newer than what's already stored, this is a re-poll of a delta we
-    // already applied — skip the write entirely so retries are safe.
-    if (
-      existingSale &&
-      existingSale.tallyAlterId != null &&
-      mappedSale.tallyAlterId != null &&
-      mappedSale.tallyAlterId <= existingSale.tallyAlterId
-    ) {
-      return {
-        created: false,
-        duplicate: true,
-        updated: false,
-        message:
-          `Sale already up to date for tenantId ${tenantId} and voucherNo ${resolvedVoucherNo}`,
-        sale: existingSale,
-        saleId: String(existingSale._id),
-        tenantId,
-        voucherNo: resolvedVoucherNo,
-        tallyAlterId: mappedSale.tallyAlterId,
-        status: "duplicate",
-      };
-    }
-
-    const savedSale =
-      await Sale.findOneAndUpdate(
-        filter,
-        { $set: mappedSale },
-        {
-          upsert: true,
-          returnDocument: "after",
-          runValidators: true,
-          setDefaultsOnInsert: true,
-        }
-      );
-
-    const wasCreated = !existingSale;
-
-    return {
-      created: wasCreated,
-      duplicate: false,
-      updated: !wasCreated,
-      message:
-        wasCreated
-          ? "Sale imported successfully"
-          : "Sale updated from Tally",
-      sale: savedSale.toObject(),
-      saleId: String(savedSale._id),
-      tenantId,
-      voucherNo: resolvedVoucherNo,
-      tallyAlterId: mappedSale.tallyAlterId,
-      status: wasCreated ? "created" : "updated",
-    };
-
-  } catch (error) {
-    const message =
-      error && error.message
-        ? error.message
-        : "Unknown voucher import error";
-
-    return {
-      created: false,
-      duplicate: false,
-      updated: false,
-      message,
-      sale: null,
-      saleId: null,
-      tenantId,
-      voucherNo,
-      status: "failed",
-      error: message,
-    };
-  }
-}
-
-
-// Defensive fallback for a voucher that couldn't be fully mapped (missing
-// required header fields). If it carries a cancel/delete signal, treat a
-// map failure as "this is a tombstone-shaped record, not corrupt data":
-// update just the status on a matching existing document (found via
-// tallyGuid, falling back to voucherNo) without touching its other
-// fields. If no matching document exists, there's nothing to update —
-// that's a harmless skip, not a failure. Any other map failure is a
-// genuine error.
-//
-// This path exists because whether Tally returns full voucher data
-// alongside $IsDeleted, or a sparse stub, is UNVERIFIED (see
-// tallyParser.js) — this makes both possibilities safe.
-async function handleUnmappableVoucher({
-  tenantId,
-  voucherNo,
-  parsedVoucher,
-  mapError,
-}) {
-  const sync = (parsedVoucher && parsedVoucher.sync) || {};
-
-  if (!sync.isCancelled && !sync.isDeleted) {
-    throw mapError;
-  }
-
-  const lookup = sync.guid
-    ? { tenantId, tallyGuid: sync.guid }
-    : voucherNo
-      ? { tenantId, "header.voucherNo": voucherNo }
-      : null;
-
-  if (!lookup) {
-    return {
-      created: false,
-      duplicate: false,
-      updated: false,
-      message:
-        "Cancelled/deleted voucher has no identifiable voucher number or GUID to match against; nothing to update.",
-      sale: null,
-      saleId: null,
-      tenantId,
-      voucherNo,
-      status: "skipped",
-    };
-  }
-
-  const voucherStatus = sync.isDeleted ? "deleted" : "cancelled";
-
-  const updatedSale = await Sale.findOneAndUpdate(
-    lookup,
-    {
-      $set: {
-        voucherStatus,
-        ...(sync.alterId != null ? { tallyAlterId: sync.alterId } : {}),
-      },
-    },
-    { returnDocument: "after" }
-  ).lean();
-
-  if (!updatedSale) {
-    return {
-      created: false,
-      duplicate: false,
-      updated: false,
-      message:
-        `No existing Sale found to mark ${voucherStatus} for tenantId ${tenantId} (nothing was ever synced for this voucher).`,
-      sale: null,
-      saleId: null,
-      tenantId,
-      voucherNo,
-      status: "skipped",
-    };
-  }
-
-  return {
-    created: false,
-    duplicate: false,
-    updated: true,
-    message: `Sale marked ${voucherStatus} from Tally`,
-    sale: updatedSale,
-    saleId: String(updatedSale._id),
-    tenantId,
-    voucherNo: updatedSale.header && updatedSale.header.voucherNo,
-    tallyAlterId: sync.alterId ?? null,
-    status: "updated",
-  };
-}
+// This is a thin wrapper over the generic, voucher-type-agnostic core in
+// voucherPersistence.js (also used by Purchase sync) — same external
+// signature and behavior as before that extraction; see
+// voucherPersistence.js for the outcome status meanings ("created"/
+// "updated"/"duplicate"/"skipped"/"failed").
+const { processSingleVoucher } =
+  createVoucherPersistence({
+    Model: Sale,
+    mapVoucher: mapTallySale,
+    entityLabel: "Sale",
+  });
 
 
 // --------------------------------------------------
@@ -781,13 +553,62 @@ async function importTallySalesFromTally({
   toDate,
 } = {}) {
 
-  const { tenantId } =
+  const { company, tenantId } =
     await resolveTenantContext(companyGuId);
+
+  // Safety gate (product rule): Sales Sync must never import whatever
+  // company happens to be open in Tally into a DIFFERENT TallyPulse
+  // company's tenant. Re-checks live, on every sync, that the company
+  // actually open in Tally right now is this tenant's own company -
+  // never assumed just because the user is scoped to this tenant in
+  // TallyPulse. Uses the resolved Company doc's own companyGuid (not the
+  // raw caller-supplied companyGuId) as the expected value.
+  const guard = await verifyOpenTallyCompany(company.companyGuid);
+
+  if (!guard.ok) {
+    throw new Error(
+      guard.reason === "unreachable"
+        ? `Tally is unavailable: ${guard.message}`
+        : guard.message
+    );
+  }
+
+  // Generic Sales voucher-type discovery - the same voucherTypeClassifier
+  // (and its cache) already used by the incremental sync worker and
+  // reconciliation, so all three paths always agree on what "Sales" means
+  // for this company. Never a per-customer hardcoded name, and never
+  // silently falls back to the old $$VchTypeSales token if classification
+  // can't be cleanly resolved - a company whose Sales voucher types are
+  // ambiguous/unconfigured fails this request loudly instead of
+  // returning an empty or wrong result.
+  const classification = await resolveVoucherTypeClassification({
+    companyGuid: company.companyGuid,
+  });
+
+  const salesClass = classification.sales;
+
+  if (!salesClass || salesClass.status !== "ok") {
+    const reasonPrefix =
+      salesClass && salesClass.status === "needs_configuration"
+        ? "NEEDS_CONFIGURATION"
+        : "CLASSIFICATION_ERROR";
+
+    throw new Error(
+      `${reasonPrefix}: ${
+        (salesClass && salesClass.reason) ||
+        "Could not resolve Sales voucher-type classification for this company."
+      }`
+    );
+  }
 
   let tallyResponse;
 
   try {
-    tallyResponse = await getSalesVouchers({ fromDate, toDate });
+    tallyResponse = await getSalesVouchers({
+      fromDate,
+      toDate,
+      voucherTypeNames: salesClass.typeNames,
+    });
   } catch (error) {
     const message =
       error && error.message
