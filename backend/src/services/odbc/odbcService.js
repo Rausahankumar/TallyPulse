@@ -710,7 +710,10 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
 // is what makes a full fetch of thousands of vouchers exceed the 30s
 // timeout. Works for any voucher class (the caller passes that class's
 // resolved voucherTypeNames), so there is one function, not one per type.
-const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTypeNames } = {}) => {
+// `withCancelledFlag` additionally requests IsCancelled (still a light field);
+// used by voucher recovery to tell cancelled vouchers apart. Off by default so
+// the sync worker's probe is unchanged.
+const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, withCancelledFlag = false } = {}) => {
   try {
 
     requireVoucherTypeNames(voucherTypeNames, "getPendingVoucherAlterIds");
@@ -742,7 +745,7 @@ const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTyp
                 },
 
                 {
-                  "Native Method": "VoucherTypeName, AlterID"
+                  "Native Method": withCancelledFlag ? "VoucherTypeName, AlterID, IsCancelled" : "VoucherTypeName, AlterID"
                 },
 
                 {
@@ -790,6 +793,119 @@ const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTyp
 
     console.error(
       "TALLY PENDING ALTERIDS API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
+// GET VOUCHERS BY EXPLICIT ALTERIDS (missing-data recovery)
+// ============================================================
+//
+// Full vouchers (same fields as the incremental fetch, so the unchanged
+// parser/mapper/persistence pipeline can consume them) for exactly the
+// given AlterIDs - used by voucherRecovery.js to re-import vouchers that are
+// present in Tally but missing from MongoDB, without moving any sync
+// checkpoint. The id list is capped so one request stays small.
+const MAX_ALTERIDS_PER_RECOVERY_QUERY = 200;
+
+const getVouchersByAlterIds = async ({ alterIds, baseUrl, voucherTypeNames } = {}) => {
+  try {
+
+    requireVoucherTypeNames(voucherTypeNames, "getVouchersByAlterIds");
+
+    if (
+      !Array.isArray(alterIds) ||
+      alterIds.length === 0 ||
+      alterIds.length > MAX_ALTERIDS_PER_RECOVERY_QUERY ||
+      !alterIds.every((id) => Number.isInteger(id) && id > 0)
+    ) {
+      throw new Error(
+        `getVouchersByAlterIds requires 1-${MAX_ALTERIDS_PER_RECOVERY_QUERY} positive integer AlterIDs.`
+      );
+    }
+
+    const idClause = Array.from(new Set(alterIds))
+      .map((id) => `$AlterID = ${id}`)
+      .join(" OR ");
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
+
+    const requestBody = {
+
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS Recovery Vouchers Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "Voucher"
+                },
+
+                {
+                  "Native Method":
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , ledgerentries.*"
+                },
+
+                {
+                  "Filter": "RTS Recovery Vouchers Filter"
+                }
+              ]
+            },
+
+            {
+              metadata: {
+                name: "RTS Recovery Vouchers Filter",
+                type: "System",
+                sys_type: "Formulae",
+                ismodify: true
+              },
+
+              value:
+                `(${idClause}) AND (${typeNameClause})`
+            }
+          ],
+
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      baseUrl || DEFAULT_TALLY_URL,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Recovery Vouchers Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      "TALLY RECOVERY VOUCHERS API ERROR:",
       error.response?.data || error.message
     );
 
@@ -922,6 +1038,8 @@ module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
   getPendingVoucherAlterIds,
+  getVouchersByAlterIds,
+  MAX_ALTERIDS_PER_RECOVERY_QUERY,
   getSalesVouchers,
   getSalesVouchersSinceAlterId,
   getAllSalesVoucherGuids,
