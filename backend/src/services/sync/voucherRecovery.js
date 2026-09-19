@@ -82,6 +82,7 @@ function emptyResult(voucherType, apply) {
     reason: null,
     tally: { total: 0, cancelledOrDeleted: 0 },
     alreadyPresent: 0,
+    outOfScope: 0,
     found: 0,
     recovered: 0,
     skipped: 0,
@@ -108,6 +109,8 @@ async function recoverMissingVouchers({
   apply = false,
   batchSize,
   maxBatches,
+  upToAlterId,
+  maxMissing,
   deps = {},
 }) {
   const target = RECOVERY_TARGETS[voucherType];
@@ -204,17 +207,37 @@ async function recoverMissingVouchers({
     const existingGuids = new Set(existingDocs.map((d) => d.tallyGuid));
 
     const active = registry.filter((r) => !r.cancelledOrDeleted);
-    const missing = active
+
+    // Optional scope: only vouchers at or below `upToAlterId` (the incremental
+    // sync's checkpoint) count. Anything above it is still ahead of the normal
+    // sync, which will fetch it itself, so the automatic self-heal leaves it
+    // alone. Manual recovery passes nothing and covers everything.
+    const scoped =
+      upToAlterId === undefined || upToAlterId === null
+        ? active
+        : active.filter((r) => r.alterId <= upToAlterId);
+    const missing = scoped
       .filter((r) => !existingGuids.has(r.guid))
       .sort((a, b) => a.alterId - b.alterId);
 
-    result.alreadyPresent = active.length - missing.length;
+    result.outOfScope = active.length - scoped.length;
+    result.alreadyPresent = scoped.length - missing.length;
     result.found = missing.length;
     result.remainingMissing = missing.length;
 
     if (!apply) {
       result.status = "dry_run";
       return result;
+    }
+
+    // Guardrail for unattended callers: a gap larger than this is not
+    // repaired automatically, it is reported for a person to look at.
+    if (Number.isFinite(maxMissing) && missing.length > maxMissing) {
+      return aborted(
+        result,
+        "too_many_missing",
+        `${missing.length} vouchers are missing (limit for automatic recovery is ${maxMissing}). Run recovery manually.`
+      );
     }
 
     if (missing.length === 0) {

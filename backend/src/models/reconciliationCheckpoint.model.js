@@ -48,6 +48,19 @@ const reconciliationCheckpointSchema = new mongoose.Schema(
     lastMongoActiveCount: { type: Number, default: null },
     lastMarkedDeletedCount: { type: Number, default: null },
 
+    // Repair marker for the data/checkpoint self-heal (selfHeal.js): when it
+    // last tried, what came of it, and how much is still missing. Drives the
+    // cooldown so the same gap is not re-checked against Tally every tick.
+    selfHealLastAttemptAt: { type: Date, default: null },
+    selfHealLastOutcome: {
+      type: String,
+      enum: [null, "completed", "partial", "noop", "failed", "aborted"],
+      default: null,
+    },
+    selfHealLastRecovered: { type: Number, default: null },
+    selfHealLastRemaining: { type: Number, default: null },
+    selfHealLastReason: { type: String, default: null },
+
     // Same Mongo-backed mutex pattern as SyncCheckpoint.
     isRunning: {
       type: Boolean,

@@ -13,6 +13,7 @@ const {
   resolveVoucherTypeClassification,
 } = require("../tally/voucherTypeClassifier");
 const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
+const { maybeSelfHeal } = require("./selfHeal");
 
 // --------------------------------------------------
 // Background reconciliation worker - the deletion safety-net described
@@ -218,12 +219,30 @@ async function runReconciliationForCompanyModule(
     baseUrl,
   });
 
+  // Data/checkpoint self-heal (selfHeal.js): only after a SUCCESSFUL pass,
+  // still holding this {tenant, voucher type} lock. Never throws and never
+  // changes the reconciliation result recorded below.
+  const heal = await maybeSelfHeal({
+    company,
+    voucherType,
+    reconcileResult: result,
+    checkpoint,
+    deps: module_.selfHealDeps,
+  });
+
+  if (heal.attempted) {
+    console.log(
+      `[reconciliationWorker] ${companyGuid} (${voucherType}): self-heal ${heal.outcome} (recovered ${heal.update.selfHealLastRecovered}, still missing ${heal.update.selfHealLastRemaining})${heal.update.selfHealLastReason ? ` - ${heal.update.selfHealLastReason}` : ""}`
+    );
+  }
+
   await releaseLock(tenantId, companyGuid, voucherType, {
     lastRunStatus: result.status,
     lastError: result.reason,
     lastTallyGuidCount: result.tallyGuidCount,
     lastMongoActiveCount: result.mongoActiveCount,
     lastMarkedDeletedCount: result.markedDeletedCount,
+    ...heal.update,
   });
 
   return result;
