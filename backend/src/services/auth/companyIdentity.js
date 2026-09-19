@@ -6,36 +6,40 @@ const SyncCheckpoint = require("../../models/syncCheckpoint.model");
 const ReconciliationCheckpoint = require("../../models/reconciliationCheckpoint.model");
 
 // --------------------------------------------------
-// Company identity: the Tally company GUID is the ONLY identity. A company
-// display name is never used to find, match or merge anything.
+// Company identity: the Tally company GUID is the ONLY identity, and users
+// never type it - "Connect Tally" detects the open company and passes its GUID
+// here. A company display name is never used to find, match or merge anything.
 //
-// Why this exists: a tenant's sync position (SyncCheckpoint) and vouchers are
-// keyed by tenantId. If a company is removed and registered again and a brand
-// new random tenantId is minted, the old checkpoints/vouchers are stranded
-// under the old tenant and the new tenant re-syncs from AlterID 0. So the
-// same GUID must keep the same tenant:
+// Why the tenant must follow the GUID: a tenant's sync position
+// (SyncCheckpoint) and vouchers are keyed by tenantId. If a company is removed
+// and connected again and a brand new random tenantId is minted, the old
+// checkpoints/vouchers are stranded under the old tenant and the new tenant
+// re-syncs from AlterID 0. So the same GUID keeps the same tenant:
 //
 //   1. a Company record for the GUID already exists
-//        - active   -> returned as is
-//        - inactive -> reactivated (same tenantId, same checkpoints/data),
-//                      only when the requester is allowed to (see below)
+//        - the requester belongs to it (or nobody does)  -> returned; an
+//          inactive one is reactivated (same tenantId, checkpoints, data)
+//        - other accounts own it and the requester is not one of them ->
+//          REFUSED. Knowing/being able to open a company is not authorization:
+//          there is no invitation mechanism yet, so this fails closed.
 //   2. no Company record, but the GUID still has tenant evidence (sync /
-//      reconciliation checkpoints, user access rows, users) from a removed
-//      Company -> a new Company record is created with THAT tenantId
-//   3. nothing known for the GUID -> a fresh tenantId (unchanged behaviour)
+//      reconciliation checkpoints, user access rows, users) -> the new record
+//      reuses THAT tenantId, only when exactly one tenant qualifies and no
+//      other account owns it
+//   3. nothing known for the GUID -> a fresh tenantId
 //
-// Reactivation and orphan-tenant reuse hand the requester an existing
-// tenant's data, so both require live proof that this Tally really has the
-// company open (the caller supplies `proveTallyPossession`; the same
-// verifyOpenTallyCompany guard the rest of the system uses). A GUID string
-// alone never unlocks old data.
+// "Owner" = a User that still exists and either has the company as its
+// default or holds a UserCompanyAccess row for it. Rows pointing at deleted
+// users own nothing.
 //
-// Fail-closed cases (never guess):
-//   - inactive company that other accounts still belong to, requested by an
-//     account that is not one of them -> refused
-//   - more than one candidate tenant for the GUID (legacy duplicates) ->
-//     no reuse, a fresh tenantId is issued and a warning logged
-//   - a candidate tenant already attached to a DIFFERENT company record ->
+// Everything that creates, reactivates or claims a company needs live proof
+// (`proveTallyPossession`) that this Tally really has the company open.
+//
+// Fail-closed cases (never guess, never merge):
+//   - not an owner of a company others own                     -> 403 not_authorized
+//   - more than one candidate tenant for the GUID (legacy
+//     duplicates)                                              -> 409 ambiguous
+//   - a candidate tenant already attached to a DIFFERENT company record is
 //     not a candidate
 // --------------------------------------------------
 
@@ -60,35 +64,50 @@ async function collectCandidateTenantIds(companyGuid) {
   return candidates.filter((id) => !ownedSet.has(id));
 }
 
-async function isPreviousMember(userId, company) {
-  if (!userId) return false;
-
-  const access = await UserCompanyAccess.exists({ userId, companyGuid: company.companyGuid });
-  if (access) return true;
-
-  const own = await User.exists({ _id: userId, companyGuId: company.companyGuid });
-  return Boolean(own);
-}
-
-async function companyHasMembers(company) {
-  const [access, users] = await Promise.all([
-    UserCompanyAccess.exists({ companyGuid: company.companyGuid }),
-    User.exists({ companyGuId: company.companyGuid }),
+// String ids of the users that still exist and belong to this company.
+async function survivingOwnerIds(companyGuid) {
+  const [accessUserIds, defaultUserIds] = await Promise.all([
+    UserCompanyAccess.distinct("userId", { companyGuid }),
+    User.distinct("_id", { companyGuId: companyGuid }),
   ]);
-  return Boolean(access || users);
+
+  const ids = [...new Set([...accessUserIds, ...defaultUserIds].map(String))];
+
+  if (ids.length === 0) return new Set();
+
+  const alive = await User.find({ _id: { $in: ids } }).select("_id").lean();
+  return new Set(alive.map((u) => String(u._id)));
 }
+
+const isAllowed = (owners, requesterUserId) =>
+  owners.size === 0 || (requesterUserId ? owners.has(String(requesterUserId)) : false);
+
+const NOT_AUTHORIZED = {
+  ok: false,
+  status: 403,
+  code: "not_authorized",
+  message: "You don't have access to this company.",
+};
 
 async function proveOrFail(proveTallyPossession) {
   if (typeof proveTallyPossession !== "function") {
-    return { ok: false, status: 400, message: "Tally verification is required for this company." };
+    return {
+      ok: false,
+      status: 400,
+      code: "tally_unverified",
+      message: "Tally verification is required for this company.",
+    };
   }
 
   const proof = await proveTallyPossession();
 
   if (!proof || !proof.ok) {
+    const unreachable = proof && proof.reason === "unreachable";
+
     return {
       ok: false,
-      status: proof && proof.reason === "unreachable" ? 503 : 400,
+      status: unreachable ? 503 : 400,
+      code: unreachable ? "tally_unreachable" : "tally_mismatch",
       message:
         (proof && proof.message) ||
         "Could not verify this company against the company open in TallyPrime.",
@@ -100,13 +119,12 @@ async function proveOrFail(proveTallyPossession) {
 
 /**
  * @param {Object} params
- * @param {string} params.companyGuid   authoritative company identity
+ * @param {string} params.companyGuid   authoritative identity, detected from Tally
  * @param {string} params.companyName   only used when a record is created
- * @param {string} [params.requesterUserId]  the authenticated account, when
- *   there is one (addCompany); absent for a brand-new signup (register)
+ * @param {string} params.requesterUserId  the authenticated account
  * @param {Function} params.proveTallyPossession async () => {ok, reason, message}
  * @returns {Promise<{ok:true, company, created:boolean, reactivated:boolean,
- *   tenantReused:boolean} | {ok:false, status:number, message:string}>}
+ *   tenantReused:boolean} | {ok:false, status:number, code:string, message:string}>}
  */
 async function ensureCompanyForGuid({
   companyGuid,
@@ -114,27 +132,24 @@ async function ensureCompanyForGuid({
   requesterUserId,
   proveTallyPossession,
 }) {
+  const owners = await survivingOwnerIds(companyGuid);
+  const requesterOwns = requesterUserId ? owners.has(String(requesterUserId)) : false;
   const existing = await Company.findOne({ companyGuid });
 
   if (existing) {
-    if (existing.isActive) {
+    if (!isAllowed(owners, requesterUserId)) return NOT_AUTHORIZED;
+
+    // An owner reconnecting an active company needs nothing more.
+    if (existing.isActive && requesterOwns) {
       return { ok: true, company: existing, created: false, reactivated: false, tenantReused: false };
-    }
-
-    const allowed =
-      (await isPreviousMember(requesterUserId, existing)) || !(await companyHasMembers(existing));
-
-    if (!allowed) {
-      return {
-        ok: false,
-        status: 403,
-        message:
-          "This company was deactivated and belongs to other accounts. Ask a previous member of the company to reconnect it.",
-      };
     }
 
     const proof = await proveOrFail(proveTallyPossession);
     if (!proof.ok) return proof;
+
+    if (existing.isActive) {
+      return { ok: true, company: existing, created: false, reactivated: false, tenantReused: false };
+    }
 
     existing.isActive = true;
     await existing.save();
@@ -142,25 +157,30 @@ async function ensureCompanyForGuid({
     return { ok: true, company: existing, created: false, reactivated: true, tenantReused: true };
   }
 
+  // No Company record. Whatever tenant evidence exists for this GUID must not
+  // belong to another account.
+  if (!isAllowed(owners, requesterUserId)) return NOT_AUTHORIZED;
+
   const candidates = await collectCandidateTenantIds(companyGuid);
-  let tenantId = null;
 
-  if (candidates.length === 1) {
-    const proof = await proveOrFail(proveTallyPossession);
-    if (!proof.ok) return proof;
-
-    tenantId = candidates[0];
-  } else if (candidates.length > 1) {
+  if (candidates.length > 1) {
     console.warn(
-      `[companyIdentity] ${companyGuid}: ${candidates.length} orphan tenants found (${candidates.join(", ")}); refusing to guess which to reuse - issuing a fresh tenant.`
+      `[companyIdentity] ${companyGuid}: ${candidates.length} orphan tenants found (${candidates.join(", ")}); refusing to guess which to reuse.`
     );
+
+    return {
+      ok: false,
+      status: 409,
+      code: "ambiguous",
+      message: "Company connection is ambiguous; contact administrator.",
+    };
   }
 
-  const tenantReused = tenantId !== null;
+  const proof = await proveOrFail(proveTallyPossession);
+  if (!proof.ok) return proof;
 
-  if (!tenantReused) {
-    tenantId = new mongoose.Types.ObjectId().toString();
-  }
+  const tenantReused = candidates.length === 1;
+  const tenantId = tenantReused ? candidates[0] : new mongoose.Types.ObjectId().toString();
 
   const company = await Company.create({
     companyName,
@@ -173,4 +193,4 @@ async function ensureCompanyForGuid({
   return { ok: true, company, created: true, reactivated: false, tenantReused };
 }
 
-module.exports = { ensureCompanyForGuid, collectCandidateTenantIds };
+module.exports = { ensureCompanyForGuid, collectCandidateTenantIds, survivingOwnerIds };
