@@ -1,17 +1,16 @@
 import { useState } from "react";
-import { X, KeyRound, Building2, Fingerprint } from "lucide-react";
+import { X, KeyRound } from "lucide-react";
 import Input from "../ui/Input";
 import Button from "../ui/Button";
 import { useCompany } from "../../context/CompanyContext";
 import { ApiError } from "../../api/client";
 
-// The real "Add/Connect Company" flow (product rule #1): the SAME
-// logged-in account, re-authorized with its EXISTING password — never
-// a new email/account. Calls the real POST /api/auth/companies.
+// "Connect another company": the SAME logged-in account, re-authorized with
+// its EXISTING password - never a new email/account. The company itself is
+// never typed: it is whichever company is open in TallyPrime right now, and
+// the backend detects it.
 export default function AddCompanyModal({ onClose, onConnected }) {
-  const { addCompany, switchCompany } = useCompany();
-  const [companyName, setCompanyName] = useState("");
-  const [companyGuId, setCompanyGuId] = useState("");
+  const { connectCompany } = useCompany();
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -21,12 +20,9 @@ export default function AddCompanyModal({ onClose, onConnected }) {
     setError(null);
     setLoading(true);
     try {
-      const added = await addCompany({ password, companyName, companyGuId });
-      // Land the user straight in the company they just connected —
-      // matches "company gets added to that user's accessible
-      // companies" and then behaves like any other switch.
-      await switchCompany(added.companyGuid);
-      onConnected?.(added);
+      // The connect call also switches the session to the connected company.
+      const connected = await connectCompany({ password });
+      onConnected?.(connected);
       onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not connect this company.");
@@ -45,13 +41,11 @@ export default function AddCompanyModal({ onClose, onConnected }) {
           </button>
         </div>
         <p className="mb-3 text-[13px] text-ink-500">
-          Uses your existing TallyPulse account — no new email required. Re-enter your password to
-          authorize connecting this company.
+          Uses your existing TallyPulse account — no new email required.
         </p>
         <p className="mb-5 text-[12.5px] text-ink-500">
-          <strong className="text-ink-700">Before you continue:</strong> open this company in
-          TallyPrime first. TallyPulse checks live that the GUID you enter below matches whatever
-          company is actually open right now, and won't connect it otherwise.
+          <strong className="text-ink-700">Before you continue:</strong> open the company you want
+          to connect in TallyPrime. TallyPulse detects it automatically.
         </p>
 
         {error && (
@@ -61,21 +55,6 @@ export default function AddCompanyModal({ onClose, onConnected }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            label="Company name"
-            icon={Building2}
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            required
-          />
-          <Input
-            label="Company GUID"
-            icon={Fingerprint}
-            hint="Found in TallyPrime under Company Info."
-            value={companyGuId}
-            onChange={(e) => setCompanyGuId(e.target.value)}
-            required
-          />
           <Input
             label="Your TallyPulse password"
             type="password"

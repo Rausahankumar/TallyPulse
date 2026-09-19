@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState } from "react
 import {
   loginAccount,
   registerAccount,
-  addCompanyToAccount,
+  connectCompany as connectCompanyRequest,
   switchActiveCompany,
   decodeJwtPayload,
 } from "../api/auth";
@@ -28,8 +28,8 @@ function sessionFromToken(token) {
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(() => sessionFromToken(getStoredToken()));
 
-  const login = useCallback(async ({ email, password, companyGuId }) => {
-    const result = await loginAccount({ email, password, companyGuId });
+  const login = useCallback(async ({ email, password }) => {
+    const result = await loginAccount({ email, password });
     setStoredToken(result.token);
     const next = sessionFromToken(result.token);
     setSession(next);
@@ -37,22 +37,26 @@ export function AuthProvider({ children }) {
   }, []);
 
   const register = useCallback(
-    async ({ name, email, password, companyName, companyGuId }) => {
-      await registerAccount({ name, email, password, companyName, companyGuId });
+    async ({ name, email, password }) => {
+      await registerAccount({ name, email, password });
       // Backend register doesn't return a token — log in immediately
-      // after so the new user lands straight in the app, matching the
-      // "register -> connect first company -> in you go" flow.
-      return login({ email, password, companyGuId });
+      // after. The new account has no company yet, so the app sends it
+      // straight to "Connect Tally".
+      return login({ email, password });
     },
     [login]
   );
 
-  // Adds a company to THIS SAME account (one user, multiple companies —
-  // never a second email/account). Re-supplies the account's existing
-  // password purely to authorize the action; the account identity comes
-  // from the already-stored JWT, not from anything in this call.
-  const addCompany = useCallback(async ({ password, companyName, companyGuId }) => {
-    return addCompanyToAccount({ password, companyName, companyGuId });
+  // Connects the company that is open in TallyPrime to THIS SAME account
+  // (one user, multiple companies — never a second email/account). The
+  // backend detects the company; the account's password is only needed
+  // from the second company on. The reply carries a session scoped to
+  // the connected company, which becomes the active session.
+  const connectCompany = useCallback(async ({ password } = {}) => {
+    const result = await connectCompanyRequest({ password });
+    setStoredToken(result.token);
+    setSession(sessionFromToken(result.token));
+    return result.data; // { companyGuid, companyName, created, reactivated }
   }, []);
 
   // Re-scopes the current session to a different company the account
@@ -73,8 +77,18 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({ session, isAuthenticated: !!session, login, register, addCompany, switchCompany, logout }),
-    [session, login, register, addCompany, switchCompany, logout]
+    () => ({
+      session,
+      isAuthenticated: !!session,
+      // A signed-in account that has not connected a company yet.
+      needsCompany: !!session && !session.companyGuid,
+      login,
+      register,
+      connectCompany,
+      switchCompany,
+      logout,
+    }),
+    [session, login, register, connectCompany, switchCompany, logout]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

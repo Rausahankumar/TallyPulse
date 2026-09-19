@@ -5,7 +5,7 @@ import { listAccessibleCompanies } from "../api/auth";
 const CompanyContext = createContext(null);
 
 export function CompanyProvider({ children }) {
-  const { session, switchCompany: authSwitchCompany, addCompany: authAddCompany } = useAuth();
+  const { session, switchCompany: authSwitchCompany, connectCompany: authConnectCompany } = useAuth();
   const [companies, setCompanies] = useState([]);
   const [companiesLoading, setCompaniesLoading] = useState(false);
   // Bumped on every explicit company switch. AppLayout re-keys its
@@ -15,7 +15,7 @@ export function CompanyProvider({ children }) {
   const [switchNonce, setSwitchNonce] = useState(0);
 
   const refreshCompanies = useCallback(async () => {
-    if (!session) {
+    if (!session || !session.companyGuid) {
       setCompanies([]);
       return;
     }
@@ -56,13 +56,16 @@ export function CompanyProvider({ children }) {
     [authSwitchCompany, refreshCompanies]
   );
 
-  const addCompany = useCallback(
-    async ({ password, companyName, companyGuId }) => {
-      const added = await authAddCompany({ password, companyName, companyGuId });
+  // "Connect Tally": the backend detects the open company. The connect call
+  // already switches the session to it, so bump the nonce like any switch.
+  const connectCompany = useCallback(
+    async ({ password } = {}) => {
+      const connected = await authConnectCompany({ password });
       await refreshCompanies();
-      return added;
+      setSwitchNonce((n) => n + 1);
+      return connected;
     },
-    [authAddCompany, refreshCompanies]
+    [authConnectCompany, refreshCompanies]
   );
 
   const value = useMemo(
@@ -72,10 +75,10 @@ export function CompanyProvider({ children }) {
       companiesLoading,
       switchNonce,
       switchCompany,
-      addCompany,
+      connectCompany,
       refreshCompanies,
     }),
-    [activeCompany, companies, companiesLoading, switchNonce, switchCompany, addCompany, refreshCompanies]
+    [activeCompany, companies, companiesLoading, switchNonce, switchCompany, connectCompany, refreshCompanies]
   );
 
   return <CompanyContext.Provider value={value}>{children}</CompanyContext.Provider>;

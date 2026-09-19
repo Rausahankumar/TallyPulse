@@ -3,42 +3,39 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const Company = require("../models/company");
 const UserCompanyAccess = require("../models/userCompanyAccess.model");
-const { verifyOpenTallyCompany } = require("../services/auth/tallyCompanyGuard");
+const { detectOpenTallyCompany } = require("../services/auth/tallyCompanyGuard");
 const { ensureCompanyForGuid } = require("../services/auth/companyIdentity");
 
+// A session token. `company` scopes it to one company; without it the token
+// only identifies the account (enough to connect a company, nothing else -
+// every data route needs a company context and refuses such a token).
+function signToken(user, company) {
+  const claims = { id: user._id.toString(), role: user.role };
+
+  if (company) {
+    claims.companyGuId = company.companyGuid;
+    claims.tenantId = company.tenantId;
+  }
+
+  return jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: "7d" });
+}
+
+// -----------------------------
+// REGISTER - account only. No company, GUID or tenant is asked for here: the
+// company is connected afterwards ("Connect Tally"), detected from Tally.
+// -----------------------------
 const register = async (req, res) => {
   try {
-    const {
-      name,
-      email,
-      password,
-      companyName,
-      companyGuId,
-    } = req.body;
+    const { name, email, password } = req.body;
 
-    // -----------------------------
-    // Basic validation
-    // -----------------------------
-    if (
-      !name ||
-      !email ||
-      !password ||
-      !companyName ||
-      !companyGuId
-    ) {
+    if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
-        message:
-          "name, email, password, companyName and companyGuId are required",
+        message: "name, email and password are required",
       });
     }
 
-    // -----------------------------
-    // Check existing user
-    // -----------------------------
-    const existingUser = await User.findOne({
-      email,
-    });
+    const existingUser = await User.findOne({ email });
 
     if (existingUser) {
       return res.status(400).json({
@@ -47,139 +44,20 @@ const register = async (req, res) => {
       });
     }
 
-    // -----------------------------
-    // Check existing company
-    // -----------------------------
-    const existingCompany = await Company.findOne({
-      companyGuid: companyGuId,
-    });
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // An INACTIVE company is not "already registered": the same GUID keeps
-    // its tenant (see ensureCompanyForGuid below).
-    if (existingCompany && existingCompany.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: "Company is already registered",
-      });
-    }
-
-    // -----------------------------
-    // Hash password
-    // -----------------------------
-    const hashedPassword = await bcrypt.hash(
-      password,
-      10
-    );
-
-    // -----------------------------
-    // Create Company (or reuse this GUID's existing tenant)
-    // -----------------------------
-    // The GUID keeps its tenant across remove/re-register, so already-synced
-    // data and checkpoints are not orphaned. Reusing an existing tenant is
-    // only allowed after live proof the company is open in Tally.
-    const ensured = await ensureCompanyForGuid({
-      companyGuid: companyGuId,
-      companyName,
-      proveTallyPossession: () => verifyOpenTallyCompany(companyGuId),
-    });
-
-    if (!ensured.ok) {
-      return res.status(ensured.status).json({
-        success: false,
-        message: ensured.message,
-      });
-    }
-
-    const company = ensured.company;
-    const tenantId = company.tenantId;
-
-    console.log("Company tenant:", {
-      tenantId,
-      created: ensured.created,
-      reactivated: ensured.reactivated,
-      tenantReused: ensured.tenantReused,
-    });
-
-    console.log(
-      "===== COMPANY CREATED ====="
-    );
-
-    console.log("Company ID:", company._id);
-    console.log(
-      "Company GUID:",
-      company.companyGuid
-    );
-    console.log(
-      "Company tenantId:",
-      company.tenantId
-    );
-
-    console.log(
-      "Company document:",
-      company.toObject()
-    );
-
-    console.log(
-      "==========================="
-    );
-
-    // -----------------------------
-    // Create User
-    // -----------------------------
-    const user = await User.create({
+    await User.create({
       name,
       email,
       password: hashedPassword,
-      companyName,
-      companyGuId,
-      companyId: company._id,
-      tenantId,
-    });
-
-    console.log(
-      "===== USER CREATED ====="
-    );
-
-    console.log("User ID:", user._id);
-    console.log("User email:", user.email);
-    console.log(
-      "User companyId:",
-      user.companyId
-    );
-    console.log(
-      "User companyGuId:",
-      user.companyGuId
-    );
-    console.log(
-      "User tenantId:",
-      user.tenantId
-    );
-
-    console.log(
-      "========================"
-    );
-
-    // Mirror the first company into the same join collection
-    // addCompany()/listCompanies() use below, so "every company this
-    // user can access" always has one consistent place to read from -
-    // including the one just created here at signup.
-    await UserCompanyAccess.create({
-      userId: user._id,
-      companyId: company._id,
-      companyGuid: company.companyGuid,
-      tenantId: company.tenantId,
     });
 
     return res.status(201).json({
       success: true,
       message: "User registered",
     });
-
   } catch (err) {
-    console.error(
-      "REGISTER ERROR:",
-      err
-    );
+    console.error("REGISTER ERROR:", err);
 
     return res.status(500).json({
       success: false,
@@ -188,35 +66,25 @@ const register = async (req, res) => {
   }
 };
 
-
 // -----------------------------
-// LOGIN
+// LOGIN - email + password. The session opens on the account's default
+// company; an account that has not connected a company yet gets a token
+// without one (`hasCompany: false`) and is sent to "Connect Tally".
 // -----------------------------
 const login = async (req, res) => {
   try {
-    const {
-      email,
-      password,
-      companyGuId,
-    } = req.body;
+    const { email, password } = req.body;
 
-    const user = await User.findOne({
-      email,
-      companyGuId,
-    });
+    const user = email ? await User.findOne({ email }) : null;
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message:
-          "Invalid credentials or company GUID",
+        message: "Invalid credentials",
       });
     }
 
-    const matched = await bcrypt.compare(
-      password,
-      user.password
-    );
+    const matched = await bcrypt.compare(password || "", user.password);
 
     if (!matched) {
       return res.status(401).json({
@@ -225,80 +93,19 @@ const login = async (req, res) => {
       });
     }
 
-    console.log(
-      "===== LOGIN DEBUG ====="
-    );
-
-    console.log("User ID:", user._id);
-    console.log("Email:", user.email);
-    console.log(
-      "Company GUID:",
-      user.companyGuId
-    );
-    console.log(
-      "Tenant ID:",
-      user.tenantId
-    );
-    console.log(
-      "Role:",
-      user.role
-    );
-
-    console.log(
-      "======================="
-    );
-
-    // companyGuId is the company context.
-    // companyId is NOT required in JWT.
-    const token = jwt.sign(
-      {
-        id: user._id.toString(),
-        companyGuId: user.companyGuId,
-        tenantId: user.tenantId,
-        role: user.role,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "7d",
-      }
-    );
-
-    const decodedToken =
-      jwt.decode(token);
-
-    console.log(
-      "===== JWT DEBUG ====="
-    );
-
-    console.log(
-      "JWT Payload:",
-      decodedToken
-    );
-
-    console.log(
-      "JWT Company GUID:",
-      decodedToken?.companyGuId
-    );
-
-    console.log(
-      "JWT Tenant ID:",
-      decodedToken?.tenantId
-    );
-
-    console.log(
-      "====================="
-    );
+    // Same live-record rule as everywhere else: the company claims come from
+    // the Company record, never from a copy on the user.
+    const company = user.companyGuId
+      ? await Company.findOne({ companyGuid: user.companyGuId }).lean()
+      : null;
 
     return res.json({
       success: true,
-      token,
+      token: signToken(user, company),
+      hasCompany: Boolean(company),
     });
-
   } catch (err) {
-    console.error(
-      "LOGIN ERROR:",
-      err
-    );
+    console.error("LOGIN ERROR:", err);
 
     return res.status(500).json({
       success: false,
@@ -307,26 +114,31 @@ const login = async (req, res) => {
   }
 };
 
+// Friendly text for a Tally detection failure.
+const TALLY_DETECTION_ERRORS = {
+  unreachable: { status: 503, message: "TallyPrime is unreachable. Make sure TallyPrime is running and try again." },
+  no_company_open: { status: 400, message: "Please open your company in TallyPrime and try again." },
+  multiple_open: { status: 409, message: "More than one company is open in TallyPrime. Keep only the company you want to connect open and try again." },
+};
 
 // --------------------------------------------------
-// ADD COMPANY - connect an additional company to the CURRENT
-// (already-authenticated) account. Product rule: this must never
-// require a second TallyPulse account/email - the caller is already
-// identified by their JWT (req.user.id, set by the auth middleware);
-// they re-supply their existing password only to authorize the action
-// (same pattern as re-entering a password to add a workspace in other
-// SaaS products), not to create or look up a different user.
+// CONNECT COMPANY ("Connect Tally") - attach the company that is open in
+// TallyPrime right now to the CURRENT (already-authenticated) account. The
+// user never supplies a GUID or a name: the backend reads them from Tally, and
+// the GUID stays an internal identity (companyIdentity.js decides whether a
+// tenant is created, reused or reactivated, and whether this account is
+// allowed to have it at all).
+//
+//   - the first company needs only the session; further companies also need
+//     the account password again (re-authorization, as before)
+//   - a body `companyGuId`, if a client still sends one, is only an assertion:
+//     it must equal the company Tally reports, never a way to pick another one
+//   - reconnecting a company the account already has is fine and returns a
+//     session scoped to it
 // --------------------------------------------------
 const addCompany = async (req, res) => {
   try {
-    const { password, companyName, companyGuId } = req.body;
-
-    if (!password || !companyName || !companyGuId) {
-      return res.status(400).json({
-        success: false,
-        message: "password, companyName and companyGuId are required",
-      });
-    }
+    const { password, companyGuId: assertedGuid } = req.body || {};
 
     const user = await User.findById(req.user.id);
 
@@ -337,41 +149,47 @@ const addCompany = async (req, res) => {
       });
     }
 
-    const matched = await bcrypt.compare(password, user.password);
+    const hasCompany =
+      Boolean(user.companyGuId) || (await UserCompanyAccess.exists({ userId: user._id })) !== null;
 
-    if (!matched) {
-      return res.status(401).json({
+    if (hasCompany) {
+      const matched = password ? await bcrypt.compare(password, user.password) : false;
+
+      if (!matched) {
+        return res.status(401).json({
+          success: false,
+          message: password ? "Incorrect password." : "Your password is required to connect another company.",
+        });
+      }
+    }
+
+    // Detected live from Tally - the source of the company's identity.
+    const detection = await detectOpenTallyCompany();
+
+    if (!detection.ok) {
+      const known = TALLY_DETECTION_ERRORS[detection.reason];
+
+      return res.status(known ? known.status : 400).json({
         success: false,
-        message: "Incorrect password.",
+        message: known ? known.message : detection.message,
       });
     }
 
-    // Safety gate (product rule): the requested companyGuId must be the
-    // company Tally itself currently has open right now - checked live,
-    // on the backend, never trusted from the client alone. This is what
-    // stops "Tally has Company A open, user typed Company B's GUID" from
-    // silently succeeding.
-    const guard = await verifyOpenTallyCompany(companyGuId);
+    const detected = detection.match;
 
-    if (!guard.ok) {
-      const status = guard.reason === "unreachable" ? 503 : 400;
-      return res.status(status).json({
+    if (assertedGuid && assertedGuid !== detected.guid) {
+      return res.status(400).json({
         success: false,
-        message: guard.message,
+        message:
+          "The company currently open in TallyPrime does not match the Company GUID you entered. Please open the correct company in TallyPrime and try again.",
       });
     }
 
-    // Reuse the Company record if this GUID is already registered
-    // (e.g. a teammate connecting to the same real Tally company);
-    // otherwise create it fresh - same shape register() creates.
-    // An inactive/removed company keeps its tenant (and therefore its
-    // checkpoints and data): see ensureCompanyForGuid. Tally possession was
-    // just proven by the guard above.
     const ensured = await ensureCompanyForGuid({
-      companyGuid: companyGuId,
-      companyName,
+      companyGuid: detected.guid,
+      companyName: detected.name || "Tally Company",
       requesterUserId: user._id,
-      proveTallyPossession: async () => guard,
+      proveTallyPossession: async () => detection,
     });
 
     if (!ensured.ok) {
@@ -388,45 +206,39 @@ const addCompany = async (req, res) => {
       companyGuid: company.companyGuid,
     });
 
-    if (existingAccess) {
-      // A previous member reconnecting a deactivated company: it was just
-      // reactivated above with its tenant, checkpoints and data intact.
-      if (ensured.reactivated) {
-        return res.status(200).json({
-          success: true,
-          message: "Company reactivated.",
-          data: {
-            companyGuid: company.companyGuid,
-            companyName: company.companyName,
-            tenantId: company.tenantId,
-          },
-        });
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: "This company is already connected to your account.",
+    if (!existingAccess) {
+      await UserCompanyAccess.create({
+        userId: user._id,
+        companyId: company._id,
+        companyGuid: company.companyGuid,
+        tenantId: company.tenantId,
       });
     }
 
-    await UserCompanyAccess.create({
-      userId: user._id,
-      companyId: company._id,
-      companyGuid: company.companyGuid,
-      tenantId: company.tenantId,
-    });
+    // The first company becomes the account's default (what login opens on).
+    if (!user.companyGuId) {
+      user.companyName = company.companyName;
+      user.companyGuId = company.companyGuid;
+      user.companyId = company._id;
+      user.tenantId = company.tenantId;
+      await user.save();
+    }
 
-    return res.status(201).json({
+    const alreadyConnected = Boolean(existingAccess) && !ensured.reactivated;
+
+    return res.status(alreadyConnected ? 200 : 201).json({
       success: true,
-      message: "Company connected.",
+      message: alreadyConnected ? "Company reconnected." : "Company connected.",
+      token: signToken(user, company),
       data: {
         companyGuid: company.companyGuid,
         companyName: company.companyName,
-        tenantId: company.tenantId,
+        created: ensured.created,
+        reactivated: ensured.reactivated,
       },
     });
   } catch (err) {
-    console.error("ADD COMPANY ERROR:", err);
+    console.error("CONNECT COMPANY ERROR:", err);
 
     return res.status(500).json({
       success: false,
@@ -436,10 +248,9 @@ const addCompany = async (req, res) => {
 };
 
 // --------------------------------------------------
-// LIST COMPANIES the current user can access - their original
-// registration company (always allowed, even for accounts created
-// before this join collection existed) plus anything added via
-// addCompany() above.
+// LIST COMPANIES the current user can access - their default company (always
+// allowed, even for accounts created before the join collection existed) plus
+// every company connected via addCompany() above.
 // --------------------------------------------------
 const listCompanies = async (req, res) => {
   try {
@@ -454,7 +265,7 @@ const listCompanies = async (req, res) => {
 
     const accessRows = await UserCompanyAccess.find({ userId: user._id }).lean();
     const guids = new Set(accessRows.map((row) => row.companyGuid));
-    guids.add(user.companyGuId);
+    if (user.companyGuId) guids.add(user.companyGuId);
 
     const companies = await Company.find({
       companyGuid: { $in: [...guids] },
@@ -465,7 +276,6 @@ const listCompanies = async (req, res) => {
       data: companies.map((c) => ({
         companyGuid: c.companyGuid,
         companyName: c.companyName,
-        tenantId: c.tenantId,
         isActive: c.isActive,
         isDefault: c.companyGuid === user.companyGuId,
       })),
@@ -534,20 +344,9 @@ const switchCompany = async (req, res) => {
       });
     }
 
-    const token = jwt.sign(
-      {
-        id: user._id.toString(),
-        companyGuId: company.companyGuid,
-        tenantId: company.tenantId,
-        role: user.role,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
     return res.status(200).json({
       success: true,
-      token,
+      token: signToken(user, company),
     });
   } catch (err) {
     console.error("SWITCH COMPANY ERROR:", err);
@@ -569,6 +368,13 @@ const switchCompany = async (req, res) => {
 const updateCompanyName = async (req, res) => {
   try {
     const { companyName } = req.body;
+
+    if (!req.user.companyGuId) {
+      return res.status(401).json({
+        success: false,
+        message: "No company is connected to this session.",
+      });
+    }
 
     if (!companyName || !companyName.trim()) {
       return res.status(400).json({
@@ -595,7 +401,6 @@ const updateCompanyName = async (req, res) => {
       data: {
         companyGuid: company.companyGuid,
         companyName: company.companyName,
-        tenantId: company.tenantId,
       },
     });
   } catch (err) {

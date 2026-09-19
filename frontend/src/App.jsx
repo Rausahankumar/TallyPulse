@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
+import ConnectCompany from "./pages/auth/ConnectCompany";
 import ProtectedRoute from "./components/layout/ProtectedRoute";
 import GuestRoute from "./components/layout/GuestRoute";
 import AppLayout from "./components/layout/AppLayout";
@@ -22,6 +23,8 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
       </Route>
+
+      <Route path="/connect-company" element={<ConnectCompany />} />
 
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>

@@ -55,7 +55,6 @@ export default function Settings() {
 }
 
 function CompanyTab() {
-  const { session } = useAuth();
   const { activeCompany, companies, switchCompany, refreshCompanies } = useCompany();
   const [companyName, setCompanyName] = useState("");
   const [savedNote, setSavedNote] = useState(null);
@@ -89,8 +88,6 @@ function CompanyTab() {
         <CardHeader title="Company Information" subtitle="Basic details about your active company." />
         <form onSubmit={handleSave} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Input label="Company Name" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
-          <Input label="Tally Company GUID" value={session?.companyGuid || ""} disabled />
-          <Input label="Tenant ID" value={session?.tenantId || ""} disabled />
           <Input label="Status" value="Active" disabled />
           <div className="sm:col-span-2">
             {error && <p className="mb-3 text-[12.5px] text-danger-600">{error}</p>}
@@ -131,7 +128,6 @@ function CompanyTab() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13.5px] font-medium text-ink-900">{c.companyName}</p>
-                  <p className="truncate text-[12px] text-ink-500">{c.companyGuid}</p>
                 </div>
                 {isActive ? (
                   <Badge tone="brand">Active</Badge>
@@ -203,8 +199,7 @@ function TallyTab() {
       <p className="mt-4 text-[12.5px] text-ink-500">
         TallyPulse currently connects to one TallyPrime instance via its HTTP/JSONEx gateway,
         configured server-side with <code className="rounded bg-surface-alt px-1 py-0.5">TALLY_URL</code>.
-        Verification compares Tally's reported company name — Tally's API doesn't expose a company
-        GUID here, so this can't be a GUID-level check.
+        This check compares the company name Tally reports with the one connected here.
       </p>
     </Card>
   );

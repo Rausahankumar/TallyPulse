@@ -84,7 +84,7 @@ export async function evaluateTallyConnection(expectedCompanyName) {
       return {
         state: "mismatch",
         tallyCompanyName,
-        message: `TallyPrime is reachable, but it has "${tallyCompanyName}" open, not "${expectedCompanyName}". This can't be verified by GUID - Tally's API doesn't expose one here - so double-check the right company is open in Tally.`,
+        message: `TallyPrime is reachable, but it has "${tallyCompanyName}" open, not "${expectedCompanyName}". Open the right company in TallyPrime and try again.`,
       };
     }
   }
