@@ -23,9 +23,14 @@ const { recoverMissingVouchers } = require("./voucherRecovery");
 //
 // Gates, all cheap (no Tally call) except the last:
 //   1. reconciliation succeeded (a failed/unsafe/skipped pass repairs nothing)
-//   2. mismatch signal: Tally has clearly more vouchers than MongoDB has
-//      active (cancelled vouchers legitimately explain a small gap, so the
-//      signal is a threshold, and the recovery pass itself decides exactly)
+//   2. exact GUID difference: the GUID set Tally just reported minus the GUIDs
+//      MongoDB holds for this tenant and voucher type (any status, so a
+//      voucher reconciliation marked deleted is not "missing"). Counts are
+//      never compared - only identities. No missing GUID = nothing to do and
+//      no further Tally query. Tally's list also contains cancelled vouchers,
+//      which are never stored, so the candidates can include permanent
+//      non-candidates; the recovery pass below reads Tally's cancelled flag
+//      and settles it exactly.
 //   3. SyncCheckpoint.lastAlterId > 0 - a company still on its first sync is
 //      the normal sync's job, not a mismatch
 //   4. cooldown after a no-op/failed/refused attempt, so the same gap is not
@@ -38,7 +43,6 @@ const { recoverMissingVouchers } = require("./voucherRecovery");
 
 const DEFAULT_CONFIG = {
   enabled: process.env.SELF_HEAL_ENABLED !== "false",
-  minGapRatio: Number(process.env.SELF_HEAL_MIN_GAP_RATIO) || 0.02,
   cooldownMinutes: Number(process.env.SELF_HEAL_COOLDOWN_MINUTES) || 360,
   maxBatches: Number(process.env.SELF_HEAL_MAX_BATCHES) || 3,
   // undefined = the same batch size the incremental sync uses
@@ -57,6 +61,7 @@ function skip(reason) {
  * @param {Object} params
  * @param {Object} params.company - Company document (tenantId, companyGuid, ...)
  * @param {string} params.voucherType - "Sales" | "Purchase"
+ * @param {import('mongoose').Model} params.Model - Sale or Purchase
  * @param {Object} params.reconcileResult - result of reconcileVoucherType
  * @param {Object} [params.checkpoint] - the ReconciliationCheckpoint document
  *   (carries the repair marker from the previous attempt)
@@ -69,6 +74,7 @@ function skip(reason) {
 async function maybeSelfHeal({
   company,
   voucherType,
+  Model,
   reconcileResult,
   checkpoint,
   config = {},
@@ -86,17 +92,26 @@ async function maybeSelfHeal({
       return skip("reconciliation_not_successful");
     }
 
-    const tallyCount = reconcileResult.tallyGuidCount;
-    const mongoActive =
-      (reconcileResult.mongoActiveCount || 0) - (reconcileResult.markedDeletedCount || 0);
+    const tallyGuids = reconcileResult.tallyGuids;
 
-    if (!Number.isFinite(tallyCount) || tallyCount <= 0) return skip("no_tally_vouchers");
+    if (!(tallyGuids instanceof Set) || tallyGuids.size === 0) return skip("no_tally_vouchers");
+    if (!company || !company.tenantId || !Model) return skip("no_tenant_scope");
 
-    const gap = tallyCount - mongoActive;
+    // One query, this tenant only.
+    const heldDocs = await Model.find({
+      tenantId: company.tenantId,
+      tallyGuid: { $type: "string" },
+    })
+      .select("tallyGuid")
+      .lean();
+    const held = new Set(heldDocs.map((d) => d.tallyGuid));
 
-    if (gap < Math.max(1, Math.ceil(cfg.minGapRatio * tallyCount))) {
-      return skip("no_mismatch");
+    let candidates = 0;
+    for (const guid of tallyGuids) {
+      if (!held.has(guid)) candidates += 1;
     }
+
+    if (candidates === 0) return skip("no_missing_guids");
 
     const syncCheckpoint = await SyncCheckpointModel.findOne({
       tenantId: company.tenantId,
@@ -141,6 +156,7 @@ async function maybeSelfHeal({
       attempted: true,
       outcome,
       result,
+      candidates,
       update: {
         selfHealLastAttemptAt: now,
         selfHealLastOutcome: outcome,

@@ -215,6 +215,9 @@ async function reconcileVoucherType({
     mongoActiveCount: mongoActiveGuids.length,
     markedDeletedCount,
     markedDeletedGuids: missingGuids,
+    // The exact set Tally reported (cancelled vouchers included). The
+    // self-heal step diffs it against MongoDB by GUID; it is never persisted.
+    tallyGuids,
   };
 }
 

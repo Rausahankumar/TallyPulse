@@ -225,6 +225,7 @@ async function runReconciliationForCompanyModule(
   const heal = await maybeSelfHeal({
     company,
     voucherType,
+    Model,
     reconcileResult: result,
     checkpoint,
     deps: module_.selfHealDeps,
