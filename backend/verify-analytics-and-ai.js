@@ -18,14 +18,15 @@
  *   dev tenant's identity having been recreated under a different
  *   tenantId/companyGuid pair).
  *
- *   SYNTHETIC, genuinely needs TENANT_A's real history
- *   (testTrustEnvelope): the "real data -> valid_data/sync_failed" checks
- *   specifically need a tenant with real prior sync/checkpoint history to
- *   distinguish those states from "no_usable_data" (a never-synced
- *   tenant) - that's the whole point of the test, so it deliberately
- *   keeps using TENANT_A rather than an isolated fixture with no history
- *   at all. (Its one pre-existing "stale_data" FAIL is a separate,
- *   unrelated freshness-threshold issue, not addressed here.)
+ *   SYNTHETIC, seeded fixture (testTrustEnvelope): freshness is derived
+ *   from the tenant's SyncCheckpoint, so each trust state (valid_data,
+ *   zero_result, stale_data, sync_failed) is produced deterministically
+ *   from one seeded Sale plus a controlled checkpoint under the isolated
+ *   SYNTHETIC_TENANT. It previously read TENANT_A's real checkpoint,
+ *   which is frozen now that no worker syncs that orphaned tenant, so
+ *   the "real data" check could only ever return stale_data. The
+ *   never-synced and analytics_error checks need no history and are
+ *   unchanged.
  *
  *   SYNTHETIC/STRUCTURAL, needs a REAL Company document
  *   (testCompanyContext): resolveAuthorizedCompany() does a genuine
@@ -67,6 +68,8 @@ const mongoose = require("mongoose");
 
 const Company = require("./src/models/company");
 const Purchase = require("./src/models/purchase.model");
+const Sale = require("./src/models/sales.model");
+const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 const { processSinglePurchaseVoucher } = require("./src/services/import/tallyPurchaseImport");
 const { resolveAuthorizedCompany } = require("./src/services/auth/companyContext");
 const { buildVoucherMatchStage } = require("./src/services/analytics/analyticsScope");
@@ -86,7 +89,45 @@ const TENANT_A = "6a8e75cdf5f2a9694ed20472";
 const SYNTHETIC_TENANT = "verify-analytics-ai-tenant";
 const SYNTHETIC_COMPANY_GUID = "verify-analytics-ai-company-guid";
 
+// One Sale + a fresh, successful Sales checkpoint for the synthetic
+// tenant; testTrustEnvelope then ages/fails the checkpoint to reach the
+// other freshness states. Removed by cleanupSyntheticCompany().
+async function seedTrustEnvelopeFixture() {
+  await cleanupSyntheticData();
+  await Sale.create({
+    tenantId: SYNTHETIC_TENANT,
+    header: {
+      voucherNo: "VERIFY-TRUST-1",
+      voucherDate: new Date("2026-09-01"),
+      voucherType: "Sales",
+      voucherTotalAmount: 100,
+      partyName: "Verify Trust Party",
+    },
+    inventory: [],
+    ledgers: [],
+    tallyGuid: "verify-trust-guid-1",
+    tallyAlterId: 1,
+    voucherStatus: "active",
+  });
+  await SyncCheckpoint.create({
+    tenantId: SYNTHETIC_TENANT,
+    companyGuid: SYNTHETIC_COMPANY_GUID,
+    voucherType: "Sales",
+    lastAlterId: 1,
+    lastRunStatus: "success",
+    lastSyncedAt: new Date(),
+    isRunning: false,
+    lockedAt: null,
+  });
+}
+
+async function cleanupSyntheticData() {
+  await Sale.deleteMany({ tenantId: SYNTHETIC_TENANT });
+  await SyncCheckpoint.deleteMany({ tenantId: SYNTHETIC_TENANT });
+}
+
 async function setupSyntheticCompany() {
+  await cleanupSyntheticData();
   await Company.deleteOne({ companyGuid: SYNTHETIC_COMPANY_GUID });
   await Company.create({
     companyName: "Verify Analytics AI Test Co",
@@ -98,6 +139,7 @@ async function setupSyntheticCompany() {
 }
 
 async function cleanupSyntheticCompany() {
+  await cleanupSyntheticData();
   await Company.deleteOne({ companyGuid: SYNTHETIC_COMPANY_GUID });
 }
 
@@ -172,26 +214,35 @@ async function testTrustEnvelope() {
   const wide = dateRanges.customRange("2020-01-01", "2030-01-01");
   const empty = dateRanges.customRange("1999-01-01", "1999-02-01");
 
-  // NOTE: these two checks accept either the "Tally currently reachable"
-  // state or "sync_failed" - this script's own dev-environment Tally
-  // connectivity fluctuates independently of the code being verified,
-  // and "sync_failed" is itself a CORRECT state to see if the last
-  // background sync tick genuinely failed. What matters is that the
-  // state is one of the two honest possibilities, never a silent
-  // fabrication.
-  const valid = await wrapAnalyticsResult({ tenantId: TENANT_A, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(TENANT_A, wide) });
-  check(
-    "real data -> valid_data (or honestly sync_failed if Tally is currently unreachable)",
-    valid.state === "valid_data" || valid.state === "sync_failed",
-    valid.state
-  );
+  // Freshness comes from the tenant's SyncCheckpoint, so these checks
+  // used to depend on a live background worker keeping TENANT_A's
+  // checkpoint fresh. That tenant is orphaned (no Company document, so
+  // no worker syncs it) and its checkpoint is frozen, so the "real data"
+  // check could only ever return stale_data. Now each state is produced
+  // deterministically from a seeded fixture under the isolated
+  // SYNTHETIC_TENANT: one Sale plus a controlled Sales checkpoint.
+  await seedTrustEnvelopeFixture();
 
-  const zero = await wrapAnalyticsResult({ tenantId: TENANT_A, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(TENANT_A, empty) });
-  check(
-    "empty period -> zero_result (or honestly sync_failed if Tally is currently unreachable)",
-    zero.state === "zero_result" || zero.state === "sync_failed",
-    zero.state
+  const valid = await wrapAnalyticsResult({ tenantId: SYNTHETIC_TENANT, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(SYNTHETIC_TENANT, wide) });
+  check("real data + fresh sync -> valid_data", valid.state === "valid_data", valid.state);
+
+  const zero = await wrapAnalyticsResult({ tenantId: SYNTHETIC_TENANT, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(SYNTHETIC_TENANT, empty) });
+  check("empty period + fresh sync -> zero_result", zero.state === "zero_result", zero.state);
+
+  const STALE_MINUTES = 20; // beyond the 15-minute default freshness threshold
+  await SyncCheckpoint.updateOne(
+    { tenantId: SYNTHETIC_TENANT, companyGuid: SYNTHETIC_COMPANY_GUID, voucherType: "Sales" },
+    { $set: { lastSyncedAt: new Date(Date.now() - STALE_MINUTES * 60 * 1000) } }
   );
+  const stale = await wrapAnalyticsResult({ tenantId: SYNTHETIC_TENANT, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(SYNTHETIC_TENANT, wide) });
+  check("real data + sync older than the freshness threshold -> stale_data", stale.state === "stale_data", stale.state);
+
+  await SyncCheckpoint.updateOne(
+    { tenantId: SYNTHETIC_TENANT, companyGuid: SYNTHETIC_COMPANY_GUID, voucherType: "Sales" },
+    { $set: { lastSyncedAt: new Date(), lastRunStatus: "failed", lastError: "verify: simulated failure" } }
+  );
+  const failed = await wrapAnalyticsResult({ tenantId: SYNTHETIC_TENANT, voucherType: "Sales", run: () => salesAnalytics.getSalesSummary(SYNTHETIC_TENANT, wide) });
+  check("real data + last sync failed -> sync_failed", failed.state === "sync_failed", failed.state);
 
   const neverSynced = await wrapAnalyticsResult({ tenantId: "verify-never-synced-tenant", voucherType: "Sales", run: () => salesAnalytics.getSalesSummary("verify-never-synced-tenant", wide) });
   check("never-synced tenant -> no_usable_data (not zero_result)", neverSynced.state === "no_usable_data", neverSynced.state);
