@@ -55,7 +55,8 @@ function startStubVoucherTypeServer() {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(responseBody));
+      // The worker now verifies the open Tally company first, so the stub must also report this test company as the open one.
+      res.end(JSON.stringify(req.headers.id === "RTS Company Guid Collection" ? { status: "1", data: { collection: [{ name: { value: "Perf Test Co" }, guid: { value: COMPANY_GUID } }] } } : responseBody));
     });
   });
 

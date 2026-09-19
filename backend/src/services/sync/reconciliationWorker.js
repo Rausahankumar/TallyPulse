@@ -12,6 +12,7 @@ const { reconcileVoucherType } = require("./reconciliation");
 const {
   resolveVoucherTypeClassification,
 } = require("../tally/voucherTypeClassifier");
+const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
 
 // --------------------------------------------------
 // Background reconciliation worker - the deletion safety-net described
@@ -109,6 +110,15 @@ async function releaseLock(tenantId, companyGuid, voucherType, update) {
   );
 }
 
+// Releases the lock and nothing else - used when a run is skipped, so the
+// last real result (status, error, counts, lastRunAt) is preserved.
+async function releaseLockWithoutResult(tenantId, companyGuid, voucherType) {
+  await ReconciliationCheckpoint.findOneAndUpdate(
+    { tenantId, companyGuid, voucherType },
+    { $set: { isRunning: false, lockedAt: null } }
+  );
+}
+
 // Runs one reconciliation pass for a single {company, voucher type}.
 // Never throws.
 async function runReconciliationForCompanyModule(
@@ -129,6 +139,41 @@ async function runReconciliationForCompanyModule(
   }
 
   const baseUrl = resolveTallyBaseUrl(company);
+
+  // Company guard (same rule and helper as tallySyncWorker.js): Tally serves
+  // one open company, so without this a tenant's MongoDB would be compared
+  // against a DIFFERENT company's voucher GUIDs, and only the mass-delete
+  // threshold would stand between that and wrongly marking vouchers deleted.
+  // Checked live, before classification or any GUID fetch.
+  //   - a different company (or none) open is routine in a multi-company
+  //     setup: skip quietly. The lock is released but the last REAL
+  //     reconciliation result is left exactly as it was - no fake "success",
+  //     no "aborted_unsafe", no lastRunAt bump - and nothing is compared or
+  //     marked deleted.
+  //   - Tally unreachable is a genuine problem: recorded as "failed", like
+  //     any other Tally fetch failure.
+  const guard = await verifyOpenTallyCompany(companyGuid, { baseUrl });
+
+  if (!guard.ok) {
+    if (guard.reason === "unreachable") {
+      await releaseLock(tenantId, companyGuid, voucherType, {
+        lastRunStatus: "failed",
+        lastError: guard.message,
+      });
+
+      return {
+        status: "failed",
+        reason: guard.message,
+        tallyGuidCount: null,
+        mongoActiveCount: null,
+        markedDeletedCount: 0,
+      };
+    }
+
+    await releaseLockWithoutResult(tenantId, companyGuid, voucherType);
+
+    return { skipped: true, reason: "company_not_open", detail: guard.message };
+  }
 
   // Same generic Sales/Purchase voucher-type discovery tallySyncWorker.js
   // uses (shared cache, keyed by companyGuid) - never a per-customer

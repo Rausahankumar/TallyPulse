@@ -179,7 +179,8 @@ function startStubVoucherTypeServer() {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(responseBody));
+      // The worker now verifies the open Tally company first (see reconciliationWorker.js), so the stub must also report this test company as the open one.
+      res.end(JSON.stringify(req.headers.id === "RTS Company Guid Collection" ? { status: "1", data: { collection: [{ name: { value: "Verify Reconciliation Co" }, guid: { value: RECON_TEST_COMPANY_GUID } }] } } : responseBody));
     });
   });
 
