@@ -12,8 +12,8 @@
  * works against Tally's actual current state.
  *
  * Run: node verify-company-guid-match.js
- * Requires the backend's own HTTP server running on PORT (default 5000)
- * AND a live, reachable TallyPrime instance with a company open.
+ * Requires the backend's own HTTP server running on PORT (default 5000), on
+ * the current code, AND a live, reachable TallyPrime instance with a company open.
  */
 
 require("dotenv").config();
@@ -121,57 +121,54 @@ async function main() {
     JSON.stringify(s4)
   );
 
-  console.log("\n=== Full HTTP flow: addCompany enforces the same gate for real accounts ===");
+  console.log("\n=== Full HTTP flow: Connect Tally uses the live company, never a typed GUID ===");
   const registerRes = await client.post("/auth/register", {
     name: "Verify Guid Match",
     email: EMAIL,
     password: PASSWORD,
-    companyName: "Verify Reg Company",
-    companyGuId: REG_GUID,
   });
-  check("setup: register succeeds", registerRes.status === 201, JSON.stringify(registerRes.data));
+  check("setup: register succeeds with no company details", registerRes.status === 201, JSON.stringify(registerRes.data));
 
-  const loginRes = await client.post("/auth/login", { email: EMAIL, password: PASSWORD, companyGuId: REG_GUID });
+  const loginRes = await client.post("/auth/login", { email: EMAIL, password: PASSWORD });
   const authHeaders = { headers: { Authorization: `Bearer ${loginRes.data.token}` } };
 
+  // A client that still sends a GUID can only ASSERT it: it must be the company
+  // Tally reports as open, exactly like the guard's Scenario 2.
   const addWrongRes = await client.post(
     "/auth/companies",
-    { password: PASSWORD, companyName: otherCompany?.companyName || "Other Co", companyGuId: OTHER_GUID },
+    { companyGuId: OTHER_GUID },
     authHeaders
   );
   check(
-    "HTTP addCompany rejects the real-but-not-open company (400, exact message)",
+    "HTTP connect rejects a real-but-not-open company GUID (400, exact message)",
     addWrongRes.status === 400 &&
       addWrongRes.data?.message ===
         "The company currently open in TallyPrime does not match the Company GUID you entered. Please open the correct company in TallyPrime and try again.",
     JSON.stringify(addWrongRes.data)
   );
 
-  const addRightRes = await client.post(
-    "/auth/companies",
-    { password: PASSWORD, companyName: LIVE_NAME, companyGuId: LIVE_GUID },
-    authHeaders
+  // The live company already belongs to real accounts in this environment, and
+  // this throwaway account is not one of them: being able to open it in Tally
+  // must not hand it over.
+  const liveCompanyDoc = await Company.findOne({ companyGuid: LIVE_GUID }).lean();
+  const liveOwned = liveCompanyDoc
+    ? (await UserCompanyAccess.countDocuments({ companyGuid: LIVE_GUID })) > 0 ||
+      (await User.countDocuments({ companyGuId: LIVE_GUID })) > 0
+    : false;
+  const addRightRes = await client.post("/auth/companies", {}, authHeaders);
+  if (liveOwned) {
+    check(
+      "HTTP connect of the open company by a stranger is refused (403), never handed over",
+      addRightRes.status === 403 && /don't have access/i.test(addRightRes.data?.message || ""),
+      JSON.stringify(addRightRes.data)
+    );
+  } else {
+    check("HTTP connect succeeds for the ACTUALLY open company (nobody owns it yet)", addRightRes.status === 201, JSON.stringify(addRightRes.data));
+  }
+  check(
+    "the response never contains a tenant id",
+    !JSON.stringify(addRightRes.data).includes("tenantId")
   );
-  check("HTTP addCompany succeeds for the ACTUALLY open company", addRightRes.status === 201, JSON.stringify(addRightRes.data));
-
-  console.log("\n=== Scenario 5: added company appears immediately in the company selector ===");
-  const listRes = await client.get("/auth/companies", authHeaders);
-  const listedGuids = (listRes.data.data || []).map((c) => c.companyGuid);
-  check("newly added company appears in listCompanies immediately", listedGuids.includes(LIVE_GUID), JSON.stringify(listedGuids));
-
-  console.log("\n=== Scenario 6: switching A -> B -> A gives correct company-scoped JWT each time ===");
-  const switchToB = await client.post("/auth/switch-company", { companyGuId: LIVE_GUID }, authHeaders);
-  const decodedB = JSON.parse(Buffer.from(switchToB.data.token.split(".")[1], "base64url").toString());
-  check("switch A -> B: JWT scoped to B", decodedB.companyGuId === LIVE_GUID, JSON.stringify(decodedB));
-
-  const switchBackToA = await client.post(
-    "/auth/switch-company",
-    { companyGuId: REG_GUID },
-    { headers: { Authorization: `Bearer ${switchToB.data.token}` } }
-  );
-  const decodedA = JSON.parse(Buffer.from(switchBackToA.data.token.split(".")[1], "base64url").toString());
-  check("switch B -> A: JWT scoped back to A", decodedA.companyGuId === REG_GUID, JSON.stringify(decodedA));
-  check("same user id preserved across both switches", decodedB.id === decodedA.id);
 
   console.log("\n=== Sales Sync guard: the actual leak this closes ===");
   // Real evidence found in this environment's existing data: Company A's
