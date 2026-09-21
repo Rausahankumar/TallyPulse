@@ -1,5 +1,6 @@
 const { extractVoucherCollection } = require("../import/tallySalesImport");
 const { unwrapJsonExValue } = require("../parser/tallyParser");
+const { validateBatchOwnership, logMismatch } = require("../tally/companyOwnership");
 
 // --------------------------------------------------
 // Reconciliation safety-net: catches deletions the AlterID incremental
@@ -36,8 +37,10 @@ const DEFAULT_MAX_DELETE_RATIO =
   Number(process.env.RECONCILIATION_MAX_DELETE_RATIO) || 0.5;
 
 function extractGuidSet(parsedPayload) {
-  const vouchers = extractVoucherCollection(parsedPayload);
+  return guidSetFromRows(extractVoucherCollection(parsedPayload));
+}
 
+function guidSetFromRows(vouchers) {
   const guids = new Set();
   for (const voucher of vouchers) {
     const guid = unwrapJsonExValue(voucher && voucher.guid);
@@ -56,6 +59,8 @@ function extractGuidSet(parsedPayload) {
  *
  * @param {Object} params
  * @param {string} params.tenantId
+ * @param {string} params.companyGuid - the tenant's configured Tally company;
+ *   the GUID list is only trusted if every entry belongs to it
  * @param {import('mongoose').Model} params.Model - Sale or Purchase
  * @param {Function} params.fetchAllGuids - async ({baseUrl}) => Tally response
  * @param {string} [params.baseUrl]
@@ -63,6 +68,7 @@ function extractGuidSet(parsedPayload) {
  */
 async function reconcileVoucherType({
   tenantId,
+  companyGuid,
   Model,
   fetchAllGuids,
   baseUrl,
@@ -100,7 +106,26 @@ async function reconcileVoucherType({
 
   let tallyGuids;
   try {
-    tallyGuids = extractGuidSet(parsedPayload);
+    const rows = extractVoucherCollection(parsedPayload);
+
+    // Company ownership first: a GUID list that is not entirely this
+    // company's must never be read as "these vouchers were deleted". Nothing
+    // is compared, marked or recorded beyond the aborted result.
+    const ownership = validateBatchOwnership(rows, companyGuid);
+
+    if (!ownership.ok) {
+      logMismatch(ownership, { tenantId, companyGuid, source: "reconciliation" });
+      return {
+        status: "aborted_unsafe",
+        reason: ownership.reason,
+        tallyGuidCount: null,
+        mongoActiveCount: null,
+        markedDeletedCount: 0,
+        companyMismatch: true,
+      };
+    }
+
+    tallyGuids = guidSetFromRows(rows);
   } catch (error) {
     return {
       status: "failed",

@@ -186,7 +186,12 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
           "TallyRequest": "Export",
           "Type": "Collection",
           "ID": "RTS Company Guid Collection"
-        }
+        },
+        // Every other Tally call is bounded (30s). This one is the FIRST call of
+        // every sync/reconciliation/recovery run, and a hung Tally used to block
+        // it forever - and with it the whole serial worker cycle. Kept shorter
+        // than the others because it is a light query.
+        timeout: 15000
       }
     );
 
@@ -321,7 +326,7 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
                 },
 
                 {
-                  "Native Method": "Name, Parent"
+                  "Native Method": "Name, Parent, Guid"
                 }
               ]
             }

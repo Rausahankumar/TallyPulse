@@ -14,6 +14,7 @@ const {
 } = require("../parser/tallyParser");
 const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
 const { resolveVoucherTypeClassification } = require("../tally/voucherTypeClassifier");
+const { validateBatchOwnership, logMismatch } = require("../tally/companyOwnership");
 const { resolveBatchSize, findMissingAlterIds } = require("./batchWindow");
 
 // --------------------------------------------------
@@ -194,15 +195,25 @@ async function recoverMissingVouchers({
       );
     }
 
+    // Company ownership of the whole registry, before anything is compared: a
+    // wrong-company row must never look like a "missing voucher".
+    const registryOwnership = validateBatchOwnership(registryRows, companyGuid, { rejectDuplicates: true });
+
+    if (!registryOwnership.ok) {
+      logMismatch(registryOwnership, { tenantId, companyGuid, source: `recovery-registry:${voucherType}` });
+      return aborted(result, "company_mismatch", registryOwnership.reason);
+    }
+
     result.tally.total = registry.length;
     result.tally.cancelledOrDeleted = registry.filter((r) => r.cancelledOrDeleted).length;
 
     // ---- what MongoDB already has (this tenant only, any status) ----
+    // Covered by the unique {tenantId, tallyGuid} index: no document fetches.
     const existingDocs = await target.Model.find({
       tenantId,
       tallyGuid: { $type: "string" },
     })
-      .select("tallyGuid")
+      .select({ tallyGuid: 1, _id: 0 })
       .lean();
     const existingGuids = new Set(existingDocs.map((d) => d.tallyGuid));
 
@@ -268,6 +279,18 @@ async function recoverMissingVouchers({
       } catch (error) {
         result.batches.failed += 1;
         result.errors.push(`Tally fetch failed: ${error.message}`);
+        stopped = true;
+        break;
+      }
+
+      // Company ownership of the whole batch, before anything is written: one
+      // foreign or unverifiable voucher rejects all of it.
+      const batchOwnership = validateBatchOwnership(vouchers, companyGuid);
+
+      if (!batchOwnership.ok) {
+        logMismatch(batchOwnership, { tenantId, companyGuid, source: `recovery-fetch:${voucherType}` });
+        result.batches.failed += 1;
+        result.errors.push(batchOwnership.reason);
         stopped = true;
         break;
       }

@@ -21,6 +21,7 @@ const {
   processSinglePurchaseVoucher,
 } = require("../import/tallyPurchaseImport");
 const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
+const { assertBatchOwnership } = require("../tally/companyOwnership");
 const {
   resolveVoucherTypeClassification,
 } = require("../tally/voucherTypeClassifier");
@@ -372,6 +373,18 @@ async function runSyncForCompanyModule(
 
     const vouchers = extractVoucherCollection(parsedPayload);
 
+    // Company ownership, BEFORE anything is written or the checkpoint is
+    // considered: the whole batch must belong to this tenant's configured
+    // company (Tally answers for the SELECTED company, which the open-company
+    // guard above cannot pin down). One foreign/unverifiable voucher rejects
+    // the entire batch: nothing is written, the checkpoint stays put, and the
+    // failure is recorded for diagnosis. In-memory, O(n), no extra queries.
+    assertBatchOwnership(vouchers, companyGuid, {
+      tenantId,
+      companyGuid,
+      source: `sync:${voucherType}`,
+    });
+
     // Fetch completeness: checked BEFORE anything is persisted or the
     // checkpoint considered. A partial response that still parses (or a
     // voucher edited between probe and fetch) would otherwise let the
@@ -493,6 +506,9 @@ async function runSyncForCompanyModule(
       skipped: 0,
       failed: 0,
       error: message,
+      ...(error && error.code === "COMPANY_MISMATCH"
+        ? { companyMismatch: true, rejected: error.validation.total }
+        : {}),
     };
   }
 }
@@ -526,9 +542,11 @@ async function runSyncForAllCompanies(
     for (const company of companies) {
       for (const syncModule of SYNC_MODULES) {
       try {
+        const startedAt = Date.now();
         const result = await runSyncForCompanyModule(company, syncModule, {
           intervalSeconds,
         });
+        const durationMs = Date.now() - startedAt;
 
         if (result && result.skipped) {
           continue;
@@ -549,7 +567,7 @@ async function runSyncForAllCompanies(
             result.failed)
         ) {
           console.log(
-            `[tallySyncWorker] ${company.companyGuid} (${syncModule.voucherType}): processed=${result.processed} created=${result.created} updated=${result.updated} duplicates=${result.duplicates} skipped=${result.skipped} failed=${result.failed}${result.pendingTotal !== undefined && result.pendingTotal > result.processed ? ` (backlog: ${result.pendingTotal} pending, draining in batches)` : ""}`
+            `[tallySyncWorker] ${company.companyGuid} (${syncModule.voucherType}): processed=${result.processed} created=${result.created} updated=${result.updated} duplicates=${result.duplicates} skipped=${result.skipped} failed=${result.failed} ms=${durationMs}${result.pendingTotal !== undefined && result.pendingTotal > result.processed ? ` (backlog: ${result.pendingTotal} pending, draining in batches)` : ""}`
           );
         }
       } catch (error) {

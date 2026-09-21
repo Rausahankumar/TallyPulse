@@ -97,12 +97,13 @@ async function maybeSelfHeal({
     if (!(tallyGuids instanceof Set) || tallyGuids.size === 0) return skip("no_tally_vouchers");
     if (!company || !company.tenantId || !Model) return skip("no_tenant_scope");
 
-    // One query, this tenant only.
+    // One query, this tenant only. {tallyGuid:1,_id:0} is answered entirely from
+    // the unique {tenantId, tallyGuid} index (no document fetches).
     const heldDocs = await Model.find({
       tenantId: company.tenantId,
       tallyGuid: { $type: "string" },
     })
-      .select("tallyGuid")
+      .select({ tallyGuid: 1, _id: 0 })
       .lean();
     const held = new Set(heldDocs.map((d) => d.tallyGuid));
 

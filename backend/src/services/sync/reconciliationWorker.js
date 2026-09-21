@@ -213,6 +213,7 @@ async function runReconciliationForCompanyModule(
 
   const result = await reconcileVoucherType({
     tenantId,
+    companyGuid,
     Model,
     fetchAllGuids: ({ baseUrl: fetchBaseUrl }) =>
       fetchAllGuidsBase({ baseUrl: fetchBaseUrl, voucherTypeNames: classResult.typeNames }),

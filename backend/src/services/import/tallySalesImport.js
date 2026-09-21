@@ -11,6 +11,7 @@ const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
 const {
   resolveVoucherTypeClassification,
 } = require("../tally/voucherTypeClassifier");
+const { assertBatchOwnership } = require("../tally/companyOwnership");
 
 
 function sanitizeJsonText(rawText) {
@@ -653,6 +654,14 @@ async function importTallySalesFromTally({
       "No Tally voucher data found for the requested date range."
     );
   }
+
+  // Same boundary as the background sync: the whole response must belong to
+  // this tenant's company before any voucher is imported.
+  assertBatchOwnership(vouchers, company.companyGuid, {
+    tenantId,
+    companyGuid: company.companyGuid,
+    source: "manual-import",
+  });
 
   return importParsedVouchers(vouchers, tenantId);
 }
