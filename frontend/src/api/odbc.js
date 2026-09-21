@@ -1,12 +1,14 @@
 import client from "./client";
 
 // GET /api/odbc/company and /api/odbc/sales — backend/src/routes/odbcRoutes.js.
-// Both are unauthenticated on the backend today (a real, flagged gap —
-// see docs §7.0/§16); the frontend still sends the auth header via the
-// shared client, it's simply not required by the server. These proxy
-// straight to the one configured TallyPrime instance, so they're used
-// here only for the "test Tally connection" action on the Sync & Data
-// page — not as a per-tenant data source.
+// Both require a signed-in user on the backend (audit F-03, fixed 2026-09-21);
+// the shared client sends the token automatically. /company is open to any
+// signed-in account (it is used during onboarding, before a company is
+// connected); /sales additionally needs a connected company and only answers
+// for the company Tally currently has selected. These proxy straight to the
+// one configured TallyPrime instance, so they're used here only for the
+// "test Tally connection" action on the Sync & Data page — not as a
+// per-tenant data source.
 
 export async function testTallyConnection() {
   const { data } = await client.get("/odbc/company");
