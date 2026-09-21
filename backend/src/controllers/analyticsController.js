@@ -90,10 +90,15 @@ function handle(fn) {
     try {
       await fn(req, res);
     } catch (error) {
-      const status = error.status || 500;
+      // Validation errors carry a 4xx status and a message we wrote; anything
+      // else is logged and answered generically (audit F-12).
+      const status = error.status >= 400 && error.status < 500 ? error.status : 500;
+
+      if (status === 500) console.error("ANALYTICS ERROR:", error);
+
       return res.status(status).json({
         success: false,
-        message: error.message || "Unexpected analytics error.",
+        message: status === 500 ? "Something went wrong on the server. Please try again." : error.message,
       });
     }
   };

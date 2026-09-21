@@ -1,4 +1,52 @@
 const fs = require("fs");
+const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
+
+// Longest date range one manual live import may ask Tally for (audit F-13).
+// TallyPrime is a desktop application and a very wide voucher query is known
+// to hang it (a 10-year range did in a real session), so the range is capped
+// and larger periods are imported in pieces.
+const MAX_IMPORT_RANGE_DAYS = 92;
+
+// Returns an error message for a bad or too-wide range, or null when it is fine.
+// Same rule the service applies: a missing toDate means "the same day as fromDate".
+const checkImportRange = ({ fromDate, toDate }) => {
+  for (const [name, value] of [["fromDate", fromDate], ["toDate", toDate]]) {
+    if (value !== undefined && typeof value !== "string") {
+      return `${name} must be a single date (YYYY-MM-DD).`;
+    }
+  }
+
+  if (!fromDate || !toDate) return null;
+
+  const from = new Date(fromDate);
+  const to = new Date(toDate);
+
+  // An unparseable value is reported by the service as "Invalid date ..." (a 400).
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+
+  if (to < from) return "toDate must not be before fromDate.";
+
+  const days = Math.floor((to - from) / (24 * 60 * 60 * 1000)) + 1;
+
+  if (days > MAX_IMPORT_RANGE_DAYS) {
+    return `The date range is too long (${days} days). Import at most ${MAX_IMPORT_RANGE_DAYS} days at a time.`;
+  }
+
+  return null;
+};
+
+// The upload only exists to be read once. Delete it as soon as it has been
+// processed (or refused), BEFORE the response is sent, so it is gone by the time
+// the client sees the answer (audit F-14). Never throws.
+const removeUpload = async (file) => {
+  if (!file || !file.path) return;
+
+  try {
+    await fs.promises.unlink(file.path);
+  } catch {
+    // already gone - nothing to do
+  }
+};
 
 const {
   importTallySales,
@@ -115,9 +163,13 @@ const respondToImportError = (res, error) => {
     });
   }
 
+  // Anything not recognised above is unexpected: keep the detail in the server
+  // log, send a message we chose (audit F-12).
+  console.error("IMPORT ERROR:", error);
+
   return res.status(500).json({
     success: false,
-    message,
+    message: GENERIC_SERVER_ERROR,
   });
 };
 
@@ -149,6 +201,8 @@ const importTallyJson = async (req, res) => {
       mimetype === "application/json";
 
     if (!isJsonFile) {
+      await removeUpload(req.file);
+
       return res.status(400).json({
         success: false,
         message: "Only JSON files are allowed.",
@@ -159,6 +213,8 @@ const importTallyJson = async (req, res) => {
     const companyGuId = req.user?.companyGuId;
 
     if (!companyGuId) {
+      await removeUpload(req.file);
+
       return res.status(401).json({
         success: false,
         message: "Company GUID is missing from authentication token.",
@@ -173,8 +229,12 @@ const importTallyJson = async (req, res) => {
       companyGuId,
     });
 
+    await removeUpload(req.file);
+
     return res.status(200).json(buildImportResponseBody(result));
   } catch (error) {
+    await removeUpload(req.file);
+
     return respondToImportError(res, error);
   }
 };
@@ -200,6 +260,12 @@ const importTallyLive = async (req, res) => {
     }
 
     const { fromDate, toDate } = req.query || {};
+
+    const rangeProblem = checkImportRange({ fromDate, toDate });
+
+    if (rangeProblem) {
+      return res.status(400).json({ success: false, message: rangeProblem });
+    }
 
     const result = await importTallySalesFromTally({
       companyGuId,

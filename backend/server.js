@@ -1,8 +1,10 @@
 const express = require("express");
-const cors = require("cors");
 const dotenv = require("dotenv");
 
 const connectDB = require("./src/config/db");
+const { applyHttpSecurity } = require("./src/middleware/httpSecurity");
+const { errorHandler, notFoundHandler } = require("./src/middleware/errorHandler");
+const requestId = require("./src/middleware/requestId");
 const { startTallySyncWorker } = require("./src/services/sync/tallySyncWorker");
 const { startReconciliationWorker } = require("./src/services/sync/reconciliationWorker");
 
@@ -32,7 +34,9 @@ connectDB().then(() => {
 const app = express();
 
 // Middleware
-app.use(cors());
+// Security headers + CORS allow-list (audit F-11) - see src/middleware/httpSecurity.js
+applyHttpSecurity(app);
+app.use(requestId); // X-Request-Id on every response; the same id is in error logs (audit F-19)
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -55,22 +59,11 @@ app.use("/api/analytics", analyticsRoutes);
 
 
 // 404 Handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "Route not found",
-  });
-});
+app.use(notFoundHandler);
 
-// Global Error Handler
-app.use((err, req, res, next) => {
-  console.error(err);
-
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || "Internal Server Error",
-  });
-});
+// Global Error Handler - clients only ever see messages we chose; library and
+// database error text stays in the server log (audit F-12).
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
