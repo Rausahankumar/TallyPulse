@@ -188,6 +188,7 @@ const {
   getSalesVouchers,
 } = require("../services/odbc/odbcService");
 const { resolveSelectedOpenCompany } = require("../services/auth/tallyCompanyGuard");
+const TALLY_REQUEST_FAILED = "Could not get a response from TallyPrime. Make sure TallyPrime is running and try again.";
 const {
   resolveVoucherTypeClassification,
 } = require("../services/tally/voucherTypeClassifier");
@@ -229,9 +230,11 @@ const testTallyConnection = async (req, res) => {
 
   } catch (error) {
 
+    console.error("TALLY CONNECTION ERROR:", error.message);
+
     return res.status(500).json({
       success: false,
-      message: error.message
+      message: TALLY_REQUEST_FAILED
     });
 
   }
@@ -261,6 +264,16 @@ const getSales = async (req, res) => {
       return res.status(detection.reason === "unreachable" ? 503 : detection.reason === "multiple_open" ? 409 : 400).json({
         success: false,
         message: detection.message,
+      });
+    }
+
+    // These are raw vouchers of the company Tally has SELECTED. Only the account
+    // that owns that company may read them (audit F-03): a signed-in user of a
+    // different company must not see it, even though they are authenticated.
+    if (!req.companyContext || req.companyContext.companyGuid !== detection.match.guid) {
+      return res.status(403).json({
+        success: false,
+        message: "The company open in TallyPrime is not the company you are signed in to.",
       });
     }
 
@@ -305,7 +318,7 @@ const getSales = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: error.message
+      message: TALLY_REQUEST_FAILED
     });
 
   }

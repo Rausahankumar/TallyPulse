@@ -161,7 +161,8 @@ async function main() {
 
       const dup = fakeRes();
       await register({ body: { name: "D", email: EMAIL("owner"), password: PW } }, dup);
-      check("duplicate email rejected (400)", dup.code === 400 && /already registered/i.test(dup.body.message));
+      // Wording updated 2026-09-21 (audit F-16): the reply no longer says the address is registered.
+      check("duplicate email rejected (400)", dup.code === 400 && /could not create this account/i.test(dup.body.message));
     }
 
     console.log("\nB. Login is email + password; a new account has no company yet");

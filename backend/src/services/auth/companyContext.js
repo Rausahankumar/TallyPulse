@@ -1,4 +1,7 @@
+const mongoose = require("mongoose");
+const { GENERIC_SERVER_ERROR } = require("../../middleware/errorHandler");
 const Company = require("../../models/company");
+const User = require("../../models/user.model");
 const UserCompanyAccess = require("../../models/userCompanyAccess.model");
 
 // --------------------------------------------------
@@ -44,22 +47,50 @@ const UserCompanyAccess = require("../../models/userCompanyAccess.model");
  * @throws {Error} with `.status` set (401/403/404) on any authorization
  *   failure - callers should map this to an HTTP response, not swallow it.
  */
-async function resolveAuthorizedCompany(authUser, requestedCompanyGuid) {
+async function resolveAuthorizedCompany(authUser, requestedCompanyGuid, preloadedUser) {
   if (!authUser || !authUser.companyGuId) {
     const err = new Error("No authenticated company context on this request.");
     err.status = 401;
     throw err;
   }
 
+  // A requested company must be plain text. A repeated query parameter
+  // (?companyGuId=a&companyGuId=b) arrives here as an array, and Mongoose would
+  // treat an array or object as a query operator in the two lookups below -
+  // the access check and the company lookup could then match different records.
+  if (requestedCompanyGuid != null && typeof requestedCompanyGuid !== "string") {
+    const err = new Error("Invalid company identifier.");
+    err.status = 400;
+    throw err;
+  }
+
   const targetGuid = requestedCompanyGuid || authUser.companyGuId;
 
-  // Authorization check. A user's own default company (set at
-  // registration) is always allowed via the direct equality check
-  // below. Any OTHER company requires a matching UserCompanyAccess row
-  // - the join collection this function's own comments anticipated -
-  // so a user can only ever operate as a company they (or an admin)
-  // explicitly connected via POST /api/auth/companies.
-  if (targetGuid !== authUser.companyGuId) {
+  // Authorization check - ALWAYS against the live account, never against the
+  // company written into the JWT (audit F-06). The token only says who the
+  // user was when it was issued; access can be removed after that. The user
+  // must still exist, and the target company must be either their CURRENT
+  // default company (stored on the User) or one they hold a UserCompanyAccess
+  // row for (a company connected via POST /api/auth/companies).
+  if (!mongoose.isValidObjectId(authUser.id)) {
+    const err = new Error("Invalid session.");
+    err.status = 401;
+    throw err;
+  }
+
+  // auth.js has already loaded this user for the request; reuse it when it is the same account.
+  const user =
+    preloadedUser && String(preloadedUser._id) === String(authUser.id)
+      ? preloadedUser
+      : await User.findById(authUser.id).select("companyGuId").lean();
+
+  if (!user) {
+    const err = new Error("Invalid session.");
+    err.status = 401;
+    throw err;
+  }
+
+  if (targetGuid !== user.companyGuId) {
     const access = await UserCompanyAccess.findOne({
       userId: authUser.id,
       companyGuid: targetGuid,
@@ -114,20 +145,40 @@ function activeCompanyContext(req, res, next) {
     (req.query && req.query.companyGuId) ||
     undefined;
 
-  resolveAuthorizedCompany(req.user, requestedCompanyGuid)
+  resolveAndContinue(req, res, next, requestedCompanyGuid);
+}
+
+/**
+ * Same live authorization, but WITHOUT any client-supplied company: it
+ * verifies the company named in the JWT is still one this account may use.
+ * For routes whose controllers read `req.user.companyGuId` directly (sync
+ * status/recovery, imports, company rename) - they keep working unchanged,
+ * but a user whose access was removed is stopped here (audit F-06).
+ */
+function liveCompanyContext(req, res, next) {
+  resolveAndContinue(req, res, next, undefined);
+}
+
+function resolveAndContinue(req, res, next, requestedCompanyGuid) {
+  resolveAuthorizedCompany(req.user, requestedCompanyGuid, req.userRecord)
     .then((companyContext) => {
       req.companyContext = companyContext;
       next();
     })
     .catch((error) => {
-      res.status(error.status || 500).json({
-        success: false,
-        message: error.message || "Unable to resolve company context.",
-      });
+      // Errors thrown above carry a status and a message we wrote. Anything else
+      // (a database problem) is logged, not shown (audit F-12).
+      if (!error.status) {
+        console.error("COMPANY CONTEXT ERROR:", error);
+        return res.status(500).json({ success: false, message: GENERIC_SERVER_ERROR });
+      }
+
+      return res.status(error.status).json({ success: false, message: error.message });
     });
 }
 
 module.exports = {
   resolveAuthorizedCompany,
   activeCompanyContext,
+  liveCompanyContext,
 };

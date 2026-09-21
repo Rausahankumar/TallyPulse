@@ -254,18 +254,31 @@ async function testTrustEnvelope() {
 async function testCompanyContext() {
   console.log("\n=== Company context authorization ===");
 
-  const authUser = { companyGuId: SYNTHETIC_COMPANY_GUID, tenantId: SYNTHETIC_TENANT };
+  // Fixture updated 2026-09-21 (audit F-06): company access is now checked against
+  // the LIVE account, so the token payload needs a real user id and that user's
+  // default company - a payload with no user behind it is (correctly) refused.
+  // The assertions below are unchanged.
+  const User = require("./src/models/user.model");
+  const FIXTURE_EMAIL = "verify-analytics-company-context@example.test";
+  await User.deleteMany({ email: FIXTURE_EMAIL });
+  const fixtureUser = await User.create({ name: "Verify Context", email: FIXTURE_EMAIL, password: "not-a-real-hash", companyGuId: SYNTHETIC_COMPANY_GUID });
 
-  const own = await resolveAuthorizedCompany(authUser);
-  check("resolves own company by default", own.tenantId === SYNTHETIC_TENANT);
-
-  let rejected = false;
   try {
-    await resolveAuthorizedCompany(authUser, "some-other-company-guid");
-  } catch (e) {
-    rejected = e.status === 403;
+    const authUser = { id: String(fixtureUser._id), companyGuId: SYNTHETIC_COMPANY_GUID, tenantId: SYNTHETIC_TENANT };
+
+    const own = await resolveAuthorizedCompany(authUser);
+    check("resolves own company by default", own.tenantId === SYNTHETIC_TENANT);
+
+    let rejected = false;
+    try {
+      await resolveAuthorizedCompany(authUser, "some-other-company-guid");
+    } catch (e) {
+      rejected = e.status === 403;
+    }
+    check("requesting a different company is rejected 403", rejected);
+  } finally {
+    await User.deleteMany({ email: FIXTURE_EMAIL });
   }
-  check("requesting a different company is rejected 403", rejected);
 }
 
 async function testToolLayerSecurity() {
