@@ -25,6 +25,7 @@ const Purchase = require("./src/models/purchase.model");
 const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 const { getCompanyInfo } = require("./src/services/odbc/odbcService");
 const { extractOpenCompanies } = require("./src/services/parser/tallyParser");
+const { resolveSelectedOpenCompany } = require("./src/services/auth/tallyCompanyGuard");
 const {
   runSyncForCompanyModule,
   runSyncForAllCompanies,
@@ -61,7 +62,11 @@ async function main() {
   console.log("\n=== Setup: discover the real company currently open in Tally ===");
   const liveOpen = extractOpenCompanies(await getCompanyInfo());
   check("Tally has at least one company open right now", liveOpen.length > 0, JSON.stringify(liveOpen));
-  const LIVE_GUID = liveOpen[0]?.guid;
+  // The company Tally answers for: the only open one, or the SELECTED one when
+  // several are open - never liveOpen[0] merely because it is listed first.
+  const detection = await resolveSelectedOpenCompany();
+  check("the live company (the selected one, if several are open) is identified", detection.ok, detection.message);
+  const LIVE_GUID = detection.ok ? detection.match.guid : liveOpen[0]?.guid;
   console.log(`  live open company guid: ${LIVE_GUID}`);
 
   const liveCompany = await Company.findOne({ companyGuid: LIVE_GUID }).lean();

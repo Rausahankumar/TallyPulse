@@ -29,12 +29,23 @@ const express = require("express");
 const mongoose = require("mongoose");
 
 let openCompanies = [];
+let selectedGuid = null; // Tally's SELECTED company (masters carry its GUID)
 
 function startStub() {
   const server = http.createServer((req, res) => {
     req.on("data", () => {});
     req.on("end", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.headers.id === "RTS VoucherType Master Collection") {
+        const prefix = selectedGuid || (openCompanies.length === 1 ? openCompanies[0].guid : "unmatched-company-guid");
+        return res.end(JSON.stringify({
+          status: "1",
+          data: { collection: [
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${prefix}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${prefix}-2` } },
+          ] },
+        }));
+      }
       res.end(JSON.stringify({
         status: "1",
         data: { collection: openCompanies.map((c) => ({ name: { value: c.name }, guid: { value: c.guid } })) },
@@ -126,9 +137,22 @@ async function main() {
     const noneRes = await client.post("/auth/companies", {}, bearer(bareToken));
     check("nothing open -> friendly 400", noneRes.status === 400 && noneRes.data.message === "Please open your company in TallyPrime and try again.", JSON.stringify(noneRes.data));
     openCompanies = [{ name: NAME_A, guid: GUID_A }, { name: NAME_B, guid: GUID_B }];
+    selectedGuid = null;
     const manyRes = await client.post("/auth/companies", {}, bearer(bareToken));
-    check("two open -> 409, no guessing", manyRes.status === 409, JSON.stringify(manyRes.data));
+    check("two open, selection not identifiable -> 409, no guessing", manyRes.status === 409, JSON.stringify(manyRes.data));
     check("nothing was created by those attempts", (await Company.countDocuments({ companyGuid: guidRx })) === 0);
+
+    console.log("\n=== Connect Tally: two open + the SELECTED one is identified (listed second) ===");
+    openCompanies = [{ name: NAME_A, guid: GUID_A }, { name: NAME_B, guid: GUID_B }];
+    selectedGuid = GUID_B;
+    const pickRes = await client.post("/auth/companies", {}, bearer(bareToken));
+    check("the selected company (B, listed second) is connected, not the first-listed A", pickRes.status === 201 && pickRes.data?.data?.companyName === NAME_B, JSON.stringify(pickRes.data));
+    check("company A was not created", (await Company.countDocuments({ companyGuid: GUID_A })) === 0);
+    selectedGuid = null;
+    // start the rest of the flow from a clean slate for this account
+    await UserCompanyAccess.deleteMany({ userId: user._id });
+    await User.updateOne({ _id: user._id }, { $set: { companyGuId: null, companyName: null, companyId: null, tenantId: null } });
+    await Company.deleteMany({ companyGuid: GUID_B });
 
     console.log("\n=== Connect Tally: the first company needs only the session ===");
     openCompanies = [{ name: NAME_A, guid: GUID_A }];

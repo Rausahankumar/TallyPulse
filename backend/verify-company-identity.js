@@ -26,6 +26,12 @@ const mongoose = require("mongoose");
 // at load time), so everything Tally-facing is required lazily in main().
 let openCompanies = []; // [{name, guid}] the stub reports as open
 let stubDown = false;
+// Tally's SELECTED company: masters carry its GUID prefix. null = derive (the
+// only open company, else nobody the open list can match). mastersMode probes
+// the failure shapes of the selected-company tiebreak.
+let selectedGuid = null;
+let mastersMode = "normal"; // normal | mixed | noguid | down
+const masterPrefix = () => selectedGuid || (openCompanies.length === 1 ? openCompanies[0].guid : "unmatched-company-guid");
 const seenBodies = [];
 
 function startStub() {
@@ -37,11 +43,13 @@ function startStub() {
       seenBodies.push({ id: req.headers.id, body });
       res.writeHead(200, { "Content-Type": "application/json" });
       if (req.headers.id === "RTS VoucherType Master Collection") {
+        if (mastersMode === "down") return req.socket.destroy();
+        const g = (n) => (mastersMode === "noguid" ? undefined : { value: `${mastersMode === "mixed" && n === 2 && openCompanies[1] ? openCompanies[1].guid : masterPrefix()}-${n}` });
         res.end(JSON.stringify({
           status: "1",
           data: { collection: [
-            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" } },
-            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" } },
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: g(1) },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: g(2) },
           ] },
         }));
       } else if (req.headers.id === "RTS Company Guid Collection") {
@@ -96,7 +104,7 @@ async function main() {
   const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
   const ReconciliationCheckpoint = require("./src/models/reconciliationCheckpoint.model");
   const { ensureCompanyForGuid } = require("./src/services/auth/companyIdentity");
-  const { detectOpenTallyCompany } = require("./src/services/auth/tallyCompanyGuard");
+  const { detectOpenTallyCompany, resolveSelectedOpenCompany, verifyOpenTallyCompany } = require("./src/services/auth/tallyCompanyGuard");
   const { resolveAuthorizedCompany } = require("./src/services/auth/companyContext");
   const { runSyncForCompanyModule } = require("./src/services/sync/tallySyncWorker");
   const { clearVoucherTypeClassificationCache } = require("./src/services/tally/voucherTypeClassifier");
@@ -370,6 +378,166 @@ async function main() {
       res2 = await connect(owner, { password: PW });
       const c = await Company.findOne({ companyGuid: GB }).lean();
       check("its own owner gets it back with the same tenant", res2.code === 201 && c && c.tenantId === "verify-ident-foreign-tenant");
+    }
+
+    // ======================================== L. selected-company tiebreak
+    console.log("\nL. Several companies open: the SELECTED company is identified from Tally's own masters - never list order");
+    {
+      const NIR = { name: "Nirmal FMCG Traders Ltd", guid: GUID("sel-nirmal") };
+      const WF = { name: "WE FOUR", guid: GUID("sel-wefour") };
+      const reset = () => { selectedGuid = null; mastersMode = "normal"; };
+
+      reset();
+      open(WF);
+      let d = await resolveSelectedOpenCompany();
+      check("one company open -> that company (behaviour unchanged, no master query needed)", d.ok && d.match.guid === WF.guid && d.selectedBy === "only_open");
+      const mastersBefore = seenBodies.filter((b) => b.id === "RTS VoucherType Master Collection").length;
+
+      open(NIR, WF); // Nirmal is listed FIRST
+      selectedGuid = WF.guid;
+      d = await resolveSelectedOpenCompany();
+      check("two open, WE FOUR selected (listed second) -> WE FOUR, not the first-listed Nirmal", d.ok && d.match.guid === WF.guid && d.match.name === "WE FOUR" && d.selectedBy === "voucher_type_masters", JSON.stringify(d.match));
+      check("exactly ONE master query was added for that decision", seenBodies.filter((b) => b.id === "RTS VoucherType Master Collection").length === mastersBefore + 1);
+
+      selectedGuid = NIR.guid;
+      d = await resolveSelectedOpenCompany();
+      check("two open, Nirmal selected -> Nirmal", d.ok && d.match.guid === NIR.guid);
+
+      open(WF, NIR); // order flipped: same selected company, same answer
+      d = await resolveSelectedOpenCompany();
+      check("list order is irrelevant (flipped list, Nirmal still selected -> Nirmal)", d.ok && d.match.guid === NIR.guid);
+      selectedGuid = WF.guid;
+      d = await resolveSelectedOpenCompany();
+      check("...and WE FOUR selected -> WE FOUR, now listed first", d.ok && d.match.guid === WF.guid);
+
+      selectedGuid = "some-third-company-not-in-the-open-list";
+      d = await resolveSelectedOpenCompany();
+      check("masters belong to none of the open companies -> ambiguous (no fallback to companies[0])", !d.ok && d.reason === "multiple_open");
+
+      reset(); mastersMode = "mixed";
+      d = await resolveSelectedOpenCompany();
+      check("masters split between two open companies -> ambiguous", !d.ok && d.reason === "multiple_open");
+
+      reset(); mastersMode = "noguid";
+      d = await resolveSelectedOpenCompany();
+      check("masters carry no GUID at all -> ambiguous (nothing verifiable)", !d.ok && d.reason === "multiple_open");
+
+      reset(); mastersMode = "down";
+      d = await resolveSelectedOpenCompany();
+      check("the master query failing -> unreachable (fail closed, never a guess)", !d.ok && d.reason === "unreachable");
+
+      reset();
+      selectedGuid = WF.guid;
+      const viaAlias = await detectOpenTallyCompany();
+      reset();
+      check("...(alias resolves WE FOUR too)", viaAlias.ok && viaAlias.match.guid === WF.guid);
+
+      // ---- Connect Tally through the real controller
+      const { user: onlyNirmal } = await signUp("sel-nirmal-owner");
+      const { user: onlyWeFour } = await signUp("sel-wefour-owner");
+      const { user: fresh } = await signUp("sel-fresh");
+
+      open(NIR, WF); selectedGuid = NIR.guid;
+      let res = await connect(onlyNirmal);
+      check("Nirmal selected: its owner connects Nirmal (201), name from Tally", res.code === 201 && res.body.data.companyName === "Nirmal FMCG Traders Ltd", JSON.stringify(res.body));
+
+      selectedGuid = WF.guid;
+      res = await connect(onlyWeFour, { password: undefined });
+      check("WE FOUR selected: a different account connects WE FOUR (listed second), not Nirmal", res.code === 201 && res.body.data.companyName === "WE FOUR" && (await accessCount(onlyWeFour._id, WF.guid)) === 1 && (await accessCount(onlyWeFour._id, NIR.guid)) === 0, JSON.stringify(res.body));
+
+      // ---- SECURITY: We Four is selected but this user only owns Nirmal
+      const before = await User.findById(onlyNirmal._id).lean();
+      res = await connect(onlyNirmal, { password: PW });
+      check("SECURITY: WE FOUR selected, user owns only Nirmal -> detected WE FOUR, then access refused (403)", res.code === 403 && /don't have access/i.test(res.body.message), `${res.code} ${res.body && res.body.message}`);
+      const after = await User.findById(onlyNirmal._id).lean();
+      const list = fakeRes();
+      await listCompanies({ user: { id: String(onlyNirmal._id) } }, list);
+      check("SECURITY: no silent fallback to Nirmal (no session token issued), nothing attached to WE FOUR", !res.body.token && (await accessCount(onlyNirmal._id, WF.guid)) === 0 && after.companyGuId === before.companyGuId);
+      check("SECURITY: the account still sees only its own company", list.body.data.length === 1 && list.body.data[0].companyGuid === NIR.guid);
+
+      selectedGuid = NIR.guid;
+      res = await connect(onlyNirmal, { password: PW });
+      check("Nirmal selected again: the owner reconnects Nirmal (200)", res.code === 200 && res.body.data.companyName === "Nirmal FMCG Traders Ltd");
+
+      // ---- ambiguity still answers the intentional 409
+      selectedGuid = "some-third-company-not-in-the-open-list";
+      res = await connect(fresh);
+      check("ambiguous selection -> the intentional 409 (nothing created)", res.code === 409 && /more than one company/i.test(res.body.message) && (await UserCompanyAccess.countDocuments({ userId: fresh._id })) === 0);
+      reset(); open(); selectedGuid = null;
+
+      // an asserted GUID is still only an assertion against the SELECTED company
+      open(NIR, WF); selectedGuid = WF.guid;
+      res = await connect(fresh, { companyGuId: NIR.guid });
+      check("a client asserting the first-listed company while another is selected -> 400 (assertion mismatch)", res.code === 400 && /does not match/i.test(res.body.message));
+      const guardBoth = await verifyOpenTallyCompany(NIR.guid);
+      check("the worker guard is unchanged: both open companies still pass it (data is protected by the ownership validator)", guardBoth.ok === true);
+      reset();
+    }
+
+    // ======================================== M. onboarding lifecycle
+    console.log("\nM. Onboarding: a new user connecting a company nobody has registered must succeed; 403 only for an already-owned GUID");
+    {
+      const CA = { name: "Company A", guid: GUID("onb-a") };
+      const CB = { name: "Company B", guid: GUID("onb-b") };
+      const CC = { name: "Company C", guid: GUID("onb-c") };
+      const CD = { name: "Company D", guid: GUID("onb-d") };
+      const CE = { name: "Company E", guid: GUID("onb-e") };
+      const reset = () => { selectedGuid = null; mastersMode = "normal"; };
+      const tenantOf = async (g) => (await Company.findOne({ companyGuid: g }).lean() || {}).tenantId;
+      reset();
+
+      // ---- same user + own company
+      const { user: testuser1 } = await signUp("onb-testuser1");
+      open(CA);
+      let res = await connect(testuser1);
+      check("testuser1 (new) connects Company A, which nobody has registered -> 201, company + tenant created", res.code === 201 && res.body.data.created === true && res.body.data.companyName === "Company A", JSON.stringify(res.body));
+      const tenantA = await tenantOf(CA.guid);
+      res = await connect(testuser1, { password: PW });
+      check("same user + own company (Company A) -> 200 reconnected, same tenant", res.code === 200 && (await tenantOf(CA.guid)) === tenantA && (await accessCount(testuser1._id, CA.guid)) === 1, JSON.stringify(res.body));
+
+      // ---- new user + new company (only that company open)
+      const { user: testuser2 } = await signUp("onb-testuser2");
+      open(CB);
+      res = await connect(testuser2);
+      const tenantB = await tenantOf(CB.guid);
+      check("testuser2 (registered with email/password only, no company) opens unregistered Company B -> 201, Company B created", res.code === 201 && res.body.data.created === true && res.body.data.companyName === "Company B", `${res.code} ${res.body && res.body.message}`);
+      check("Company B got its OWN new tenant, distinct from Company A's", !!tenantB && tenantB !== tenantA);
+      check("testuser2 owns B (default company set); testuser1 is NOT linked to B; testuser2 is NOT linked to A", (await accessCount(testuser2._id, CB.guid)) === 1 && (await accessCount(testuser1._id, CB.guid)) === 0 && (await accessCount(testuser2._id, CA.guid)) === 0 && (await User.findById(testuser2._id).lean()).companyGuId === CB.guid);
+      check("Company A is untouched by testuser2's onboarding", (await tenantOf(CA.guid)) === tenantA && (await Company.findOne({ companyGuid: CA.guid }).lean()).isActive === true);
+
+      // ---- new user + new company while the OWNED company is still open in Tally
+      const { user: testuser3 } = await signUp("onb-testuser3");
+      open(CA, CC); selectedGuid = CC.guid; // A (owned by testuser1) is still open, C is selected
+      res = await connect(testuser3);
+      check("A (owned) and C (unregistered) both open, C selected -> testuser3 connects C (201), the owned A does not get in the way", res.code === 201 && res.body.data.companyName === "Company C" && (await accessCount(testuser3._id, CA.guid)) === 0, `${res.code} ${res.body && res.body.message}`);
+
+      // ---- different user + already-owned company -> 403 (rule unchanged)
+      const beforeU2 = await User.findById(testuser2._id).lean();
+      open(CA); reset();
+      res = await connect(testuser2, { password: PW });
+      check("different user (testuser2) + already-owned company (A, exact GUID owned by testuser1) -> 403", res.code === 403 && /don't have access to this company/i.test(res.body.message), `${res.code} ${res.body && res.body.message}`);
+      check("...the 403 grants nothing: no token, no link to A, default company unchanged", !res.body.token && (await accessCount(testuser2._id, CA.guid)) === 0 && (await User.findById(testuser2._id).lean()).companyGuId === beforeU2.companyGuId);
+      check("...and names the company Tally reported, so a wrong Tally selection is visible", /"Company A"/.test(res.body.message) && /select it in TallyPrime/i.test(res.body.message), res.body && res.body.message);
+
+      // ---- the 403 is not sticky: same user, Tally now on an unregistered company
+      const { user: testuser4 } = await signUp("onb-testuser4");
+      open(CA, CD); selectedGuid = CA.guid; // Tally's selection is still on the owned company A
+      res = await connect(testuser4);
+      check("new user while Tally's SELECTED company is the owned A -> 403 (exact GUID A is owned)", res.code === 403 && /"Company A"/.test(res.body.message));
+      selectedGuid = CD.guid; // user selects the unregistered company D in Tally and clicks again
+      res = await connect(testuser4);
+      check("after selecting unregistered Company D in Tally, the same user connects it (201)", res.code === 201 && res.body.data.companyName === "Company D" && (await accessCount(testuser4._id, CD.guid)) === 1, `${res.code} ${res.body && res.body.message}`);
+      reset();
+
+      // ---- near-miss legacy records must not make an unregistered GUID look owned
+      // (real data has users whose old, typed "GUID" was the company GUID plus a master-id suffix)
+      const { user: legacy } = await signUp("onb-legacy");
+      await User.updateOne({ _id: legacy._id }, { companyGuId: `${CE.guid}-0000001d`, tenantId: "verify-ident-legacy-tenant" });
+      await UserCompanyAccess.create({ userId: legacy._id, companyId: new mongoose.Types.ObjectId(), companyGuid: `${CE.guid}-0000001d`, tenantId: "verify-ident-legacy-tenant" });
+      const { user: testuser5 } = await signUp("onb-testuser5");
+      open(CE);
+      res = await connect(testuser5);
+      check("exact-GUID ownership only: a legacy record for '<guid>-0000001d' does not block the real, unregistered <guid> (201)", res.code === 201 && res.body.data.companyName === "Company E", `${res.code} ${res.body && res.body.message}`);
     }
 
     // ======================================== K. service-level guarantees
