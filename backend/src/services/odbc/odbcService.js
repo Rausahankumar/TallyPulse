@@ -85,6 +85,7 @@
 
 
 const axios = require("axios");
+const { resolveTallyUrl } = require("./tallyUrl");
 
 // Default Tally HTTP/JSONEx gateway. Every function below accepts an
 // optional `baseUrl` override (falling back to this) so the connection can
@@ -177,7 +178,7 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -336,7 +337,7 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -463,7 +464,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -579,7 +580,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucher
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -676,7 +677,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -777,7 +778,7 @@ const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTyp
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -890,7 +891,7 @@ const getVouchersByAlterIds = async ({ alterIds, baseUrl, voucherTypeNames } = {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -985,7 +986,7 @@ const getAllSalesVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) => {
     requireVoucherTypeNames(voucherTypeNames, "getAllSalesVoucherGuids");
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Sales All Guids Collection"),
       {
         headers: {
@@ -1014,7 +1015,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
     requireVoucherTypeNames(voucherTypeNames, "getAllPurchaseVoucherGuids");
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Purchase All Guids Collection"),
       {
         headers: {
