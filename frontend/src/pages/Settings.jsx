@@ -192,6 +192,7 @@ function TallyTab() {
         </Button>
         {status === "ok" && <Badge tone="success" dot>Connected</Badge>}
         {status === "mismatch" && <Badge tone="warning" dot>Wrong company</Badge>}
+        {status === "ambiguous" && <Badge tone="warning" dot>Multiple companies open</Badge>}
         {status === "no_company" && <Badge tone="warning" dot>No company data</Badge>}
         {status === "error" && <Badge tone="danger" dot>Unreachable</Badge>}
         {detail && <span className="text-[13px] text-ink-500">{detail}</span>}

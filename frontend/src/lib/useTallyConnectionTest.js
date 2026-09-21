@@ -8,7 +8,7 @@ import { ApiError } from "../api/client";
 // company open in Tally" — see api/odbc.js's evaluateTallyConnection
 // for exactly what is and isn't verifiable given the current backend.
 export function useTallyConnectionTest(expectedCompanyName) {
-  // null | 'checking' | 'ok' | 'mismatch' | 'no_company' | 'error'
+  // null | 'checking' | 'ok' | 'mismatch' | 'ambiguous' | 'no_company' | 'error'
   const [status, setStatus] = useState(null);
   const [detail, setDetail] = useState(null);
 
