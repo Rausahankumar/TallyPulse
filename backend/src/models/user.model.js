@@ -22,25 +22,28 @@ const userSchema = new mongoose.Schema(
       default: "user",
     },
 
+    // The user's DEFAULT company. Empty until the user connects their first
+    // company ("Connect Tally"), which fills it in; every company the user can
+    // use (this one included) is also listed in UserCompanyAccess.
     companyName: {
       type: String,
-      required: true,
+      default: null,
     },
 
     companyGuId: {
       type: String,
-      required: true,
+      default: null,
     },
 
     companyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",
-      required: true,
+      default: null,
     },
 
     tenantId: {
       type: String,
-      required: true,
+      default: null,
     },
   },
   {

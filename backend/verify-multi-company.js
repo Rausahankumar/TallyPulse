@@ -1,42 +1,61 @@
 /**
- * Multi-company-per-account verification.
+ * Multi-company-per-account verification, over the real HTTP routes, with the
+ * "Connect Tally" flow (no GUID typed anywhere).
  *
- * Product rule under test: a user registers ONE TallyPulse account.
- * Adding another company must NOT require a second email/account - it
- * must use the same account, re-authorized with the existing password,
- * and the company becomes switchable without re-login.
+ * Product rules under test:
+ *   - one TallyPulse account (email) can hold several companies; connecting one
+ *     never needs a second email
+ *   - the company connected is whichever one TallyPrime has open - detected by
+ *     the backend, never supplied by the client
+ *   - the first company needs only the session, further ones re-check the password
+ *   - switching between the account's own companies needs no password
+ *   - another account can never reach this account's companies, by connecting,
+ *     switching or knowing an identifier
+ *   - a session without a company cannot read company data
  *
- * Covers:
- *   - register creates a UserCompanyAccess row for the first company
- *   - addCompany requires the correct password (wrong password rejected)
- *   - addCompany requires the GUID to be the company Tally has open RIGHT
- *     NOW, verified live on the backend (a GUID that isn't open is
- *     rejected, even with the correct password)
- *   - addCompany links a SECOND company to the SAME user (no new email)
- *   - listCompanies returns both companies for that one account
- *   - switchCompany issues a new JWT scoped to the second company, no password
- *   - switchCompany rejects a company the user was never given access to
- *   - resolveAuthorizedCompany (via a protected route) accepts the switched
- *     company and rejects an unrelated one
- *   - updateCompanyName actually persists (real backend save, not local-only)
+ * Self-contained and offline: an in-process copy of the API (same routers and
+ * middleware as server.js, no background workers) talks to a stub TallyPrime
+ * (TALLY_URL) and the real MongoDB under synthetic data that is cleaned up at
+ * start, end and on crash. It no longer depends on the dev server on :5000, on
+ * a live Tally, or on which company happens to be open.
  *
  * Run: node verify-multi-company.js
- * Requires the backend's own HTTP server running on PORT (default 5000).
  */
 
 require("dotenv").config();
+const http = require("http");
 const axios = require("axios");
+const express = require("express");
 const mongoose = require("mongoose");
-const connectDB = require("./src/config/db");
 
-const User = require("./src/models/user.model");
-const Company = require("./src/models/company");
-const UserCompanyAccess = require("./src/models/userCompanyAccess.model");
-const { getCompanyInfo } = require("./src/services/odbc/odbcService");
-const { extractOpenCompanies } = require("./src/services/parser/tallyParser");
+let openCompanies = [];
+let selectedGuid = null; // Tally's SELECTED company (masters carry its GUID)
 
-const BASE_URL = `http://localhost:${process.env.PORT || 5000}/api`;
-const client = axios.create({ baseURL: BASE_URL, validateStatus: () => true });
+function startStub() {
+  const server = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.headers.id === "RTS VoucherType Master Collection") {
+        const prefix = selectedGuid || (openCompanies.length === 1 ? openCompanies[0].guid : "unmatched-company-guid");
+        return res.end(JSON.stringify({
+          status: "1",
+          data: { collection: [
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${prefix}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${prefix}-2` } },
+          ] },
+        }));
+      }
+      res.end(JSON.stringify({
+        status: "1",
+        data: { collection: openCompanies.map((c) => ({ name: { value: c.name }, guid: { value: c.guid } })) },
+      }));
+    });
+  });
+  return new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }))
+  );
+}
 
 let pass = 0;
 let fail = 0;
@@ -52,173 +71,185 @@ function check(label, condition, detail) {
 }
 
 const SUFFIX = Date.now();
-const EMAIL = `verify-multi-company-${SUFFIX}@example.com`;
+const PREFIX = "verify-multi-company-";
+const EMAIL_1 = `${PREFIX}${SUFFIX}-1@example.com`;
+const EMAIL_2 = `${PREFIX}${SUFFIX}-2@example.com`;
 const PASSWORD = "Verify!Pass123";
-const GUID_A = `verify-guid-a-${SUFFIX}`;
+const GUID_A = `${PREFIX}guid-a-${SUFFIX}`;
+const GUID_B = `${PREFIX}guid-b-${SUFFIX}`;
+const GUID_C = `${PREFIX}guid-c-${SUFFIX}`;
 const NAME_A = "Verify Company A";
+const NAME_B = "Verify Company B";
+const NAME_C = "Verify Company C";
 
-// addCompany() now requires the requested GUID to be the company Tally
-// actually has open right now (2026-09-18 product change), so "add
-// company B" below must use the REAL live company - fetched here, never
-// hardcoded - rather than a fabricated GUID. Company A above is
-// unaffected: register() doesn't gate on Tally.
-let GUID_B = null;
-let NAME_B = null;
-
-async function cleanup() {
-  const user = await User.findOne({ email: EMAIL }).lean();
-  if (user) {
-    // Only removes this test user's access link, never the Company
-    // document itself - GUID_B is the real shared dev company (Tally's
-    // actual open company), not test-owned, and must survive this script.
-    await UserCompanyAccess.deleteMany({ userId: user._id });
-    await User.deleteOne({ _id: user._id });
-  }
-  await Company.deleteMany({ companyGuid: GUID_A });
-}
+const decode = (token) => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+const bearer = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
 
 async function main() {
+  const stub = await startStub();
+  process.env.TALLY_URL = stub.url;
+
+  const connectDB = require("./src/config/db");
+  const User = require("./src/models/user.model");
+  const Company = require("./src/models/company");
+  const UserCompanyAccess = require("./src/models/userCompanyAccess.model");
+
+  const guidRx = new RegExp(`^${PREFIX}`);
+
+  async function cleanup() {
+    await User.deleteMany({ email: guidRx });
+    await UserCompanyAccess.deleteMany({ companyGuid: guidRx });
+    await Company.deleteMany({ companyGuid: guidRx });
+  }
+
   await connectDB();
   await cleanup();
 
-  console.log("\n=== Discover the REAL company currently open in Tally (live) ===");
-  const openCompanies = extractOpenCompanies(await getCompanyInfo());
-  check("at least one company is open in Tally right now", openCompanies.length > 0, JSON.stringify(openCompanies));
-  GUID_B = openCompanies[0]?.guid;
-  NAME_B = openCompanies[0]?.name;
-  console.log(`  (using live company "${NAME_B}" / ${GUID_B})`);
-
-  console.log("\n=== Register the ONE account with its first company (A) ===");
-  const registerRes = await client.post("/auth/register", {
-    name: "Verify User",
-    email: EMAIL,
-    password: PASSWORD,
-    companyName: NAME_A,
-    companyGuId: GUID_A,
+  const app = express();
+  app.use(express.json());
+  app.use("/api/auth", require("./src/routes/authRoutes"));
+  app.use("/api/chat", require("./src/routes/chatRoutes"));
+  const api = await new Promise((resolve) => {
+    const server = app.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
   });
-  check("register succeeds", registerRes.status === 201, JSON.stringify(registerRes.data));
+  const client = axios.create({ baseURL: `http://127.0.0.1:${api.port}/api`, validateStatus: () => true });
 
-  const user = await User.findOne({ email: EMAIL }).lean();
-  check("exactly one User document exists for this email", !!user);
+  try {
+    console.log("\n=== Register an account: name + email + password only ===");
+    const registerRes = await client.post("/auth/register", { name: "Verify User", email: EMAIL_1, password: PASSWORD });
+    check("register succeeds with no company details", registerRes.status === 201, JSON.stringify(registerRes.data));
+    const user = await User.findOne({ email: EMAIL_1 }).lean();
+    check("the account has no company yet", !!user && !user.companyGuId && (await UserCompanyAccess.countDocuments({ userId: user._id })) === 0);
 
-  const accessAfterRegister = await UserCompanyAccess.find({ userId: user._id }).lean();
-  check(
-    "register mirrors the first company into UserCompanyAccess",
-    accessAfterRegister.length === 1 && accessAfterRegister[0].companyGuid === GUID_A,
-    JSON.stringify(accessAfterRegister)
-  );
+    console.log("\n=== Log in with email + password (no company id) ===");
+    const loginRes = await client.post("/auth/login", { email: EMAIL_1, password: PASSWORD });
+    check("login succeeds", loginRes.status === 200 && !!loginRes.data.token && loginRes.data.hasCompany === false, JSON.stringify(loginRes.data));
+    const bareToken = loginRes.data.token;
 
-  console.log("\n=== Log in with company A ===");
-  const loginRes = await client.post("/auth/login", { email: EMAIL, password: PASSWORD, companyGuId: GUID_A });
-  check("login succeeds", loginRes.status === 200 && !!loginRes.data.token);
-  const tokenA = loginRes.data.token;
-  const authA = { headers: { Authorization: `Bearer ${tokenA}` } };
+    console.log("\n=== A session without a company cannot read company data ===");
+    const chatBare = await client.get("/chat/", bearer(bareToken));
+    check("company data is refused (401)", chatBare.status === 401, `${chatBare.status}`);
+    const renameBare = await client.patch("/auth/company", { companyName: "x" }, bearer(bareToken));
+    check("renaming a company is refused (401)", renameBare.status === 401, `${renameBare.status}`);
 
-  console.log("\n=== Adding a company with the WRONG password is rejected ===");
-  const wrongPassRes = await client.post(
-    "/auth/companies",
-    { password: "totally-wrong", companyName: NAME_B, companyGuId: GUID_B },
-    authA
-  );
-  check("wrong password rejected with 401", wrongPassRes.status === 401, JSON.stringify(wrongPassRes.data));
-  const usersWithEmail = await User.countDocuments({ email: EMAIL });
-  check("still exactly ONE account for this email (no second account created)", usersWithEmail === 1);
+    console.log("\n=== Connect Tally: no company open / several open ===");
+    openCompanies = [];
+    const noneRes = await client.post("/auth/companies", {}, bearer(bareToken));
+    check("nothing open -> friendly 400", noneRes.status === 400 && noneRes.data.message === "Please open your company in TallyPrime and try again.", JSON.stringify(noneRes.data));
+    openCompanies = [{ name: NAME_A, guid: GUID_A }, { name: NAME_B, guid: GUID_B }];
+    selectedGuid = null;
+    const manyRes = await client.post("/auth/companies", {}, bearer(bareToken));
+    check("two open, selection not identifiable -> 409, no guessing", manyRes.status === 409, JSON.stringify(manyRes.data));
+    check("nothing was created by those attempts", (await Company.countDocuments({ companyGuid: guidRx })) === 0);
 
-  console.log("\n=== Adding a company whose GUID is NOT the one open in Tally is rejected ===");
-  const wrongGuidRes = await client.post(
-    "/auth/companies",
-    { password: PASSWORD, companyName: "Some Other Company", companyGuId: `not-the-open-company-${SUFFIX}` },
-    authA
-  );
-  check(
-    "mismatched GUID rejected with 400 and the exact product-required message",
-    wrongGuidRes.status === 400 &&
-      wrongGuidRes.data?.message ===
-        "The company currently open in TallyPrime does not match the Company GUID you entered. Please open the correct company in TallyPrime and try again.",
-    JSON.stringify(wrongGuidRes.data)
-  );
+    console.log("\n=== Connect Tally: two open + the SELECTED one is identified (listed second) ===");
+    openCompanies = [{ name: NAME_A, guid: GUID_A }, { name: NAME_B, guid: GUID_B }];
+    selectedGuid = GUID_B;
+    const pickRes = await client.post("/auth/companies", {}, bearer(bareToken));
+    check("the selected company (B, listed second) is connected, not the first-listed A", pickRes.status === 201 && pickRes.data?.data?.companyName === NAME_B, JSON.stringify(pickRes.data));
+    check("company A was not created", (await Company.countDocuments({ companyGuid: GUID_A })) === 0);
+    selectedGuid = null;
+    // start the rest of the flow from a clean slate for this account
+    await UserCompanyAccess.deleteMany({ userId: user._id });
+    await User.updateOne({ _id: user._id }, { $set: { companyGuId: null, companyName: null, companyId: null, tenantId: null } });
+    await Company.deleteMany({ companyGuid: GUID_B });
 
-  console.log("\n=== Adding company B with the CORRECT password succeeds - SAME account, no new email ===");
-  const addRes = await client.post(
-    "/auth/companies",
-    { password: PASSWORD, companyName: NAME_B, companyGuId: GUID_B },
-    authA
-  );
-  check("addCompany succeeds", addRes.status === 201, JSON.stringify(addRes.data));
-  check(
-    "addCompany returns company B's real data",
-    addRes.data?.data?.companyGuid === GUID_B && addRes.data?.data?.companyName === NAME_B
-  );
+    console.log("\n=== Connect Tally: the first company needs only the session ===");
+    openCompanies = [{ name: NAME_A, guid: GUID_A }];
+    const firstRes = await client.post("/auth/companies", {}, bearer(bareToken));
+    check("first company connected (201) from an empty request", firstRes.status === 201, JSON.stringify(firstRes.data));
+    check("the company is named and identified from Tally", firstRes.data?.data?.companyName === NAME_A && (await Company.findOne({ companyGuid: GUID_A }).lean())?.companyName === NAME_A);
+    check("response does not expose a tenant id", !JSON.stringify(firstRes.data).includes("tenantId"));
+    const tokenA = firstRes.data.token;
+    check("the returned token is scoped to company A", decode(tokenA).companyGuId === GUID_A);
+    const authA = bearer(tokenA);
+    const chatA = await client.get("/chat/", authA);
+    check("company data now works", chatA.status === 200, `${chatA.status}`);
 
-  const usersWithEmailAfterAdd = await User.countDocuments({ email: EMAIL });
-  check(
-    "STILL exactly ONE account for this email after adding a second company",
-    usersWithEmailAfterAdd === 1,
-    `count=${usersWithEmailAfterAdd}`
-  );
+    console.log("\n=== A second company needs the password again ===");
+    openCompanies = [{ name: NAME_B, guid: GUID_B }];
+    const noPass = await client.post("/auth/companies", {}, authA);
+    check("no password -> 401", noPass.status === 401, JSON.stringify(noPass.data));
+    const wrongPass = await client.post("/auth/companies", { password: "totally-wrong" }, authA);
+    check("wrong password -> 401", wrongPass.status === 401);
+    check("still exactly ONE account for this email", (await User.countDocuments({ email: EMAIL_1 })) === 1);
 
-  console.log("\n=== listCompanies shows both companies for the one account ===");
-  const listRes = await client.get("/auth/companies", authA);
-  const guids = (listRes.data.data || []).map((c) => c.companyGuid);
-  check("both companies are listed", guids.includes(GUID_A) && guids.includes(GUID_B), JSON.stringify(guids));
-  check(
-    "company A is flagged as the default/original company",
-    listRes.data.data.find((c) => c.companyGuid === GUID_A)?.isDefault === true
-  );
+    const wrongGuid = await client.post("/auth/companies", { password: PASSWORD, companyGuId: `not-the-open-company-${SUFFIX}` }, authA);
+    check("a client-supplied GUID that is not the open company is rejected (400)", wrongGuid.status === 400 && /does not match/i.test(wrongGuid.data?.message), JSON.stringify(wrongGuid.data));
 
-  console.log("\n=== Switching to company B needs NO password, just the existing session ===");
-  const switchRes = await client.post("/auth/switch-company", { companyGuId: GUID_B }, authA);
-  check("switch succeeds", switchRes.status === 200 && !!switchRes.data.token, JSON.stringify(switchRes.data));
-  const tokenB = switchRes.data.token;
-  const decodedB = JSON.parse(Buffer.from(tokenB.split(".")[1], "base64url").toString());
-  check("the new token is scoped to company B", decodedB.companyGuId === GUID_B, JSON.stringify(decodedB));
-  check("the new token is for the SAME user id", decodedB.id === user._id.toString());
+    const addRes = await client.post("/auth/companies", { password: PASSWORD }, authA);
+    check("correct password -> company B connected on the SAME account", addRes.status === 201 && addRes.data?.data?.companyName === NAME_B, JSON.stringify(addRes.data));
+    check("still ONE account after adding a second company", (await User.countDocuments({ email: EMAIL_1 })) === 1);
 
-  console.log("\n=== A protected route (chat list) accepts the switched company B context ===");
-  const chatListB = await client.get("/chat/", { headers: { Authorization: `Bearer ${tokenB}` } });
-  check("chat list works under company B's token", chatListB.status === 200, JSON.stringify(chatListB.data));
+    console.log("\n=== listCompanies shows both companies, without tenant ids ===");
+    const listRes = await client.get("/auth/companies", authA);
+    const listed = listRes.data.data || [];
+    check("both companies are listed", listed.length === 2 && listed.some((c) => c.companyGuid === GUID_A) && listed.some((c) => c.companyGuid === GUID_B));
+    check("company A is the default", listed.find((c) => c.companyGuid === GUID_A)?.isDefault === true);
+    check("no tenant id in the list", !JSON.stringify(listRes.data).includes("tenantId"));
 
-  console.log("\n=== Switching to a company this account was never given access to is rejected ===");
-  const unrelatedRes = await client.post(
-    "/auth/switch-company",
-    { companyGuId: "some-completely-unrelated-guid" },
-    authA
-  );
-  check("unrelated company switch rejected with 403", unrelatedRes.status === 403, JSON.stringify(unrelatedRes.data));
+    console.log("\n=== Switching between the account's own companies needs no password ===");
+    const switchRes = await client.post("/auth/switch-company", { companyGuId: GUID_B }, authA);
+    check("switch succeeds", switchRes.status === 200 && !!switchRes.data.token, JSON.stringify(switchRes.data));
+    const decodedB = decode(switchRes.data.token);
+    check("the new token is scoped to company B, same user", decodedB.companyGuId === GUID_B && decodedB.id === String(user._id));
+    const chatB = await client.get("/chat/", bearer(switchRes.data.token));
+    check("company data works under company B's token", chatB.status === 200, `${chatB.status}`);
 
-  console.log("\n=== Re-adding the SAME company again is rejected (no duplicate links) ===");
-  const dupRes = await client.post(
-    "/auth/companies",
-    { password: PASSWORD, companyName: NAME_B, companyGuId: GUID_B },
-    authA
-  );
-  check("duplicate add rejected with 400", dupRes.status === 400, JSON.stringify(dupRes.data));
+    console.log("\n=== Reconnecting a company the account already has is fine ===");
+    openCompanies = [{ name: NAME_A, guid: GUID_A }];
+    const again = await client.post("/auth/companies", { password: PASSWORD }, authA);
+    check("reconnect -> 200, no duplicate", again.status === 200 && (await UserCompanyAccess.countDocuments({ userId: user._id, companyGuid: GUID_A })) === 1, JSON.stringify(again.data));
 
-  console.log("\n=== Renaming the active company is a REAL backend save (not local-only) ===");
-  const renameRes = await client.patch(
-    "/auth/company",
-    { companyName: "Verify Company A Renamed" },
-    authA
-  );
-  check("rename succeeds", renameRes.status === 200, JSON.stringify(renameRes.data));
-  const companyADoc = await Company.findOne({ companyGuid: GUID_A }).lean();
-  check(
-    "the rename is actually persisted in MongoDB",
-    companyADoc.companyName === "Verify Company A Renamed",
-    companyADoc.companyName
-  );
+    console.log("\n=== Another account cannot reach these companies ===");
+    await client.post("/auth/register", { name: "Other User", email: EMAIL_2, password: PASSWORD });
+    const other = await User.findOne({ email: EMAIL_2 }).lean();
+    const otherLogin = await client.post("/auth/login", { email: EMAIL_2, password: PASSWORD });
+    const otherBare = otherLogin.data.token;
 
-  await cleanup();
+    const steal = await client.post("/auth/companies", {}, bearer(otherBare));
+    check("connecting company A (open in Tally) from another account -> 403", steal.status === 403 && /don't have access/i.test(steal.data?.message), JSON.stringify(steal.data));
+    const stealWithGuid = await client.post("/auth/companies", { companyGuId: GUID_A }, bearer(otherBare));
+    check("knowing its identifier does not help (403)", stealWithGuid.status === 403);
+    const stealSwitch = await client.post("/auth/switch-company", { companyGuId: GUID_A }, bearer(otherBare));
+    check("switching into it is refused (403)", stealSwitch.status === 403);
+    check("no access was granted", (await UserCompanyAccess.countDocuments({ userId: other._id })) === 0 && !(await User.findById(other._id).lean()).companyGuId);
+    const viaHeader = await client.get("/chat/", { headers: { Authorization: `Bearer ${otherBare}`, "x-company-guid": GUID_A } });
+    check("the company header cannot smuggle access either", viaHeader.status !== 200, `${viaHeader.status}`);
+
+    console.log("\n=== The other account connects its OWN company; the two stay isolated ===");
+    openCompanies = [{ name: NAME_C, guid: GUID_C }];
+    const otherConnect = await client.post("/auth/companies", {}, bearer(otherBare));
+    check("other account connects company C (201)", otherConnect.status === 201, JSON.stringify(otherConnect.data));
+    const toC = await client.post("/auth/switch-company", { companyGuId: GUID_C }, authA);
+    check("the first account cannot switch into company C (403)", toC.status === 403);
+    const otherList = await client.get("/auth/companies", bearer(otherConnect.data.token));
+    check("the other account lists only its own company", (otherList.data.data || []).length === 1 && otherList.data.data[0].companyGuid === GUID_C);
+    check("tenants differ", (await Company.findOne({ companyGuid: GUID_C }).lean()).tenantId !== (await Company.findOne({ companyGuid: GUID_A }).lean()).tenantId);
+
+    console.log("\n=== Switching to a company this account was never given is rejected ===");
+    const unrelated = await client.post("/auth/switch-company", { companyGuId: "some-completely-unrelated-guid" }, authA);
+    check("unrelated company switch rejected with 403", unrelated.status === 403, JSON.stringify(unrelated.data));
+
+    console.log("\n=== Renaming the active company is a REAL backend save ===");
+    const renameRes = await client.patch("/auth/company", { companyName: "Verify Company A Renamed" }, authA);
+    check("rename succeeds", renameRes.status === 200, JSON.stringify(renameRes.data));
+    check("the rename is persisted in MongoDB", (await Company.findOne({ companyGuid: GUID_A }).lean()).companyName === "Verify Company A Renamed");
+  } finally {
+    await cleanup();
+    const leftovers = (await User.countDocuments({ email: guidRx })) + (await Company.countDocuments({ companyGuid: guidRx })) + (await UserCompanyAccess.countDocuments({ companyGuid: guidRx }));
+    check("no test data left in MongoDB", leftovers === 0, leftovers);
+    api.server.close();
+    stub.server.close();
+    await mongoose.connection.close();
+  }
 
   console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===`);
-  await mongoose.connection.close();
   process.exitCode = fail > 0 ? 1 : 0;
 }
 
 main().catch(async (error) => {
   console.error("Multi-company verification crashed:", error);
-  try {
-    await cleanup();
-  } catch (_) {}
+  try { await mongoose.connection.close(); } catch (_) {}
   process.exitCode = 1;
 });

@@ -44,8 +44,8 @@ function startStubVoucherTypeServer() {
     data: {
       metadata: {},
       collection: [
-        { metadata: { type: "Voucher Type", name: "Sales", reservedname: "Sales" }, parent: { type: "String", value: "Sales" } },
-        { metadata: { type: "Voucher Type", name: "Purchase", reservedname: "Purchase" }, parent: { type: "String", value: "Purchase" } },
+        { metadata: { type: "Voucher Type", name: "Sales", reservedname: "Sales" }, parent: { type: "String", value: "Sales" }, guid: { type: "String", value: `${COMPANY_GUID}-1` } },
+        { metadata: { type: "Voucher Type", name: "Purchase", reservedname: "Purchase" }, parent: { type: "String", value: "Purchase" }, guid: { type: "String", value: `${COMPANY_GUID}-2` } },
       ],
     },
   };
@@ -55,7 +55,8 @@ function startStubVoucherTypeServer() {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(responseBody));
+      // The worker now verifies the open Tally company first, so the stub must also report this test company as the open one.
+      res.end(JSON.stringify(req.headers.id === "RTS Company Guid Collection" ? { status: "1", data: { collection: [{ name: { value: "Perf Test Co" }, guid: { value: COMPANY_GUID } }] } } : responseBody));
     });
   });
 
@@ -98,7 +99,7 @@ function buildSyntheticVouchers(count) {
       },
       inventory: [],
       ledgers: [],
-      tallyGuid: `perf-guid-${i}`,
+      tallyGuid: `${COMPANY_GUID}-${i}`,
       tallyAlterId: 1000 + i,
       voucherStatus: "active",
     });
@@ -132,7 +133,7 @@ async function testPerformanceAndEfficiency() {
   const missingCount = 5;
   const tallyGuids = [];
   for (let i = 0; i < VOUCHER_COUNT - missingCount; i += 1) {
-    tallyGuids.push({ guid: `perf-guid-${i}` });
+    tallyGuids.push({ guid: `${COMPANY_GUID}-${i}` });
   }
 
   // Confirm the Mongo side of the diff is a single query, not one-per-doc.
@@ -146,6 +147,7 @@ async function testPerformanceAndEfficiency() {
   const start = Date.now();
   const result = await reconcileVoucherType({
     tenantId: TENANT,
+    companyGuid: COMPANY_GUID,
     Model: Sale,
     fetchAllGuids: async () => ({ data: { collection: tallyGuids } }),
   });
@@ -208,7 +210,7 @@ async function testMongoFailureAfterTallySnapshot() {
   await seed(20);
 
   const tallyGuids = [];
-  for (let i = 0; i < 15; i += 1) tallyGuids.push({ guid: `perf-guid-${i}` }); // 5 "missing"
+  for (let i = 0; i < 15; i += 1) tallyGuids.push({ guid: `${COMPANY_GUID}-${i}` }); // 5 "missing"
 
   const before = await Sale.countDocuments({ tenantId: TENANT, voucherStatus: "active" });
 
@@ -222,6 +224,7 @@ async function testMongoFailureAfterTallySnapshot() {
   try {
     result = await reconcileVoucherType({
       tenantId: TENANT,
+      companyGuid: COMPANY_GUID,
       Model: Sale,
       fetchAllGuids: async () => ({ data: { collection: tallyGuids } }),
     });

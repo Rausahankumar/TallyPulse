@@ -1,5 +1,6 @@
 const { getVoucherTypeMasters } = require("../odbc/odbcService");
 const { unwrapJsonExValue } = require("../parser/tallyParser");
+const { validateMasterOwnership } = require("./companyOwnership");
 
 // --------------------------------------------------
 // Generic, metadata-driven Sales/Purchase voucher-type classification.
@@ -62,8 +63,10 @@ function parseVoucherTypeMasterList(rawTallyResponse) {
       const name = safeString(meta.name).trim();
       const reservedName = safeString(meta.reservedname).trim();
       const parent = safeString(entry && entry.parent).trim();
+      // "<companyGuid>-<masterId>": what ties a master to its company.
+      const guid = safeString(entry && entry.guid).trim();
 
-      return { name, parent, reservedName };
+      return { name, parent, reservedName, guid };
     })
     .filter((entry) => entry.name);
 }
@@ -251,10 +254,18 @@ function buildFetchFailureResult(reason) {
 // from Tally's own current live state, never from anything written by a
 // previous run. See the accompanying report for the explicit
 // in-memory-vs-persisted decision.
+//
+// Company isolation: Tally answers master queries for whichever company is
+// SELECTED, which need not be the tenant's. A master list is therefore checked
+// against the tenant's configured company GUID (companyOwnership.js) BEFORE it
+// is classified or cached; a foreign or unverifiable list is a fetch failure
+// and is never cached, so one tenant can never be served - or leave behind -
+// another company's voucher types. The key is always the tenant's companyGuid;
+// there is no "default" key any more.
 const classificationCache = new Map();
 
-function cacheKeyFor(companyGuid, baseUrl) {
-  return companyGuid || baseUrl || "default";
+function cacheKeyFor(companyGuid) {
+  return companyGuid;
 }
 
 // Fail-closed by construction: any fetch/parse error, or a company whose
@@ -268,7 +279,14 @@ async function resolveVoucherTypeClassification({
   forceRefresh = false,
   cacheTtlMs = DEFAULT_CACHE_TTL_MS,
 } = {}) {
-  const key = cacheKeyFor(companyGuid, baseUrl);
+  // Without a trusted company GUID nothing can be verified or cached safely.
+  if (typeof companyGuid !== "string" || !companyGuid.trim()) {
+    return buildFetchFailureResult(
+      "No company GUID was supplied, so Tally's voucher types cannot be tied to a company."
+    );
+  }
+
+  const key = cacheKeyFor(companyGuid);
 
   if (!forceRefresh) {
     const cached = classificationCache.get(key);
@@ -313,6 +331,15 @@ async function resolveVoucherTypeClassification({
     return buildFetchFailureResult(
       "Tally returned zero voucher types - cannot classify Sales/Purchase."
     );
+  }
+
+  const ownership = validateMasterOwnership(masters, companyGuid);
+
+  if (!ownership.ok) {
+    console.warn(
+      `[companyOwnership] REJECTED voucher-type masters company=${String(companyGuid).slice(0, 8)}... total=${ownership.total} foreign=${ownership.foreign} verified=${ownership.verified} sample=[${ownership.sample.join(",")}]`
+    );
+    return buildFetchFailureResult(ownership.reason);
   }
 
   const classification = classifyVoucherTypes(masters);

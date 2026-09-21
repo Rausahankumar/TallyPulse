@@ -168,8 +168,8 @@ function startStubVoucherTypeServer() {
     data: {
       metadata: {},
       collection: [
-        { metadata: { type: "Voucher Type", name: "Sales", reservedname: "Sales" }, parent: { type: "String", value: "Sales" } },
-        { metadata: { type: "Voucher Type", name: "Purchase", reservedname: "Purchase" }, parent: { type: "String", value: "Purchase" } },
+        { metadata: { type: "Voucher Type", name: "Sales", reservedname: "Sales" }, parent: { type: "String", value: "Sales" }, guid: { type: "String", value: `${RECON_TEST_COMPANY_GUID}-1` } },
+        { metadata: { type: "Voucher Type", name: "Purchase", reservedname: "Purchase" }, parent: { type: "String", value: "Purchase" }, guid: { type: "String", value: `${RECON_TEST_COMPANY_GUID}-2` } },
       ],
     },
   };
@@ -179,7 +179,8 @@ function startStubVoucherTypeServer() {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(responseBody));
+      // The worker now verifies the open Tally company first (see reconciliationWorker.js), so the stub must also report this test company as the open one.
+      res.end(JSON.stringify(req.headers.id === "RTS Company Guid Collection" ? { status: "1", data: { collection: [{ name: { value: "Verify Reconciliation Co" }, guid: { value: RECON_TEST_COMPANY_GUID } }] } } : responseBody));
     });
   });
 
@@ -231,6 +232,8 @@ async function testRealDeletionDetection() {
     return;
   }
 
+  // Real Tally voucher GUIDs are "<companyGuid>-<id>": the company this live list belongs to.
+  const liveCompanyGuid = realSalesGuids[0].split("-").slice(0, 5).join("-");
   const keepSalesGuids = realSalesGuids.slice(0, KEEP_COUNT);
   const deletedSalesGuid = `verify-reconciliation-absent-sales-${suffix}`;
   const keepPurchaseGuids = realPurchaseGuids.slice(0, KEEP_COUNT);
@@ -245,8 +248,8 @@ async function testRealDeletionDetection() {
     makePurchaseDoc({ tallyGuid: deletedPurchaseGuid, voucherNo: "RECON-GONE-P", alterId: 999 }),
   ]);
 
-  const salesResult = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, Model: Sale, fetchAllGuids: salesGuidsForTest });
-  const purchaseResult = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, Model: Purchase, fetchAllGuids: purchaseGuidsForTest });
+  const salesResult = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, companyGuid: liveCompanyGuid, Model: Sale, fetchAllGuids: salesGuidsForTest });
+  const purchaseResult = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, companyGuid: liveCompanyGuid, Model: Purchase, fetchAllGuids: purchaseGuidsForTest });
 
   const saleAfter = await Sale.findOne({ tenantId: RECON_TEST_TENANT, tallyGuid: deletedSalesGuid }).lean();
   const purchaseAfter = await Purchase.findOne({ tenantId: RECON_TEST_TENANT, tallyGuid: deletedPurchaseGuid }).lean();
@@ -267,8 +270,8 @@ async function testRealDeletionDetection() {
   );
 
   // Idempotency: running again immediately must find nothing new.
-  const salesResult2 = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, Model: Sale, fetchAllGuids: salesGuidsForTest });
-  const purchaseResult2 = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, Model: Purchase, fetchAllGuids: purchaseGuidsForTest });
+  const salesResult2 = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, companyGuid: liveCompanyGuid, Model: Sale, fetchAllGuids: salesGuidsForTest });
+  const purchaseResult2 = await reconcileVoucherType({ tenantId: RECON_TEST_TENANT, companyGuid: liveCompanyGuid, Model: Purchase, fetchAllGuids: purchaseGuidsForTest });
   check("re-running immediately marks 0 new deletions (Sales)", salesResult2.markedDeletedCount === 0, salesResult2.markedDeletedCount);
   check("re-running immediately marks 0 new deletions (Purchase)", purchaseResult2.markedDeletedCount === 0, purchaseResult2.markedDeletedCount);
 }
@@ -313,7 +316,7 @@ async function testFailClosedConnectionError() {
   console.log("\n=== SYNTHETIC: Tally connection error -> abort, nothing touched ===");
   const before = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
   const result = await reconcileVoucherType({
-    tenantId: RECON_TEST_TENANT, Model: Sale,
+    tenantId: RECON_TEST_TENANT, companyGuid: RECON_TEST_COMPANY_GUID, Model: Sale,
     fetchAllGuids: async () => { throw new Error("connect ECONNREFUSED simulated"); },
   });
   const after = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
@@ -325,7 +328,7 @@ async function testFailClosedEmptyResult() {
   console.log("\n=== SYNTHETIC: empty Tally result with active Mongo data -> abort as unsafe ===");
   const before = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
   const result = await reconcileVoucherType({
-    tenantId: RECON_TEST_TENANT, Model: Sale,
+    tenantId: RECON_TEST_TENANT, companyGuid: RECON_TEST_COMPANY_GUID, Model: Sale,
     fetchAllGuids: async () => ({ data: { collection: [] } }),
   });
   const after = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
@@ -337,7 +340,7 @@ async function testFailClosedMassDeletionRatio(seededGuids) {
   console.log("\n=== SYNTHETIC: Tally returns most guids missing (>50%) -> abort as unsafe ===");
   const before = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
   const result = await reconcileVoucherType({
-    tenantId: RECON_TEST_TENANT, Model: Sale,
+    tenantId: RECON_TEST_TENANT, companyGuid: RECON_TEST_COMPANY_GUID, Model: Sale,
     // Only 1 of the 4 seeded guids is reported present -> 3/4 = 75%
     // missing, definitively > the 50% abort threshold.
     fetchAllGuids: async () => ({ data: { collection: [{ guid: seededGuids[0] }] } }),
@@ -351,7 +354,7 @@ async function testMalformedResponse() {
   console.log("\n=== SYNTHETIC: malformed Tally response -> abort, nothing touched ===");
   const before = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });
   const result = await reconcileVoucherType({
-    tenantId: RECON_TEST_TENANT, Model: Sale,
+    tenantId: RECON_TEST_TENANT, companyGuid: RECON_TEST_COMPANY_GUID, Model: Sale,
     fetchAllGuids: async () => "not even json {{{",
   });
   const after = await Sale.countDocuments({ tenantId: RECON_TEST_TENANT, voucherStatus: "active" });

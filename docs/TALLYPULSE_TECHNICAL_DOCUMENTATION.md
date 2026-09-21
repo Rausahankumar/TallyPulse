@@ -159,13 +159,17 @@ Both workers follow the same pattern: the Mongo checkpoint's lock is only releas
 
 | Concept | Meaning in this codebase |
 |---|---|
-| `tenantId` | A generated `mongoose.Types.ObjectId().toString()`, created once at `Company` registration. **This — not `companyGuid` — is the identity every Sale/Purchase/analytics query is scoped by.** |
-| `companyGuid` | TallyPrime's own company GUID. Used to look up the `Company` record and to resolve which Tally connection to use; a company's data-access identity is always re-derived from it via `tenantId`, never trusted directly for data access. |
+| `tenantId` | A generated `mongoose.Types.ObjectId().toString()`, created once when a company is first connected ("Connect Tally", §7.3) and **reused whenever the same Tally company is connected again**. **This — not `companyGuid` — is the identity every Sale/Purchase/analytics query is scoped by.** Internal only: users never enter it and the company APIs do not return it. |
+| `companyGuid` | TallyPrime's own company GUID — the authoritative company identity, but **never typed by a user**: "Connect Tally" reads it from the company currently open in TallyPrime. Used to look up the `Company` record and to resolve which Tally connection to use; a company's data-access identity is always re-derived from it via `tenantId`, never trusted directly for data access. The company display name is never used as an identity. |
 | Current company model | `src/models/company.js` — one document per company: `companyName`, `sourceType` (`"tally"`), `companyGuid` (unique), `tenantId` (unique), `isActive`, optional `tallyConnection.baseUrl` (a per-company Tally endpoint override; falls back to `TALLY_URL`/`localhost:9000` when unset). |
 | Authorization/isolation | `src/services/auth/companyContext.js` → `resolveAuthorizedCompany(authUser, requestedCompanyGuid)`. Re-fetches the live `Company` record and re-checks `isActive` on every call — a stale JWT claim is never trusted for data access on its own. |
 | Active company context | The `activeCompanyContext` Express middleware attaches `req.companyContext = {tenantId, companyGuid, companyId, companyName}` after authorization. Currently used only by the chat routes (`src/routes/chatRoutes.js`); the import routes instead resolve tenant context directly from the JWT's `companyGuId` inside `tallySalesImport.resolveTenantContext()`. |
 
-**Multi-company-per-user is NOT IMPLEMENTED.** `User` (`src/models/user.model.js`) carries exactly one `companyId`/`companyGuId`/`tenantId` — a single user cannot today have access to more than one company. `companyContext.js` is explicitly designed as the one seam where this would later become a join-collection lookup (`{userId, companyId}`) instead of the current equality check, without changing any caller — but that join collection does not exist yet.
+**Account → company flow.** An account (`User`) is created with just name, email and password and has no company. "Connect Tally" (`POST /api/auth/companies`, §7.3) then detects the company open in TallyPrime and connects it; the first one becomes the account's default (`User.companyName/companyGuId/companyId/tenantId`, all optional until then). Every company an account can use is also listed in `UserCompanyAccess` (`{userId, companyId, companyGuid, tenantId}`), and `companyContext.js` authorizes a non-default company through that join collection.
+
+**Same company, same tenant.** `src/services/auth/companyIdentity.js` (`ensureCompanyForGuid`) makes the Tally GUID keep its tenant: connecting a company that was deactivated reactivates it, and connecting one whose `Company` record was deleted reuses the single historical tenant found in its checkpoints / access rows — so `SyncCheckpoint`s and vouchers are preserved and sync continues from the stored `lastAlterId`, not from 0. Several candidate tenants → `409` (never guessed or merged).
+
+**Access is not implied by Tally.** Having a company open in TallyPrime proves *which* company is connected, not that the account may have it. If other live accounts own the company, connecting it returns `403 You don't have access to this company.` There is no invitation / owner-approval mechanism yet (known gap); until one exists a company belongs to the account that connected it first.
 
 Every tenant-scoped write path (`voucherPersistence.js`) and every analytics read path (`analyticsScope.js`) requires `tenantId` as an explicit, non-optional parameter and fails closed (throws) if it's missing — there is no code path where a query can silently run without a tenant filter.
 
@@ -178,7 +182,7 @@ Every tenant-scoped write path (`voucherPersistence.js`) and every analytics rea
 | Collection (Model) | Key fields | Purpose |
 |---|---|---|
 | `Company` (`company.js`) | `companyName`, `sourceType`, `companyGuid` (unique), `tenantId` (unique), `isActive`, `tallyConnection.baseUrl` | One document per tenant/company. |
-| `User` (`user.model.js`) | `name`, `email` (unique), `password` (bcrypt hash), `role` (default `"user"`), `companyName`, `companyGuId`, `companyId` (ref `Company`), `tenantId` | Login identity. Single-company-per-user (see §4). |
+| `User` (`user.model.js`) | `name`, `email` (unique), `password` (bcrypt hash), `role` (default `"user"`), and the account's *default* company `companyName`, `companyGuId`, `companyId` (ref `Company`), `tenantId` — all optional, empty until the first company is connected | Login identity (email + password). Companies are attached with "Connect Tally" (see §4). |
 | `Sale` (`sales.model.js`) | `tenantId`, `header{voucherNo, voucherDate, voucherType, voucherTotalAmount, narration, partyName}`, `inventory[]`, `ledgers[]`, `tallyGuid`, `tallyAlterId`, `voucherStatus` (`active`\|`cancelled`\|`deleted`) | Sales voucher store. |
 | `Purchase` (`purchase.model.js`) | Identical shape to `Sale` | Purchase voucher store — a **separate collection**, not shared with `Sale` (voucher numbers are only unique within their own voucher-type numbering series in Tally). |
 | `SyncCheckpoint` (`syncCheckpoint.model.js`) | `tenantId`, `companyGuid`, `voucherType`, `lastAlterId`, `lastSyncedAt`, `lastRunStatus` (`never_run`\|`success`\|`failed`), `lastError`, `isRunning`, `lockedAt` | One document per {tenant, company, voucherType}; drives incremental sync. |
@@ -241,6 +245,10 @@ All routes are mounted in `server.js`. There are exactly **11 routes** in the wh
 | GET | `/` | none | inline in `server.js` (health check) |
 | POST | `/api/auth/register` | none | `authController.register` |
 | POST | `/api/auth/login` | none | `authController.login` |
+| POST | `/api/auth/companies` | **JWT required** (no company needed) | `authController.addCompany` ("Connect Tally") |
+| GET | `/api/auth/companies` | **JWT required** | `authController.listCompanies` |
+| POST | `/api/auth/switch-company` | **JWT required** | `authController.switchCompany` |
+| PATCH | `/api/auth/company` | **JWT + a connected company** | `authController.updateCompanyName` |
 | POST | `/api/import/tally-json` | **JWT required** | `importController.importTallyJson` |
 | POST | `/api/import/tally-live` | **JWT required** | `importController.importTallyLive` |
 | GET | `/api/odbc/company` | **none** (see warning below) | `odbcController.testTallyConnection` |
@@ -264,16 +272,14 @@ Health check. No auth.
 
 ### 7.2 `POST /api/auth/register`
 
-Creates a new `Company` and its first `User` in one call. No auth (this *is* the sign-up path).
+Creates an account. No auth (this *is* the sign-up path). **No company, GUID or tenant is asked for** — the company is connected afterwards (§7.3b).
 
 **Body (JSON):**
 ```json
 {
   "name": "Jane Doe",
   "email": "jane@example.com",
-  "password": "plaintext-password",
-  "companyName": "Nirmal FMCG Traders Ltd",
-  "companyGuId": "3fe86b69-3e5b-4e7e-8e25-46897ece9e31"
+  "password": "plaintext-password"
 }
 ```
 
@@ -285,30 +291,66 @@ Creates a new `Company` and its first `User` in one call. No auth (this *is* the
 **Errors:**
 | Status | Condition |
 |---|---|
-| 400 | any of `name/email/password/companyName/companyGuId` missing |
+| 400 | any of `name/email/password` missing |
 | 400 | `email` already registered |
-| 400 | `companyGuid` already registered to another company |
 | 500 | unexpected server/DB error |
-
-**Note:** this endpoint currently logs the full company/user creation payload to the console (including via `console.log`) — see §16.
 
 ### 7.3 `POST /api/auth/login`
 
 **Body:**
 ```json
-{ "email": "jane@example.com", "password": "plaintext-password", "companyGuId": "3fe86b69-3e5b-4e7e-8e25-46897ece9e31" }
+{ "email": "jane@example.com", "password": "plaintext-password" }
 ```
-
-`companyGuId` is required — the user lookup is `User.findOne({email, companyGuId})`, so a correct email+password with the wrong `companyGuId` is indistinguishable from a wrong password (both return 401).
 
 **Response 200:**
 ```json
-{ "success": true, "token": "<JWT, 7 day expiry>" }
+{ "success": true, "token": "<JWT, 7 day expiry>", "hasCompany": false }
 ```
 
-JWT payload: `{ id, companyGuId, tenantId, role }`.
+`hasCompany` is `false` for an account that has not connected a company yet. Its token identifies the account only (payload `{ id, role }`): it is accepted by the `/api/auth/*` connect/list/switch routes and refused (401) by every route that needs company data. Once a company is connected, the token is scoped to the account's default company: payload `{ id, role, companyGuId, tenantId }` — internal claims the frontend never displays.
 
-**Errors:** 401 (`Invalid credentials or company GUID`, or `Invalid credentials`), 500.
+**Errors:** 401 `Invalid credentials` (unknown email or wrong password — indistinguishable on purpose), 500.
+
+### 7.3b `POST /api/auth/companies` — Connect Tally
+
+Connects the company **currently open in TallyPrime** to the signed-in account. **Requires** `Authorization: Bearer <JWT>` (a company-less token from login is enough). The user types nothing about the company: the backend asks Tally which company is open and uses that company's name and GUID (the GUID stays internal).
+
+**Flow:** Register → Login → Connect Tally → the backend detects the current company.
+
+**Which company, when several are open.** TallyPrime can have several companies open at once, and its company list does not say which one is selected. The backend therefore never uses list order or a display name: with one open company it uses that one; with several it runs one light voucher-type master query and picks the open company whose GUID owns the returned masters (Tally answers for the *selected* company, and every master GUID is `<companyGuid>-<id>`). If exactly one company matches, that is the selected company; if none or more than one match, detection is ambiguous and the request returns `409`. The detected company is then run through the normal authorization rules below (a company owned by other accounts is still `403`) - there is never a fallback to a different open company.
+
+**Body (JSON):** empty for the account's **first** company.
+```json
+{}
+```
+For any **further** company the account's password is required again:
+```json
+{ "password": "plaintext-password" }
+```
+(A legacy client may still send `companyGuId`; it is only an assertion and must equal the company Tally reports, otherwise 400.)
+
+**Response 201** (new connection) / **200** (this company was already connected — "reconnected"):
+```json
+{
+  "success": true,
+  "message": "Company connected.",
+  "token": "<JWT scoped to the connected company>",
+  "data": { "companyGuid": "<opaque key used only by switch-company>", "companyName": "We Four", "created": true, "reactivated": false }
+}
+```
+`tenantId` is never returned. `created`/`reactivated` describe what happened; a company that already existed (deactivated, or its record deleted) keeps its tenant, checkpoints and data.
+
+**Errors:**
+| Status | Condition |
+|---|---|
+| 400 | no company is open: `Please open your company in TallyPrime and try again.` |
+| 400 | a client-sent `companyGuId` does not match the open company |
+| 401 | invalid session; or, for a second company, missing/incorrect `password` |
+| 403 | `You don't have access to this company.` — other accounts own it (no invitation mechanism yet) |
+| 409 | several companies are open and the selected one cannot be identified (`More than one company is open in TallyPrime. Keep only the company you want to connect open and try again.`) — an ambiguity response, not an access denial; or several historical tenants match (`Company connection is ambiguous; contact administrator.`) |
+| 503 | TallyPrime is unreachable |
+
+Companion routes: `GET /api/auth/companies` lists `[{ companyGuid, companyName, isActive, isDefault }]`; `POST /api/auth/switch-company` `{ "companyGuId": "<companyGuid from the list>" }` returns a token scoped to another company the account already has access to (no password, 403 otherwise); `PATCH /api/auth/company` `{ "companyName" }` renames the active company.
 
 ### 7.4 `POST /api/import/tally-json`
 
@@ -360,8 +402,15 @@ Tests connectivity to TallyPrime and returns the company name TDL report. **No a
 
 **Response 200:**
 ```json
-{ "success": true, "message": "Tally API connection successful", "data": { /* raw Tally JSONEx response */ } }
+{
+  "success": true,
+  "message": "Tally API connection successful",
+  "data": { /* raw Tally JSONEx company list, for diagnostics */ },
+  "detected": { "state": "ok", "companyName": "WE FOUR" }
+}
 ```
+
+`detected` is the authoritative answer to "which company is TallyPulse talking to?": the only open company or, with several open, the **selected** one (same rule as Connect Tally, §7.3b). `state` is `ok`, `ambiguous` (several open, selection not identifiable; includes a `message`), `no_company` or `unreachable`. It carries the company name only. Clients (the frontend's Test Connection) must use `detected` and never read the first entry of `data`.
 
 **Errors:** 500 with `{success:false, message:"<axios/Tally error>"}` if Tally is unreachable.
 
@@ -594,7 +643,7 @@ Only issues actually present and observed in this repository/testing are listed.
 
 **What is ready today:**
 
-- **Auth:** `/api/auth/register` and `/api/auth/login` are complete, return a JWT usable as `Authorization: Bearer <token>` on every other authenticated route.
+- **Auth:** `/api/auth/register` (name/email/password), `/api/auth/login` (email/password) and `POST /api/auth/companies` ("Connect Tally") are complete; the last one returns a company-scoped JWT usable as `Authorization: Bearer <token>` on every other authenticated route.
 - **Manual Sales import:** both `/api/import/tally-json` (file upload) and `/api/import/tally-live` (date-range live fetch) are complete, with a stable, documented response shape (§7.4–7.5).
 - **Chat scaffolding:** list/get/delete chat endpoints (`GET /api/chat/`, `GET /api/chat/:chatId`, `DELETE /api/chat/:chatId`) are fully functional today and return real, persisted data. A frontend chat list/history UI can be built against these three right now.
 - **Analytics contract, if/when reachable:** every analytics tool result (see §10, §11) — once actually reachable through a working `POST /api/chat/*/message` call — is wrapped in a single, stable, already-verified JSON envelope:
@@ -707,7 +756,7 @@ Each connects to the real configured MongoDB, runs its checks (mutating and then
 
 ### 18.6 Test the HTTP API
 
-See §19 below for concrete examples. In short: register → login → use the returned JWT as a Bearer token for every other route except `/`, `/api/auth/*`, and (currently, unintentionally) `/api/odbc/*`.
+See §19 below for concrete examples. In short: register → login → Connect Tally (open the company in TallyPrime first) → use the returned company-scoped JWT as a Bearer token for every other route except `/`, `/api/auth/register`, `/api/auth/login`, and (currently, unintentionally) `/api/odbc/*`.
 
 ### 18.7 Important development notes
 
@@ -719,7 +768,7 @@ See §19 below for concrete examples. In short: register → login → use the r
 
 ## 19. API Testing Examples
 
-### 19.1 Register a company + user
+### 19.1 Register an account
 
 ```bash
 curl -X POST http://localhost:5000/api/auth/register \
@@ -727,9 +776,7 @@ curl -X POST http://localhost:5000/api/auth/register \
   -d '{
     "name": "Jane Doe",
     "email": "jane@example.com",
-    "password": "ChangeMe123!",
-    "companyName": "Acme Traders",
-    "companyGuId": "11111111-2222-3333-4444-555555555555"
+    "password": "ChangeMe123!"
   }'
 ```
 
@@ -738,19 +785,26 @@ curl -X POST http://localhost:5000/api/auth/register \
 ```bash
 curl -X POST http://localhost:5000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{
-    "email": "jane@example.com",
-    "password": "ChangeMe123!",
-    "companyGuId": "11111111-2222-3333-4444-555555555555"
-  }'
+  -d '{ "email": "jane@example.com", "password": "ChangeMe123!" }'
 ```
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:5000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"jane@example.com","password":"ChangeMe123!","companyGuId":"11111111-2222-3333-4444-555555555555"}' \
+  -d '{"email":"jane@example.com","password":"ChangeMe123!"}' \
   | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).token))")
 ```
+
+### 19.2b Connect Tally (open your company in TallyPrime first)
+
+```bash
+curl -X POST http://localhost:5000/api/auth/companies \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Response (201): `{ "success": true, "message": "Company connected.", "token": "<company-scoped JWT>", "data": { "companyName": "We Four", "created": true, "reactivated": false, ... } }`. Use the returned `token` from here on. A second company additionally needs `{"password": "ChangeMe123!"}` in the body.
 
 ### 19.3 Upload a Tally JSON export
 

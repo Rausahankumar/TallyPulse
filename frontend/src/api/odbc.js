@@ -18,10 +18,13 @@ export async function fetchRawTallySales() {
   return data; // { success, data: <raw Tally JSONEx response> }
 }
 
-// Best-effort extraction of a human-readable company name out of
-// Tally's JSONEx "RTS Company Report" shape. Tally's export format is
-// intentionally loosely-typed (see tallyParser.unwrapJsonExValue on the
-// backend) so this is defensive, not a guaranteed schema.
+// Best-effort extraction of a company name out of Tally's raw JSONEx company
+// list, ONLY when exactly one company is listed. With several open companies
+// the list does not say which is selected, so this deliberately answers null
+// rather than guessing the first entry - the backend's `detected` field
+// (see evaluateTallyConnection) is the authoritative answer. Tally's export
+// format is intentionally loosely-typed (see tallyParser.unwrapJsonExValue on
+// the backend) so this is defensive, not a guaranteed schema.
 export function extractTallyCompanyName(rawTallyResponse) {
   try {
     // rawTallyResponse is the odbc controller's {success, message, data}
@@ -34,6 +37,7 @@ export function extractTallyCompanyName(rawTallyResponse) {
     // level of nesting was never actually exercised.
     const tallyData = rawTallyResponse?.data?.data ?? rawTallyResponse?.data;
     const collection = tallyData?.collection || tallyData || [];
+    if (Array.isArray(collection) && collection.length !== 1) return null;
     const first = Array.isArray(collection) ? collection[0] : collection;
     const name = first?.name ?? first?.Name ?? first?.$Name;
     if (typeof name === "string" && name.trim()) return name.trim();
@@ -67,7 +71,23 @@ function normalize(name) {
 // --------------------------------------------------
 export async function evaluateTallyConnection(expectedCompanyName) {
   const result = await testTallyConnection();
-  const tallyCompanyName = extractTallyCompanyName(result);
+
+  // The backend decides which company is "the one open in Tally" (the only open
+  // company, or the SELECTED one when several are open). The frontend never
+  // reads that off the raw company list.
+  const detected = result?.detected;
+
+  if (detected?.state === "ambiguous") {
+    return {
+      state: "ambiguous",
+      tallyCompanyName: null,
+      message:
+        detected.message ||
+        "More than one company is open in TallyPrime. Keep only the company you want to connect open and try again.",
+    };
+  }
+
+  const tallyCompanyName = detected?.state === "ok" ? detected.companyName : detected ? null : extractTallyCompanyName(result);
 
   if (!tallyCompanyName) {
     return {
@@ -84,7 +104,7 @@ export async function evaluateTallyConnection(expectedCompanyName) {
       return {
         state: "mismatch",
         tallyCompanyName,
-        message: `TallyPrime is reachable, but it has "${tallyCompanyName}" open, not "${expectedCompanyName}". This can't be verified by GUID - Tally's API doesn't expose one here - so double-check the right company is open in Tally.`,
+        message: `TallyPrime is reachable, but "${tallyCompanyName}" is the selected company, not "${expectedCompanyName}". Select the right company in TallyPrime and try again.`,
       };
     }
   }

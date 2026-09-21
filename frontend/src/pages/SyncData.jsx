@@ -171,6 +171,7 @@ export default function SyncData() {
           </Button>
           {tallyStatus === "ok" && <Badge tone="success" dot>Connected</Badge>}
           {tallyStatus === "mismatch" && <Badge tone="warning" dot>Wrong company</Badge>}
+          {tallyStatus === "ambiguous" && <Badge tone="warning" dot>Multiple companies open</Badge>}
           {tallyStatus === "no_company" && <Badge tone="warning" dot>No company data</Badge>}
           {tallyStatus === "error" && <Badge tone="danger" dot>Unreachable</Badge>}
           {tallyDetail && <span className="text-[13px] text-ink-500">{tallyDetail}</span>}

@@ -1,58 +1,38 @@
 import client from "./client";
 
 // POST /api/auth/register — backend/src/controllers/authController.js
-// Required fields, exactly as the backend validates them: name, email,
-// password, companyName, companyGuId. Creates the Company AND the
-// User in one atomic call — this is the ONLY endpoint that creates a
-// new TallyPulse account. Adding a second company to an EXISTING
-// account goes through addCompany() below instead, never this one.
-export async function registerAccount({
-  name,
-  email,
-  password,
-  companyName,
-  companyGuId,
-}) {
-  const { data } = await client.post("/auth/register", {
-    name,
-    email,
-    password,
-    companyName,
-    companyGuId,
-  });
+// Account only: name, email, password. No company, GUID or tenant is
+// entered here — the company is connected afterwards with
+// connectCompany() below, straight from whatever is open in TallyPrime.
+export async function registerAccount({ name, email, password }) {
+  const { data } = await client.post("/auth/register", { name, email, password });
   return data; // { success, message }
 }
 
-// POST /api/auth/login — requires companyGuId alongside email/password
-// (backend looks the user up as {email, companyGuId} together).
-export async function loginAccount({ email, password, companyGuId }) {
-  const { data } = await client.post("/auth/login", {
-    email,
-    password,
-    companyGuId,
-  });
-  return data; // { success, token }
+// POST /api/auth/login — email + password. The token opens on the
+// account's default company; an account that has not connected one yet
+// gets a company-less token ({ hasCompany: false }).
+export async function loginAccount({ email, password }) {
+  const { data } = await client.post("/auth/login", { email, password });
+  return data; // { success, token, hasCompany }
 }
 
-// POST /api/auth/companies — connect an ADDITIONAL company to the
-// currently logged-in account. Requires the caller's existing JWT
-// (sent automatically by client.js) plus their existing password to
-// authorize the action — never a new email/account.
-export async function addCompanyToAccount({ password, companyName, companyGuId }) {
-  const { data } = await client.post("/auth/companies", {
-    password,
-    companyName,
-    companyGuId,
-  });
-  return data.data; // { companyGuid, companyName, tenantId }
+// POST /api/auth/companies — "Connect Tally": the backend detects the
+// company that is open in TallyPrime and connects it to the current
+// account; nothing about the company is typed by the user. The very
+// first company needs no password; any further company also needs the
+// account password (re-authorization). Never a new email/account.
+export async function connectCompany({ password } = {}) {
+  const { data } = await client.post("/auth/companies", password ? { password } : {});
+  return data; // { success, message, token, data: { companyGuid, companyName, created, reactivated } }
 }
 
 // GET /api/auth/companies — every company the current account can
-// access (their original registration company + anything added via
-// addCompanyToAccount above).
+// access (their default company + anything connected via connectCompany
+// above). companyGuid is only an opaque key for switching; it is never shown.
 export async function listAccessibleCompanies() {
   const { data } = await client.get("/auth/companies");
-  return data.data; // [{ companyGuid, companyName, tenantId, isActive, isDefault }]
+  return data.data; // [{ companyGuid, companyName, isActive, isDefault }]
 }
 
 // POST /api/auth/switch-company — re-scopes the session's JWT to a
@@ -69,7 +49,7 @@ export async function switchActiveCompany(companyGuId) {
 // what used to be a browser-local-only "Update Company" mock.
 export async function renameActiveCompany(companyName) {
   const { data } = await client.patch("/auth/company", { companyName });
-  return data.data; // { companyGuid, companyName, tenantId }
+  return data.data; // { companyGuid, companyName }
 }
 
 // The backend issues a JWT but has no GET /me endpoint. Decoding the

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useNavigate, useSearchParams, Link } from "react-router-dom";
-import { LogIn, Mail, KeyRound, Building2, Info } from "lucide-react";
+import { useNavigate, Link } from "react-router-dom";
+import { LogIn, Mail, KeyRound, Info } from "lucide-react";
 import AuthLayout from "./AuthLayout";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";
@@ -8,19 +8,13 @@ import { useAuth } from "../../context/AuthContext";
 import { ApiError } from "../../api/client";
 
 export default function Login() {
-  const [params] = useSearchParams();
   const navigate = useNavigate();
   const { login } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [companyGuId, setCompanyGuId] = useState(params.get("companyGuId") || "");
   const [error, setError] = useState(null);
-  const [notice, setNotice] = useState(
-    params.get("companyGuId")
-      ? "Sign in to switch into this company — each company is its own TallyPulse account."
-      : null
-  );
+  const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
@@ -28,7 +22,7 @@ export default function Login() {
     setError(null);
     setLoading(true);
     try {
-      await login({ email, password, companyGuId });
+      await login({ email, password });
       navigate("/", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sign in failed.");
@@ -73,16 +67,6 @@ export default function Login() {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-        <Input
-          label="Company ID"
-          icon={Building2}
-          placeholder="Company GUID"
-          hint="The Tally company GUID you registered with."
-          value={companyGuId}
-          onChange={(e) => setCompanyGuId(e.target.value)}
-          required
-        />
-
         <div className="flex items-center justify-between text-[13px]">
           <label className="flex items-center gap-2 text-ink-500">
             <input type="checkbox" defaultChecked className="h-3.5 w-3.5 rounded border-surface-border accent-[#2457d8]" />
