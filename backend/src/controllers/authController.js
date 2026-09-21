@@ -193,6 +193,10 @@ const addCompany = async (req, res) => {
     });
 
     if (!ensured.ok) {
+      console.info(
+        `[connectCompany] account=${user._id} detected="${detected.name}" via=${detection.selectedBy} -> ${ensured.status} ${ensured.code}`
+      );
+
       return res.status(ensured.status).json({
         success: false,
         message: ensured.message,

@@ -82,12 +82,19 @@ async function survivingOwnerIds(companyGuid) {
 const isAllowed = (owners, requesterUserId) =>
   owners.size === 0 || (requesterUserId ? owners.has(String(requesterUserId)) : false);
 
-const NOT_AUTHORIZED = {
+// 403 only for a company whose EXACT GUID already has a surviving owner other
+// than the requester. The message names the company Tally reported (it is the
+// company open in the requester's own Tally, so nothing is disclosed): the most
+// common cause of an unexpected 403 is that Tally's SELECTED company is not the
+// one the user meant, and the name makes that visible.
+const notAuthorized = (companyName) => ({
   ok: false,
   status: 403,
   code: "not_authorized",
-  message: "You don't have access to this company.",
-};
+  message:
+    `You don't have access to this company${companyName ? ` ("${companyName}")` : ""}. ` +
+    "If you meant to connect a different company, select it in TallyPrime and try again.",
+});
 
 async function proveOrFail(proveTallyPossession) {
   if (typeof proveTallyPossession !== "function") {
@@ -137,7 +144,7 @@ async function ensureCompanyForGuid({
   const existing = await Company.findOne({ companyGuid });
 
   if (existing) {
-    if (!isAllowed(owners, requesterUserId)) return NOT_AUTHORIZED;
+    if (!isAllowed(owners, requesterUserId)) return notAuthorized(companyName || existing.companyName);
 
     // An owner reconnecting an active company needs nothing more.
     if (existing.isActive && requesterOwns) {
@@ -159,7 +166,7 @@ async function ensureCompanyForGuid({
 
   // No Company record. Whatever tenant evidence exists for this GUID must not
   // belong to another account.
-  if (!isAllowed(owners, requesterUserId)) return NOT_AUTHORIZED;
+  if (!isAllowed(owners, requesterUserId)) return notAuthorized(companyName);
 
   const candidates = await collectCandidateTenantIds(companyGuid);
 

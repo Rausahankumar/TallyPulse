@@ -187,7 +187,7 @@ const {
   getCompanyInfo,
   getSalesVouchers,
 } = require("../services/odbc/odbcService");
-const { extractOpenCompanies } = require("../services/parser/tallyParser");
+const { resolveSelectedOpenCompany } = require("../services/auth/tallyCompanyGuard");
 const {
   resolveVoucherTypeClassification,
 } = require("../services/tally/voucherTypeClassifier");
@@ -202,10 +202,29 @@ const testTallyConnection = async (req, res) => {
 
     const data = await getCompanyInfo();
 
+    // The authoritative answer to "which company is TallyPulse talking to?":
+    // the only open company, or - when several are open - the one Tally has
+    // SELECTED (resolveSelectedOpenCompany). Clients must use this, never the
+    // first entry of the raw company list. Name only: the GUID stays internal.
+    const detection = await resolveSelectedOpenCompany();
+    const detected = detection.ok
+      ? { state: "ok", companyName: detection.match.name || null }
+      : {
+          state:
+            detection.reason === "multiple_open"
+              ? "ambiguous"
+              : detection.reason === "no_company_open"
+                ? "no_company"
+                : "unreachable",
+          companyName: null,
+          message: detection.message,
+        };
+
     return res.status(200).json({
       success: true,
       message: "Tally API connection successful",
-      data
+      data,
+      detected
     });
 
   } catch (error) {
@@ -235,17 +254,18 @@ const getSales = async (req, res) => {
 
   try {
 
-    const openCompanies = extractOpenCompanies(await getCompanyInfo());
+    // The selected company - never "whichever is listed first".
+    const detection = await resolveSelectedOpenCompany();
 
-    if (!openCompanies.length) {
-      return res.status(400).json({
+    if (!detection.ok) {
+      return res.status(detection.reason === "unreachable" ? 503 : detection.reason === "multiple_open" ? 409 : 400).json({
         success: false,
-        message: "No company is currently open in TallyPrime.",
+        message: detection.message,
       });
     }
 
     const classification = await resolveVoucherTypeClassification({
-      companyGuid: openCompanies[0].guid,
+      companyGuid: detection.match.guid,
     });
 
     const salesClass = classification.sales;
