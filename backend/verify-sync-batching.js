@@ -72,8 +72,8 @@ function startStub() {
         res.end(JSON.stringify({
           status: "1",
           data: { collection: [
-            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" } },
-            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" } },
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${G1}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${G1}-2` } },
           ] },
         }));
       } else {
@@ -93,7 +93,7 @@ function rawVoucher(i, alter, { party = "Verify Vendor" } = {}) {
     date: "20260905",
     partyname: party,
     vouchertypename: "Purchase",
-    guid: `verify-batching-guid-${i}`,
+    guid: `${G1}-${i}`,
     alterid: String(alter),
     ledgerentries: [
       { ledgername: "Purchase AC", amount: "100.00", isdeemedpositive: true },
@@ -313,7 +313,7 @@ async function workerTests(stub) {
     check("retry now complete: 100 created, checkpoint advanced, status success", r2.created === 100 && r2.failed === 0 && cp2.lastAlterId === backlog[99].alter && cp2.lastRunStatus === "success");
     const r3 = await run(shortMod);
     check("next tick continues with the following window (no vouchers skipped or repeated)", r3.processed === 100 && r3.created === 100 && (await Purchase.countDocuments({ tenantId: T1 })) === 200);
-    check("the previously missing voucher was imported once the response was complete", !!(await Purchase.findOne({ tenantId: T1, tallyGuid: `verify-batching-guid-${backlog[42].i}` })));
+    check("the previously missing voucher was imported once the response was complete", !!(await Purchase.findOne({ tenantId: T1, tallyGuid: `${G1}-${backlog[42].i}` })));
   }
 
   console.log("\n=== WORKER: fetch completeness - small (unbounded) batch, empty response, superset ===");

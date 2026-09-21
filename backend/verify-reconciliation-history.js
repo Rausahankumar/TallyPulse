@@ -66,8 +66,8 @@ function startStub(openGuid = G1) {
         res.end(JSON.stringify({
           status: "1",
           data: { collection: [
-            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" } },
-            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" } },
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${openGuid}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${openGuid}-2` } },
           ] },
         }));
       }
@@ -83,12 +83,12 @@ const KINDS = {
   Sales: {
     Model: Sale, persist: processSingleVoucher, classificationKey: "sales", analytics: () => salesAnalytics,
     summary: (t) => salesAnalytics.getSalesSummary(t, WIDE),
-    guid: (i) => `verify-rh-sales-${i}`,
+    guid: (i) => `${G1}-${i}`,
   },
   Purchase: {
     Model: Purchase, persist: processSinglePurchaseVoucher, classificationKey: "purchase", analytics: () => purchaseAnalytics,
     summary: (t) => purchaseAnalytics.getPurchaseSummary(t, WIDE),
-    guid: (i) => `verify-rh-purchase-${i}`,
+    guid: (i) => `${G1}-${i}`,
   },
 };
 
@@ -283,6 +283,8 @@ async function main() {
       const seedResult = async () => {
         await cleanup();
         await seed("Sales", 10, T2, 100);
+        // T2 is company G2's tenant: its vouchers carry G2's GUID prefix, as real ones do.
+        await Sale.collection.updateMany({ tenantId: T2 }, [{ $set: { tallyGuid: { $replaceOne: { input: "$tallyGuid", find: G1, replacement: G2 } } } }]);
         await ReconciliationCheckpoint.create({
           tenantId: T2, companyGuid: G2, voucherType: "Sales", lastRunStatus: "aborted_unsafe",
           lastError: "previous real result", lastRunAt: new Date("2026-09-01T00:00:00Z"),
@@ -293,7 +295,7 @@ async function main() {
         const { updatedAt, __v, ...rest } = await ReconciliationCheckpoint.findOne({ tenantId: T2, voucherType: "Sales" }).lean();
         return JSON.stringify(rest);
       };
-      const tenGuids = allGuids("Sales", 10).map((g) => g.replace(/\d+$/, (n) => String(Number(n) + 100)));
+      const tenGuids = allGuids("Sales", 10).map((g) => g.replace(G1, G2).replace(/\d+$/, (n) => String(Number(n) + 100)));
 
       for (const [label, comp] of [["a DIFFERENT company is open", company2], ["NO company is open", company2None]]) {
         await seedResult();

@@ -63,8 +63,8 @@ function startStub() {
         res.end(JSON.stringify({
           status: "1",
           data: { collection: [
-            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" } },
-            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" } },
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${G1}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${G1}-2` } },
           ] },
         }));
       } else {
@@ -79,7 +79,7 @@ function startStub() {
 
 // ---- fixtures ----
 const alterOf = (i) => 1000 + i * 7;
-const guidOf = (i) => `verify-recovery-guid-${i}`;
+const guidOf = (i) => `${G1}-${i}`;
 
 function rawVoucher(i, { party = "Verify Vendor" } = {}) {
   return {

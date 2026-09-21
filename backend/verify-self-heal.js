@@ -62,8 +62,8 @@ function startStub() {
         res.end(JSON.stringify({
           status: "1",
           data: { collection: [
-            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" } },
-            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" } },
+            { metadata: { name: "Sales", reservedname: "Sales" }, parent: { value: "Sales" }, guid: { value: `${openGuid}-1` } },
+            { metadata: { name: "Purchase", reservedname: "Purchase" }, parent: { value: "Purchase" }, guid: { value: `${openGuid}-2` } },
           ] },
         }));
       }
@@ -76,7 +76,7 @@ function startStub() {
 
 // ---- fixtures ----
 const alterOf = (i) => 1000 + i * 7;
-const guidOf = (i) => `verify-selfheal-guid-${i}`;
+const guidOf = (i) => `${G1}-${i}`;
 
 const rawVoucher = (i) => ({
   vouchernumber: `VERIFY-SH-${i}`,

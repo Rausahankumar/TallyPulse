@@ -78,6 +78,7 @@ const purchaseAnalytics = require("./src/services/analytics/purchaseAnalytics");
 const dateRanges = require("./src/services/analytics/dateRanges");
 const { getCompanyInfo } = require("./src/services/odbc/odbcService");
 const { extractOpenCompanies } = require("./src/services/parser/tallyParser");
+const { resolveSelectedOpenCompany } = require("./src/services/auth/tallyCompanyGuard");
 
 const TENANT_A = "6a8e75cdf5f2a9694ed20472";
 // Used ONLY by test L (see the file-level comment above) - a fixed,
@@ -95,11 +96,18 @@ const COMPANY_GUID_B = "verify-lc-company-b";
 // against a guaranteed-wrong guid.
 let liveCompanyGuid = null;
 
+// Tests H/I/J run the REAL sync worker, whose company-ownership guard accepts only
+// vouchers whose GUID is "<companyGuid>-<masterId>" for the company under test -
+// as real Tally vouchers are. Synthetic vouchers therefore carry the live
+// company's GUID as their prefix (they are still written only under the
+// synthetic TENANT_A and cleaned up by their voucher numbers / this prefix).
+const lcGuid = (suffix) => `${liveCompanyGuid}-${suffix}`;
+
 async function resolveLiveOpenCompanyGuid() {
   try {
-    const openCompanies = extractOpenCompanies(await getCompanyInfo());
-    if (!openCompanies.length) return null;
-    return openCompanies[0].guid;
+    // The selected company when several are open - never the first listed.
+    const detection = await resolveSelectedOpenCompany();
+    return detection.ok ? detection.match.guid : null;
   } catch (error) {
     return null;
   }
@@ -372,7 +380,7 @@ async function testH_persistenceFailureDoesNotAdvanceCheckpoint() {
     vouchernumber: "VERIFY-LC-H-BAD",
     date: "20260905",
     partyname: "", // blank -> mapTallyPurchase throws "missing header.partyName"
-    guid: "verify-lc-guid-H",
+    guid: lcGuid("lcH"),
     alterid: "101",
     ledgerentries: [{ ledgername: "Purchase AC", amount: "100.00", isdeemedpositive: true }],
   };
@@ -414,7 +422,7 @@ async function testI_retryAfterFailureSucceeds() {
   // Same "voucher at AlterID 101" this time fixed (real partyname) -
   // simulating the user's retry after the transient failure is resolved.
   const fixedVoucher = purchaseVoucher({
-    guid: "verify-lc-guid-H", alterid: 101, voucherNo: "VERIFY-LC-H-FIXED", amount: 4200,
+    guid: lcGuid("lcH"), alterid: 101, voucherNo: "VERIFY-LC-H-FIXED", amount: 4200,
   });
 
   const fakeSyncModule = {
@@ -432,7 +440,7 @@ async function testI_retryAfterFailureSucceeds() {
     tenantId: TENANT_A, companyGuid: liveCompanyGuid, voucherType: "Purchase",
   }).lean();
 
-  const doc = await Purchase.findOne({ tenantId: TENANT_A, tallyGuid: "verify-lc-guid-H" }).lean();
+  const doc = await Purchase.findOne({ tenantId: TENANT_A, tallyGuid: lcGuid("lcH") }).lean();
 
   const pass =
     result.created === 1 &&
@@ -447,7 +455,7 @@ async function testI_retryAfterFailureSucceeds() {
     `created=${result.created}, lastAlterId=${checkpointAfter.lastAlterId}, lastRunStatus=${checkpointAfter.lastRunStatus}, doc.amount=${doc && doc.header.voucherTotalAmount}`
   );
 
-  await Purchase.deleteOne({ tenantId: TENANT_A, tallyGuid: "verify-lc-guid-H" });
+  await Purchase.deleteOne({ tenantId: TENANT_A, tallyGuid: lcGuid("lcH") });
   await restorePurchaseCheckpoint();
 }
 
@@ -461,7 +469,7 @@ async function testJ_replayAfterSuccessNoDuplicate() {
   // checkpoint only advances after full batch success - a restart mid
   // batch leaves the checkpoint at its pre-batch value, and replaying
   // the whole batch again is exactly what this test exercises.
-  const guid = "verify-lc-guid-J";
+  const guid = lcGuid("lcJ");
   await Purchase.deleteOne({ tenantId: TENANT_A, tallyGuid: guid });
   const v = purchaseVoucher({ guid, alterid: 900040, voucherNo: "VERIFY-LC-J", amount: 1500 });
 

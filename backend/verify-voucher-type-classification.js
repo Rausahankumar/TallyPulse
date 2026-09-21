@@ -56,6 +56,7 @@ const {
   getAllPurchaseVoucherGuids,
 } = require("./src/services/odbc/odbcService");
 const { extractOpenCompanies, unwrapJsonExValue } = require("./src/services/parser/tallyParser");
+const { resolveSelectedOpenCompany } = require("./src/services/auth/tallyCompanyGuard");
 const { extractVoucherCollection } = require("./src/services/import/tallySalesImport");
 const { verifyOpenTallyCompany } = require("./src/services/auth/tallyCompanyGuard");
 
@@ -472,10 +473,16 @@ async function testLiveClassificationAndQueries() {
   check("a company is currently open in Tally", openCompanies.length > 0, JSON.stringify(openCompanies));
   if (!openCompanies.length) return;
 
-  const openGuid = openCompanies[0].guid;
+  // The company Tally answers for: the only open one, or the SELECTED one when
+  // several are open (never openCompanies[0] merely because it is listed first).
+  const detection = await resolveSelectedOpenCompany();
+  check("the company Tally answers for is identified (selected one if several are open)", detection.ok, detection.message);
+  if (!detection.ok) return;
+
+  const openGuid = detection.match.guid;
   const label =
     openGuid === WE_FOUR_GUID ? "We Four" : openGuid === NIRMAL_GUID ? "Nirmal FMCG" : `unknown (${openGuid})`;
-  console.log(`  currently open company: ${openCompanies[0].name} [${label}]`);
+  console.log(`  current company: ${detection.match.name} [${label}]`);
 
   clearVoucherTypeClassificationCache(openGuid);
   const classification = await resolveVoucherTypeClassification({ companyGuid: openGuid, forceRefresh: true });
@@ -660,13 +667,16 @@ function startStubTallyServer(responseBody, { hang = false } = {}) {
   });
 }
 
-function buildStubVoucherTypeResponse(masters) {
+// Masters carry "<companyGuid>-<id>" (as real Tally masters do); the classifier
+// only accepts a master list it can tie to the tenant's company.
+function buildStubVoucherTypeResponse(masters, companyGuid) {
   return {
     status: "1",
     data: {
       metadata: {},
-      collection: masters.map((entry) => ({
+      collection: masters.map((entry, idx) => ({
         metadata: { type: "Voucher Type", name: entry.name, reservedname: entry.reservedName },
+        guid: { type: "String", value: `${companyGuid}-${idx + 1}` },
         parent: { type: "String", value: entry.parent },
       })),
     },
@@ -705,7 +715,7 @@ async function testCachingAvoidsRepeatedFetch() {
   console.log("\n=== SYNTHETIC: classification is cached (VoucherType master fetched once, reused) ===");
 
   const masters = [m("Sales", "Sales", "Sales"), m("Purchase", "Purchase", "Purchase")];
-  const { server, url, getHitCount } = await startStubTallyServer(buildStubVoucherTypeResponse(masters));
+  const { server, url, getHitCount } = await startStubTallyServer(buildStubVoucherTypeResponse(masters, "synthetic-cache-co"));
 
   try {
     clearVoucherTypeClassificationCache("synthetic-cache-co");
@@ -758,7 +768,7 @@ async function testTransientFetchFailureDoesNotPoisonCache() {
   check("first (failing) call reports error", failureResult.sales.status === "error");
 
   const masters = [m("Sales", "Sales", "Sales"), m("Purchase", "Purchase", "Purchase")];
-  const { server, url, getHitCount } = await startStubTallyServer(buildStubVoucherTypeResponse(masters));
+  const { server, url, getHitCount } = await startStubTallyServer(buildStubVoucherTypeResponse(masters, "synthetic-transient-co"));
   try {
     const recovered = await resolveVoucherTypeClassification({
       companyGuid: "synthetic-transient-co",
@@ -775,7 +785,7 @@ async function testNeedsConfigurationViaStub() {
   console.log("\n=== SYNTHETIC: end-to-end NEEDS_CONFIGURATION through resolveVoucherTypeClassification ===");
 
   const masters = [m("Purchase", "Purchase", "Purchase"), m("Journal", "Journal", "Journal")]; // no Sales root at all
-  const { server, url } = await startStubTallyServer(buildStubVoucherTypeResponse(masters));
+  const { server, url } = await startStubTallyServer(buildStubVoucherTypeResponse(masters, "synthetic-needs-config-co"));
 
   try {
     clearVoucherTypeClassificationCache("synthetic-needs-config-co");
