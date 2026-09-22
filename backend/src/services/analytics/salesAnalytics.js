@@ -272,6 +272,96 @@ async function getTopCustomers(tenantId, period, { limit = 10 } = {}) {
   };
 }
 
+// Sales for ONE specific named customer - distinct from getTopCustomers,
+// which ranks/lists customers within a period and cannot look up a
+// single customer by name. Matching is case-insensitive but full-STRING
+// anchored (^...$), never substring: "DHINGRA GENERAL STORE" and
+// "Dhingra General Store" match as the same real-world party (ordinary
+// data-entry casing variation), but "ABC TRADERS" and
+// "ABC TRADERS PVT LTD" never do, since neither is a full-string match of
+// the other - this is deliberate: safe normalization, never fuzzy
+// merging of genuinely different customers.
+//
+// Existence is checked separately from the requested period (an all-time,
+// unbounded Sale.distinct lookup) so a narrow-period zero result can never
+// be confused with "this customer doesn't exist" - see customerFound in
+// the return shape. hasData is always true here (even when orderCount is
+// 0): a zero total for a real customer in a real period IS the correct,
+// valid answer, not an empty-result state - wrapAnalyticsResult must not
+// collapse it into its generic "no matching records" message, which
+// would erase the found/not-found distinction. The tool description in
+// tools.js tells Claude how to phrase each of the resulting cases.
+async function getCustomerSales(tenantId, rawCustomerName, period) {
+  const customerName =
+    typeof rawCustomerName === "string" ? rawCustomerName.trim() : "";
+
+  const periodInfo = {
+    from: period.from,
+    to: period.to,
+    label: period.label || null,
+    isPartial: !!period.isPartial,
+  };
+
+  const notFound = {
+    customerFound: false,
+    matchedNames: [],
+    totalSales: null,
+    orderCount: null,
+    averageOrderValue: null,
+    period: periodInfo,
+    hasData: true,
+  };
+
+  if (!customerName) return notFound;
+
+  // Regex-escape the customer name before using it in $regex - it's real
+  // party-name text (often containing ".", "(", "&", etc., e.g.
+  // "M/S ABC (INDIA) PVT. LTD."), not a pattern, and must never be
+  // interpreted as one.
+  const escaped = customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const nameFilter = { $regex: `^${escaped}$`, $options: "i" };
+
+  // All-time existence check, active vouchers only, same tenant scope as
+  // every other analytics query. One cheap aggregation-layer call
+  // (Sale.distinct), not a document fetch.
+  const existsMatch = buildVoucherMatchStage({ tenantId });
+  existsMatch["header.partyName"] = nameFilter;
+  const matchedNames = await Sale.distinct("header.partyName", existsMatch);
+
+  if (matchedNames.length === 0) return notFound;
+
+  const periodMatch = buildVoucherMatchStage({
+    tenantId,
+    from: period.from,
+    to: period.to,
+  });
+  periodMatch["header.partyName"] = nameFilter;
+
+  const [agg] = await Sale.aggregate([
+    { $match: periodMatch },
+    {
+      $group: {
+        _id: null, // sum across every case-variant spelling as one customer
+        totalSales: { $sum: "$header.voucherTotalAmount" },
+        orderCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const totalSales = agg ? agg.totalSales : 0;
+  const orderCount = agg ? agg.orderCount : 0;
+
+  return {
+    customerFound: true,
+    matchedNames,
+    totalSales,
+    orderCount,
+    averageOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
+    period: periodInfo,
+    hasData: true,
+  };
+}
+
 // Explicitly NOT implemented - see file header. Returns a typed
 // "unsupported" result rather than a fabricated/empty one, so callers
 // (and ultimately Claude) can distinguish "no data" from "this feature
@@ -293,6 +383,7 @@ module.exports = {
   getTopGrowingProducts,
   getDecliningProducts,
   getTopCustomers,
+  getCustomerSales,
   getCategoryPerformance,
   computeGrowth,
 };

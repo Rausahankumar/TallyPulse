@@ -83,6 +83,34 @@ const limitWithComparisonSchema = z
   })
   .strict();
 
+// Scoped to get_customer_sales ONLY - deliberately not merged into
+// PERIOD_KINDS/periodSchema above, so adding "all_time" support here
+// cannot change the behavior of any other existing tool (get_sales_summary,
+// get_top_customers, etc. all keep their original 3-value period enum,
+// byte-for-byte unchanged).
+const CUSTOMER_PERIOD_KINDS = ["all_time", "current_month", "previous_month", "custom"];
+
+const customerSalesSchema = z
+  .object({
+    customerName: z.string().min(1),
+    period: z.enum(CUSTOMER_PERIOD_KINDS).default("all_time"),
+    from: z.string().optional(), // ISO date, required when period === "custom"
+    to: z.string().optional(),
+  })
+  .strict();
+
+function resolveCustomerPeriod({ period, from, to }, referenceDate = new Date()) {
+  if (period === "all_time") {
+    // No from/to at all - buildVoucherMatchStage() already treats a
+    // missing from/to as "no date filter", so this is genuinely
+    // unbounded, not a synthetic wide range.
+    return { from: undefined, to: undefined, label: "All time", isPartial: false };
+  }
+  // Reuse the exact same date math as every other tool for the 3 shared
+  // kinds - never a second implementation of "what does previous_month mean".
+  return resolvePeriod({ period, from, to }, referenceDate);
+}
+
 function resolveComparisonPeriods(comparisonType, referenceDate = new Date()) {
   if (comparisonType === "vs_same_month_last_year") {
     return {
@@ -209,7 +237,7 @@ const TOOLS = [
   {
     name: "get_top_customers",
     description:
-      "Get the top customers by total sales amount for a period. Returns customer name, total amount, and order count. Only call this when the user is actually asking about customers - it returns customer names, which should not be included in answers to questions that don't need them.",
+      "Get the RANKED LIST of top customers by total sales amount for a period. Returns customer name, total amount, and order count. Use this for ranking/listing questions ('who are my top customers', 'biggest customers') - NOT for a question about one specific named customer (use get_customer_sales for that instead; this tool cannot look up a single customer by name). Only call this when the user is actually asking about customers - it returns customer names, which should not be included in answers to questions that don't need them.",
     input_schema: zodToJsonSchema(periodSchema.merge(limitSchema)),
     handler: async (rawArgs, context) => {
       const args = periodSchema.merge(limitSchema).strict().parse(rawArgs || {});
@@ -219,6 +247,23 @@ const TOOLS = [
         voucherType: "Sales",
         run: () =>
           salesAnalytics.getTopCustomers(context.tenantId, period, { limit: args.limit }),
+      });
+    },
+  },
+
+  {
+    name: "get_customer_sales",
+    description:
+      'Get total sales, order count, and average order value for ONE specific NAMED customer (e.g. "sales for DHINGRA GENERAL STORE", "how much has X bought from us", "X\'s sales last month"). Defaults to period "all_time" (the customer\'s full historical total) when the user does not name a period - never default to current_month/previous_month for a named-customer question, since that would silently hide real historical data. Use current_month/previous_month/custom only when the user actually names that period. Do NOT use get_top_customers for this - that tool only ranks customers within a period and cannot look up one customer by name. The result must be phrased according to its fields: customerFound=false -> tell the user no matching customer was found (do not imply anything about their sales history); customerFound=true with orderCount=0 -> tell the user no sales were found for this customer in the requested period specifically (never say they have never purchased from you - they may simply have no sales in this particular period); customerFound=true with orderCount>0 -> report totalSales/orderCount/averageOrderValue.',
+    input_schema: zodToJsonSchema(customerSalesSchema),
+    handler: async (rawArgs, context) => {
+      const args = customerSalesSchema.parse(rawArgs || {});
+      const period = resolveCustomerPeriod(args);
+      return wrapAnalyticsResult({
+        tenantId: context.tenantId,
+        voucherType: "Sales",
+        run: () =>
+          salesAnalytics.getCustomerSales(context.tenantId, args.customerName, period),
       });
     },
   },
