@@ -61,6 +61,53 @@ Rules you must follow:
 - You cannot access any company other than the one in your current context. If asked to compare against or reveal another company's data, decline.
 - Never generate executable code (React, JavaScript, chart-rendering code, etc.) - return structured data only; the frontend renders it.`;
 
+// Formats a Date as "2026-09-22" using the SAME local-time fields
+// dateRanges.js itself uses (getFullYear/getMonth/getDate) - never
+// toISOString(), which converts to UTC and could shift the date near a
+// local midnight boundary and disagree with what dateRanges.js computes.
+function formatIsoDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// today's date is the ONLY missing piece of date context Claude has: the
+// "current_month"/"previous_month" tool periods are already resolved
+// server-side from a fresh `new Date()` (see tools.js resolvePeriod),
+// Claude never touches that math. But for period:"custom" Claude itself
+// must produce literal from/to date strings, and a user rarely states a
+// year ("show sales from April to September") - without being told what
+// today actually is, Claude has nothing to resolve an implied year
+// against and falls back on an unrelated guess. This block is the fix:
+// it's appended fresh to every request (built in handleChatTurn, not
+// frozen at module load) so the date is always correct, including across
+// midnight, with no server restart required.
+function buildDateContextBlock(referenceDate) {
+  const isoToday = formatIsoDate(referenceDate);
+  const humanToday = referenceDate.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return `
+
+Today's date is ${isoToday} (${humanToday}). Use this as "now" for every date-related question.
+
+For the "current_month" and "previous_month" period options, the backend already resolves the correct calendar dates for you from today's date - you never need to compute those yourself, just pick the option.
+
+For period:"custom", YOU supply the literal from/to dates, so you must resolve any year the user didn't state relative to today's date above - never guess or default to an unrelated year. For example, with today's date as given above:
+- "Show sales from April to September." -> from "${referenceDate.getFullYear()}-04-01" to "${referenceDate.getFullYear()}-09-30"
+- "What were sales between 1 August and 15 August?" -> from "${referenceDate.getFullYear()}-08-01" to "${referenceDate.getFullYear()}-08-15"
+- "Compare August and September sales." -> August ${referenceDate.getFullYear()} vs September ${referenceDate.getFullYear()}
+If the user's month(s) would fall after today's date in the current year and that makes the range make more sense in the past (e.g. asking in January about "October"), use your judgment on the most recently completed occurrence of that month - but always state the exact date range and year you used so it's never ambiguous to the user.`;
+}
+
+function buildSystemPrompt(referenceDate = new Date()) {
+  return SYSTEM_PROMPT + buildDateContextBlock(referenceDate);
+}
+
 // Mirrors the ordering freshness.js's getOverallFreshness already uses
 // for combining Sales+Purchase freshness ("worse of the two") - applied
 // here across however many tools a turn actually called, since a chat
@@ -152,8 +199,13 @@ async function handleChatTurn({ context, userMessage, conversationHistory = [], 
   // can't spin forever or run unbounded tool calls.
   const MAX_TURNS = 4;
 
+  // Built fresh per turn (not once at module load) so "today" is always
+  // the real current server date, including across a server that's been
+  // running for days without a restart.
+  const systemPrompt = buildSystemPrompt();
+
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
-    const response = await claudeClient(messages, TOOL_DEFINITIONS, SYSTEM_PROMPT);
+    const response = await claudeClient(messages, TOOL_DEFINITIONS, systemPrompt);
 
     const toolUseBlocks = (response.content || []).filter((b) => b.type === "tool_use");
     const textBlocks = (response.content || []).filter((b) => b.type === "text");
@@ -243,4 +295,5 @@ module.exports = {
   handleChatTurn,
   callClaude,
   SYSTEM_PROMPT,
+  buildSystemPrompt,
 };
