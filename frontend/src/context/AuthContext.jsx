@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   loginAccount,
   registerAccount,
@@ -7,8 +7,7 @@ import {
   decodeJwtPayload,
 } from "../api/auth";
 import { getStoredToken, setStoredToken } from "../api/client";
-
-const AuthContext = createContext(null);
+import { AuthContext } from "./AuthContextObject";
 
 function sessionFromToken(token) {
   if (!token) return null;
@@ -92,10 +91,4 @@ export function AuthProvider({ children }) {
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 }

@@ -6,7 +6,7 @@ import Card, { CardHeader } from "../components/ui/Card";
 import Table from "../components/ui/Table";
 import DonutChart from "../components/charts/DonutChart";
 import AnalyticsNotice, { StaleDataBanner } from "../components/ui/AnalyticsNotice";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { formatCurrency } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";

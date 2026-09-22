@@ -9,7 +9,7 @@ import DonutChart from "../components/charts/DonutChart";
 import LineTrendChart from "../components/charts/LineTrendChart";
 import RecentActivity from "../components/dashboard/RecentActivity";
 import AnalyticsNotice from "../components/ui/AnalyticsNotice";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { formatCompactCurrency } from "../lib/format";
 import {

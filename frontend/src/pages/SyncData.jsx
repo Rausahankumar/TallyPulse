@@ -14,7 +14,7 @@ import { getSyncStatus } from "../api/sync";
 import { ApiError } from "../api/client";
 import { useAsync } from "../lib/useAsync";
 import { useTallyConnectionTest } from "../lib/useTallyConnectionTest";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { formatCurrency } from "../lib/format";
 import { toDateInputValue, parseDateInputValue, formatRangeLabel } from "../lib/mockDateRange";
 

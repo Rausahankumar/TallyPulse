@@ -8,7 +8,7 @@ import SuggestedQuestions from "../components/chat/SuggestedQuestions";
 import AiNotConnectedNotice from "../components/chat/AiNotConnectedNotice";
 import DemoInsightCard from "../components/chat/DemoInsightCard";
 import Button from "../components/ui/Button";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { listChats, getChat, sendChatMessage, deleteChat } from "../api/chat";
 import { ApiError } from "../api/client";
 import { MOCK_AI_DEMO_TURN, MOCK_SUGGESTED_QUESTIONS } from "../mock/mockData";

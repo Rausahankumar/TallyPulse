@@ -1,8 +1,8 @@
 import { NavLink } from "react-router-dom";
 import { BarChart3, LogOut } from "lucide-react";
 import { NAV_ITEMS } from "./navConfig";
-import { useAuth } from "../../context/AuthContext";
-import { useCompany } from "../../context/CompanyContext";
+import { useAuth } from "../../context/useAuth";
+import { useCompany } from "../../context/useCompany";
 import { cn } from "../../lib/cn";
 
 export default function Sidebar({ onNavigate }) {

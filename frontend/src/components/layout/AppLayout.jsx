@@ -3,7 +3,7 @@ import { Outlet } from "react-router-dom";
 import { X } from "lucide-react";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
-import { useCompany } from "../../context/CompanyContext";
+import { useCompany } from "../../context/useCompany";
 
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);

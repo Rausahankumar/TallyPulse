@@ -8,7 +8,7 @@ import Table from "../components/ui/Table";
 import AnalyticsNotice, { StaleDataBanner } from "../components/ui/AnalyticsNotice";
 import SimpleBarChart from "../components/charts/SimpleBarChart";
 import { TableSkeleton, ChartCardSkeleton } from "../components/ui/Skeleton";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { formatCurrency } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";

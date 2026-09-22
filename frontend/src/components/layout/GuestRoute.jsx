@@ -1,5 +1,5 @@
 import { Navigate, Outlet } from "react-router-dom";
-import { useAuth } from "../../context/AuthContext";
+import { useAuth } from "../../context/useAuth";
 
 // Mirrors ProtectedRoute in the other direction: found by QA that
 // typing /login or /register in the URL bar while already signed in

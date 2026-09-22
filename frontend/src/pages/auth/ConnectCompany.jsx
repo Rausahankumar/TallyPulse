@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { Plug, LogOut } from "lucide-react";
 import AuthLayout from "./AuthLayout";
 import Button from "../../components/ui/Button";
-import { useAuth } from "../../context/AuthContext";
+import { useAuth } from "../../context/useAuth";
 import { ApiError } from "../../api/client";
 
 // "Connect Tally": the last onboarding step. The user opens their company

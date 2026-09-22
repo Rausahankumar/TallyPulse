@@ -14,12 +14,17 @@ export default function FilterBar({ fy = "fy2025-26", onFyChange, range, onRange
   const [open, setOpen] = useState(false);
   const [draftFrom, setDraftFrom] = useState(toDateInputValue(range.from));
   const [draftTo, setDraftTo] = useState(toDateInputValue(range.to));
-  const ref = useRef(null);
-
-  useEffect(() => {
+  // Resets the draft inputs whenever the parent's range changes (e.g.
+  // Reset button, financial-year switch) - adjusted during render rather
+  // than in an effect, so a range change and the draft reset land in the
+  // same commit instead of a stale draft flashing for one extra render.
+  const [prevRange, setPrevRange] = useState(range);
+  if (range !== prevRange) {
+    setPrevRange(range);
     setDraftFrom(toDateInputValue(range.from));
     setDraftTo(toDateInputValue(range.to));
-  }, [range]);
+  }
+  const ref = useRef(null);
 
   useEffect(() => {
     function onClick(e) {

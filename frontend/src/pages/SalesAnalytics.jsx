@@ -7,7 +7,7 @@ import Card, { CardHeader } from "../components/ui/Card";
 import Table from "../components/ui/Table";
 import LineTrendChart from "../components/charts/LineTrendChart";
 import AnalyticsNotice, { StaleDataBanner } from "../components/ui/AnalyticsNotice";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { formatCompactCurrency, formatCurrency, formatNumber } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";

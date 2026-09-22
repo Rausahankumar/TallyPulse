@@ -1,8 +1,7 @@
-import { createContext, useContext, useMemo, useState, useCallback, useEffect } from "react";
-import { useAuth } from "./AuthContext";
+import { useMemo, useState, useCallback, useEffect } from "react";
+import { useAuth } from "./useAuth";
 import { listAccessibleCompanies } from "../api/auth";
-
-const CompanyContext = createContext(null);
+import { CompanyContext } from "./CompanyContextObject";
 
 export function CompanyProvider({ children }) {
   const { session, switchCompany: authSwitchCompany, connectCompany: authConnectCompany } = useAuth();
@@ -30,7 +29,12 @@ export function CompanyProvider({ children }) {
     }
   }, [session]);
 
+  // Fetching from the backend on mount/session change - synchronizing
+  // with an external system, the documented case this lint rule allows
+  // an effect for (not the "adjusting state from props" case it exists
+  // to catch).
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
     refreshCompanies();
   }, [refreshCompanies]);
 
@@ -82,10 +86,4 @@ export function CompanyProvider({ children }) {
   );
 
   return <CompanyContext.Provider value={value}>{children}</CompanyContext.Provider>;
-}
-
-export function useCompany() {
-  const ctx = useContext(CompanyContext);
-  if (!ctx) throw new Error("useCompany must be used within CompanyProvider");
-  return ctx;
 }

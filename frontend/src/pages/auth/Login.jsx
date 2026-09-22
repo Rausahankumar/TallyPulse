@@ -4,7 +4,7 @@ import { LogIn, Mail, KeyRound, Info } from "lucide-react";
 import AuthLayout from "./AuthLayout";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";
-import { useAuth } from "../../context/AuthContext";
+import { useAuth } from "../../context/useAuth";
 import { ApiError } from "../../api/client";
 
 export default function Login() {

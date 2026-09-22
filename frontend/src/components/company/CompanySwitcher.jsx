@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { ChevronDown, Building2, Plus, Check } from "lucide-react";
-import { useCompany } from "../../context/CompanyContext";
+import { useCompany } from "../../context/useCompany";
 import AddCompanyModal from "./AddCompanyModal";
 import { cn } from "../../lib/cn";
 
@@ -37,8 +37,6 @@ export default function CompanySwitcher() {
       setOpen(false);
     }
   }
-
-  const others = companies.filter((c) => c.companyGuid !== activeCompany?.companyGuid);
 
   return (
     <>
