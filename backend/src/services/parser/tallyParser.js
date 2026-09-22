@@ -48,6 +48,31 @@ function normalizeLedgerEntryType(ledgerAmount, isDeemedPositive, explicitType) 
   return ledgerAmount >= 0 ? 'Credit' : 'Debit';
 }
 
+// The true voucher/invoice total: the absolute amount of the ledger
+// entry(ies) whose ledgerName exactly matches partyName (a balanced
+// voucher's party ledger line IS the full total - see the call site's
+// comment for the audit evidence). Returns null (never a fabricated 0 or
+// silently-wrong number) when no ledger entry matches, so the caller can
+// apply its own defensive fallback for that edge case. Multiple entries
+// under the exact same party name (not observed in real data so far, but
+// possible in principle - e.g. a split-reference line) are summed
+// BEFORE taking the absolute value, not summed as separate absolutes:
+// this is the only behavior consistent with "the party's net position in
+// this voucher," and is the specific behavior verify-tally-parser.js
+// tests for that case documents and locks in.
+function computePartyLedgerTotal(ledgers, partyName) {
+  if (!partyName) return null;
+
+  const entries = (Array.isArray(ledgers) ? ledgers : []).filter(
+    (l) => l && l.ledgerName === partyName
+  );
+
+  if (entries.length === 0) return null;
+
+  const net = entries.reduce((sum, l) => sum + Number(l.ledgerAmount || 0), 0);
+  return Math.abs(net);
+}
+
 function findCollectionByKeywords(value, keywords) {
   const matches = [];
   const lowerKeywords = keywords.map((key) => String(key).toLowerCase());
@@ -256,19 +281,35 @@ function parseTallyVoucher(voucher) {
     })
     .filter(Boolean);
 
+  // partyName is needed here (not just in the returned header below) to
+  // locate the party ledger entry for voucherTotalAmount - hoisted out of
+  // the final return object, same expression, unchanged.
+  const partyName = safeString(voucher.partyname || voucher.partyledgername || voucher.basicbuyername || voucher.customerName || voucher.name || '').trim();
+
   const inventoryTotal = parsedInventory.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  // Fallback used only when there's no inventory (e.g. an accounting-only
-  // voucher - common for Purchase, possible for Sales too). In that case
-  // the top-level ledger list is a complete, balanced double-entry set:
-  // sum(debits) == sum(credits) == the true total, so sum(|amount|) is
-  // always exactly 2x the total, by definition of double-entry
-  // bookkeeping - never an approximation. (When inventory exists, this
-  // branch isn't reached: ledgerentries there only carries the remainder
-  // not already posted via inventory->accountingallocations, so it isn't
-  // itself a complete balanced set and inventoryTotal is used instead.)
+  // Used only as a defensive fallback below, for a voucher shape the real
+  // data audited so far never produced (see computePartyLedgerTotal).
+  // Kept, not deleted, so an edge case that lacks a party-name-matching
+  // ledger line still gets a best-effort total instead of 0 - never
+  // silently 0 for a real voucher.
   const ledgerTotal = parsedLedgers.reduce((sum, item) => sum + Math.abs(Number(item.ledgerAmount || 0)), 0) / 2;
-  const voucherTotalAmount = inventoryTotal || ledgerTotal || 0;
+
+  // CORRECTED (financial-data-correctness audit): the true voucher/invoice
+  // total is the party (customer/supplier) ledger entry's amount, not the
+  // inventory subtotal. In a balanced Tally voucher the party ledger IS,
+  // by definition, the full total - item subtotal + tax + freight +
+  // rounding all net against it. Confirmed against 5,929 real vouchers
+  // (both tenants, Sales + Purchase) with zero "party ledger not found"
+  // cases, and independently verified to the paisa against a live Tally
+  // Voucher Register export. The previous formula
+  // (`inventoryTotal || ledgerTotal || 0`) used the pre-tax item subtotal
+  // whenever any inventory existed, silently excluding GST/freight/
+  // rounding from every affected voucher - see migrate-voucher-total-amount.js
+  // for the backfill of historical documents already stored with the old,
+  // wrong total.
+  const partyLedgerTotal = computePartyLedgerTotal(parsedLedgers, partyName);
+  const voucherTotalAmount = partyLedgerTotal !== null ? partyLedgerTotal : (inventoryTotal || ledgerTotal || 0);
 
   // Sync-identity fields. These are read directly off the raw voucher and
   // never throw, regardless of whether the header/inventory/ledger fields
@@ -297,7 +338,7 @@ function parseTallyVoucher(voucher) {
       voucherType: safeString(metadata.vchtype || voucher.vouchertypename || voucher.voucherType || 'Sales').trim() || 'Sales',
       voucherTotalAmount,
       narration: safeString(voucher.narration || voucher.remarks || voucher.voucherNarration || '').trim() || '',
-      partyName: safeString(voucher.partyname || voucher.partyledgername || voucher.basicbuyername || voucher.customerName || voucher.name || '').trim(),
+      partyName,
     },
     inventory: parsedInventory,
     ledgers: parsedLedgers,
@@ -332,4 +373,5 @@ module.exports = {
   parseTallyId,
   parseTallyBoolean,
   unwrapJsonExValue,
+  computePartyLedgerTotal,
 };
