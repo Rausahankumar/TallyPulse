@@ -10,6 +10,7 @@ import SimpleBarChart from "../components/charts/SimpleBarChart";
 import { TableSkeleton, ChartCardSkeleton } from "../components/ui/Skeleton";
 import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
+import { usePersistedRange } from "../lib/usePersistedRange";
 import { formatCurrency } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";
 import { getTopProducts, getGrowingProducts, getDecliningProducts } from "../api/analytics";
@@ -92,8 +93,7 @@ const COLUMNS = [
 export default function ProductsAnalytics() {
   const { activeCompany } = useCompany();
   const [tab, setTab] = useState("top");
-  const [fy, setFy] = useState("fy2025-26");
-  const [range, setRange] = useState(DEFAULT_RANGE);
+  const { range, setRange, reset: resetRange } = usePersistedRange("tp:range:products", DEFAULT_RANGE);
   const { data, loading, error } = useAsync(
     () => loadProductsAnalytics(range),
     [activeCompany?.tenantId, range.from.getTime(), range.to.getTime()]
@@ -105,13 +105,7 @@ export default function ProductsAnalytics() {
   return (
     <div>
       <PageHeader title="Products Analytics" subtitle="Discover your best and underperforming products." />
-      <FilterBar
-        fy={fy}
-        onFyChange={setFy}
-        range={range}
-        onRangeChange={setRange}
-        onReset={() => setRange(DEFAULT_RANGE)}
-      />
+      <FilterBar range={range} onRangeChange={setRange} onReset={resetRange} />
       <p className="mb-4 text-[12px] text-ink-400">
         Top Products uses the date range above. Growing/Declining Products compare this month to
         last month (the Analytics Engine's growth comparisons are fixed month-over-month).

@@ -1,5 +1,7 @@
 const salesAnalytics = require("../services/analytics/salesAnalytics");
 const purchaseAnalytics = require("../services/analytics/purchaseAnalytics");
+const dateRanges = require("../services/analytics/dateRanges");
+const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
 const {
   resolvePeriod,
@@ -30,7 +32,13 @@ const {
 const PERIOD_KINDS = ["current_month", "previous_month", "custom"];
 const COMPARISON_KINDS = ["vs_previous_month", "vs_same_month_last_year"];
 
-function parsePeriodFromQuery(query) {
+// `referenceDate` anchors what "current_month"/"previous_month" actually
+// mean - see services/analytics/referenceDate.js for why this is the
+// tenant's own latest voucher date, not necessarily the wall clock.
+// Every caller below computes it once per request and threads it
+// through; period="custom" ignores it entirely (an explicit from/to
+// needs no anchor).
+function parsePeriodFromQuery(query, referenceDate) {
   const period = query.period || "current_month";
 
   if (!PERIOD_KINDS.includes(period)) {
@@ -46,11 +54,26 @@ function parsePeriodFromQuery(query) {
   }
 
   try {
-    return resolvePeriod({ period, from: query.from, to: query.to });
+    return resolvePeriod({ period, from: query.from, to: query.to }, referenceDate);
   } catch (error) {
     error.status = error.status || 400;
     throw error;
   }
+}
+
+// Default window for a trend chart when the caller hasn't picked an
+// explicit range: the last 6 complete months ending at the tenant's own
+// reference date (see above) - not a hardcoded set of months.
+function parseTrendPeriodFromQuery(query, referenceDate) {
+  if (query.from && query.to) {
+    try {
+      return dateRanges.customRange(query.from, query.to);
+    } catch (error) {
+      error.status = 400;
+      throw error;
+    }
+  }
+  return dateRanges.lastNMonthsEnding(referenceDate, 6);
 }
 
 function parseComparisonTypeFromQuery(query) {
@@ -106,7 +129,8 @@ function handle(fn) {
 
 const getSalesSummary = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
-  const period = parsePeriodFromQuery(req.query);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -120,7 +144,8 @@ const getSalesSummary = handle(async (req, res) => {
 const getSalesComparison = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
-  const { current, previous } = resolveComparisonPeriods(comparisonType);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -133,7 +158,8 @@ const getSalesComparison = handle(async (req, res) => {
 
 const getTopProducts = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
-  const period = parsePeriodFromQuery(req.query);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
   const limit = parseLimitFromQuery(req.query);
 
   const envelope = await wrapAnalyticsResult({
@@ -149,7 +175,8 @@ const getGrowingProducts = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const limit = parseLimitFromQuery(req.query);
-  const { current, previous } = resolveComparisonPeriods(comparisonType);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -164,7 +191,8 @@ const getDecliningProducts = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const limit = parseLimitFromQuery(req.query);
-  const { current, previous } = resolveComparisonPeriods(comparisonType);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -177,7 +205,8 @@ const getDecliningProducts = handle(async (req, res) => {
 
 const getTopCustomers = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
-  const period = parsePeriodFromQuery(req.query);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
   const limit = parseLimitFromQuery(req.query);
 
   const envelope = await wrapAnalyticsResult({
@@ -189,9 +218,38 @@ const getTopCustomers = handle(async (req, res) => {
   return res.status(200).json({ success: true, ...envelope });
 });
 
+const getSalesTrend = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parseTrendPeriodFromQuery(req.query, referenceDate);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => salesAnalytics.getSalesTrend(tenantId, period),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+const getCustomerCounts = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => salesAnalytics.getCustomerCounts(tenantId, period),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
 const getPurchaseSummary = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
-  const period = parsePeriodFromQuery(req.query);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -205,12 +263,42 @@ const getPurchaseSummary = handle(async (req, res) => {
 const getPurchaseComparison = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
-  const { current, previous } = resolveComparisonPeriods(comparisonType);
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
     voucherType: "Purchase",
     run: () => purchaseAnalytics.getPurchaseComparison(tenantId, current, previous),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+const getTopSuppliers = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Purchase",
+    run: () => purchaseAnalytics.getTopSuppliers(tenantId, period, { limit }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+const getPurchaseTrend = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parseTrendPeriodFromQuery(req.query, referenceDate);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Purchase",
+    run: () => purchaseAnalytics.getPurchaseTrend(tenantId, period),
   });
 
   return res.status(200).json({ success: true, ...envelope });
@@ -223,6 +311,10 @@ module.exports = {
   getGrowingProducts,
   getDecliningProducts,
   getTopCustomers,
+  getSalesTrend,
+  getCustomerCounts,
   getPurchaseSummary,
   getPurchaseComparison,
+  getTopSuppliers,
+  getPurchaseTrend,
 };

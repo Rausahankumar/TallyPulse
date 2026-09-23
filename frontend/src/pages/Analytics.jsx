@@ -18,7 +18,7 @@ export default function Analytics() {
   return (
     <div>
       <PageHeader title="Analytics" subtitle="A quick jump-off point into every analytics view." />
-      <MockDataBanner label="All linked screens use sample data" />
+      <MockDataBanner label="Each screen below now shows real data for most metrics — a few specific charts (marked inline) aren't available yet" />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {SECTIONS.map((s) => (

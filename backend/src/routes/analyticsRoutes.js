@@ -8,8 +8,12 @@ const {
   getGrowingProducts,
   getDecliningProducts,
   getTopCustomers,
+  getSalesTrend,
+  getCustomerCounts,
   getPurchaseSummary,
   getPurchaseComparison,
+  getTopSuppliers,
+  getPurchaseTrend,
 } = require("../controllers/analyticsController");
 
 const router = express.Router();
@@ -25,7 +29,11 @@ router.get("/sales/top-products", getTopProducts);
 router.get("/sales/growing-products", getGrowingProducts);
 router.get("/sales/declining-products", getDecliningProducts);
 router.get("/sales/top-customers", getTopCustomers);
+router.get("/sales/trend", getSalesTrend);
+router.get("/sales/customer-counts", getCustomerCounts);
 router.get("/purchases/summary", getPurchaseSummary);
 router.get("/purchases/comparison", getPurchaseComparison);
+router.get("/purchases/top-suppliers", getTopSuppliers);
+router.get("/purchases/trend", getPurchaseTrend);
 
 module.exports = router;

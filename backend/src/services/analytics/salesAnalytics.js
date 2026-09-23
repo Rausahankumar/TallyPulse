@@ -362,6 +362,96 @@ async function getCustomerSales(tenantId, rawCustomerName, period) {
   };
 }
 
+function monthLabel(year, month) {
+  return new Date(year, month - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+
+// Monthly sales totals across a date range - the real aggregation
+// behind the Sales Trend chart. Grouped by calendar month of
+// header.voucherDate (the corrected voucher total, same field every
+// other Sales metric uses), scoped to the requested window. Empty
+// months within the range are NOT synthesized as zero-filled points -
+// only months with at least one active voucher appear, so the chart
+// never implies data exists where it doesn't.
+async function getSalesTrend(tenantId, period) {
+  const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+
+  const results = await Sale.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: { y: { $year: "$header.voucherDate" }, m: { $month: "$header.voucherDate" } },
+        totalSales: { $sum: "$header.voucherTotalAmount" },
+        orderCount: { $sum: 1 },
+      },
+    },
+    { $sort: { "_id.y": 1, "_id.m": 1 } },
+  ]);
+
+  const items = results.map((r) => ({
+    year: r._id.y,
+    month: r._id.m,
+    label: monthLabel(r._id.y, r._id.m),
+    totalSales: r.totalSales,
+    orderCount: r.orderCount,
+  }));
+
+  return {
+    items,
+    period: { from: period.from, to: period.to, label: period.label || null },
+    hasData: items.length > 0,
+  };
+}
+
+// Distinct-customer counts, all legitimately derivable from
+// header.partyName on real Sale vouchers - no invented "customer"
+// concept beyond "a distinct party name we've sold to":
+//   totalCustomers    - distinct parties across the tenant's ENTIRE
+//                        history (not scoped to `period` - a stable,
+//                        always-available headline number).
+//   activeCustomers   - distinct parties with at least one sale WITHIN
+//                        `period`.
+//   newCustomers      - of those active-in-period parties, how many had
+//                        their first-ever sale (all-time) within
+//                        `period` (i.e. acquired during this window).
+//                        null when `period` is unbounded (all-time),
+//                        since "new" is meaningless without a window to
+//                        be new relative to.
+async function getCustomerCounts(tenantId, period) {
+  const periodMatch = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+  const allTimeMatch = buildVoucherMatchStage({ tenantId });
+
+  const [activeNames, firstSeenByParty] = await Promise.all([
+    Sale.distinct("header.partyName", periodMatch),
+    Sale.aggregate([
+      { $match: allTimeMatch },
+      { $group: { _id: "$header.partyName", firstSeen: { $min: "$header.voucherDate" } } },
+    ]),
+  ]);
+
+  const totalCustomers = firstSeenByParty.length;
+  const activeCustomers = activeNames.length;
+
+  let newCustomers = null;
+  if (period.from && period.to) {
+    const from = new Date(period.from).getTime();
+    const to = new Date(period.to).getTime();
+    newCustomers = firstSeenByParty.filter((c) => {
+      const t = new Date(c.firstSeen).getTime();
+      return t >= from && t <= to;
+    }).length;
+  }
+
+  return {
+    totalCustomers,
+    activeCustomers,
+    newCustomers,
+    returningCustomers: newCustomers === null ? null : activeCustomers - newCustomers,
+    period: { from: period.from, to: period.to, label: period.label || null },
+    hasData: totalCustomers > 0,
+  };
+}
+
 // Explicitly NOT implemented - see file header. Returns a typed
 // "unsupported" result rather than a fabricated/empty one, so callers
 // (and ultimately Claude) can distinguish "no data" from "this feature
@@ -384,6 +474,8 @@ module.exports = {
   getDecliningProducts,
   getTopCustomers,
   getCustomerSales,
+  getSalesTrend,
+  getCustomerCounts,
   getCategoryPerformance,
   computeGrowth,
 };

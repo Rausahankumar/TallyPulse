@@ -118,9 +118,85 @@ async function getTopPurchasedProducts(tenantId, period, { limit = 10 } = {}) {
   };
 }
 
+// Mirrors salesAnalytics.getTopCustomers exactly, on the Purchase
+// collection - the supplier/vendor ledger name (header.partyName) is the
+// counterpart to a Sales voucher's customer name.
+async function getTopSuppliers(tenantId, period, { limit = 10 } = {}) {
+  const match = buildVoucherMatchStage({
+    tenantId,
+    from: period.from,
+    to: period.to,
+  });
+
+  const results = await Purchase.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: "$header.partyName",
+        totalAmount: { $sum: "$header.voucherTotalAmount" },
+        orderCount: { $sum: 1 },
+      },
+    },
+    { $sort: { totalAmount: -1 } },
+    { $limit: limit },
+    {
+      $project: {
+        _id: 0,
+        supplierName: "$_id",
+        totalAmount: 1,
+        orderCount: 1,
+      },
+    },
+  ]);
+
+  return {
+    suppliers: results,
+    period: { from: period.from, to: period.to, label: period.label || null },
+    hasData: results.length > 0,
+  };
+}
+
+function monthLabel(year, month) {
+  return new Date(year, month - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+
+// Mirrors salesAnalytics.getSalesTrend exactly, on the Purchase
+// collection - same monthly-aggregation-of-corrected-totals approach.
+async function getPurchaseTrend(tenantId, period) {
+  const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+
+  const results = await Purchase.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: { y: { $year: "$header.voucherDate" }, m: { $month: "$header.voucherDate" } },
+        totalPurchases: { $sum: "$header.voucherTotalAmount" },
+        orderCount: { $sum: 1 },
+      },
+    },
+    { $sort: { "_id.y": 1, "_id.m": 1 } },
+  ]);
+
+  const items = results.map((r) => ({
+    year: r._id.y,
+    month: r._id.m,
+    label: monthLabel(r._id.y, r._id.m),
+    totalPurchases: r.totalPurchases,
+    orderCount: r.orderCount,
+  }));
+
+  return {
+    items,
+    period: { from: period.from, to: period.to, label: period.label || null },
+    hasData: items.length > 0,
+  };
+}
+
 module.exports = {
   getPurchaseSummary,
   getPurchaseComparison,
   getPurchaseGrowthVsPreviousMonth,
   getTopPurchasedProducts,
+  getTopSuppliers,
+  getPurchaseTrend,
 };

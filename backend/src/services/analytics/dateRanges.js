@@ -161,6 +161,18 @@ function sameFullMonthLastYear(referenceDate = new Date()) {
 }
 
 /**
+ * The last N complete calendar months ending in referenceDate's month
+ * (inclusive) - e.g. n=6 with referenceDate in December returns
+ * [1 Jul, 31 Dec]. Used as the default window for trend charts when the
+ * caller hasn't picked an explicit range.
+ */
+function lastNMonthsEnding(referenceDate, n) {
+  const to = endOfMonth(referenceDate);
+  const from = startOfMonth(shiftMonths(referenceDate, -(n - 1)));
+  return { from, to, label: `Last ${n} months`, isPartial: false };
+}
+
+/**
  * A caller-supplied custom range, validated and normalized to day
  * boundaries.
  */
@@ -192,5 +204,6 @@ module.exports = {
   previousMonthSameRange,
   sameMonthLastYearToDate,
   sameFullMonthLastYear,
+  lastNMonthsEnding,
   customRange,
 };
