@@ -1,6 +1,8 @@
 const salesAnalytics = require("../services/analytics/salesAnalytics");
 const purchaseAnalytics = require("../services/analytics/purchaseAnalytics");
 const dateRanges = require("../services/analytics/dateRanges");
+const periodEngine = require("../services/analytics/periodEngine");
+const stockGroupAnalytics = require("../services/analytics/stockGroupAnalytics");
 const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
 const {
@@ -102,6 +104,54 @@ function parseLimitFromQuery(query) {
   }
 
   return limit;
+}
+
+// Stock Group performance uses the NEW, richer period engine
+// (periodEngine.js) - its own period-kind set (17 kinds, see that
+// file), completely separate from PERIOD_KINDS/parsePeriodFromQuery
+// above, which stays exactly as it was for every existing endpoint.
+// Adding this parser changes no existing endpoint's accepted query
+// params or behavior.
+function parseStockGroupPeriodFromQuery(query, referenceDate) {
+  const kind = query.period || "current_month";
+
+  if (!periodEngine.PERIOD_KINDS.includes(kind)) {
+    const err = new Error(`Invalid period "${kind}". Expected one of: ${periodEngine.PERIOD_KINDS.join(", ")}.`);
+    err.status = 400;
+    throw err;
+  }
+
+  const options = {};
+  if (kind === "custom") {
+    if (!query.from || !query.to) {
+      const err = new Error('period "custom" requires both "from" and "to" query params.');
+      err.status = 400;
+      throw err;
+    }
+    options.from = query.from;
+    options.to = query.to;
+  }
+  if (kind === "specific_fy") {
+    if (!query.fy) {
+      const err = new Error('period "specific_fy" requires an "fy" query param (e.g. "2025-26").');
+      err.status = 400;
+      throw err;
+    }
+    options.fy = query.fy;
+  }
+
+  try {
+    const current = periodEngine.resolvePeriod(kind, referenceDate, options);
+    // resolveComparisonPeriod legitimately returns null for "custom" and
+    // "same_month_last_year" (no single natural MoM-style comparison) -
+    // passed through as null, never guessed into something.
+    const previous = periodEngine.resolveComparisonPeriod(kind, referenceDate, options);
+    const sameLastYear = periodEngine.resolveSamePeriodLastYear(kind, referenceDate, options);
+    return { current, previous, sameLastYear };
+  } catch (error) {
+    error.status = error.status || 400;
+    throw error;
+  }
 }
 
 // Wraps a handler so any thrown error (bad query params, or anything
@@ -304,6 +354,21 @@ const getPurchaseTrend = handle(async (req, res) => {
   return res.status(200).json({ success: true, ...envelope });
 });
 
+const getStockGroupPerformance = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const { current, previous, sameLastYear } = parseStockGroupPeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => stockGroupAnalytics.getTopStockGroups(tenantId, current, previous, sameLastYear, { limit }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
 module.exports = {
   getSalesSummary,
   getSalesComparison,
@@ -313,6 +378,7 @@ module.exports = {
   getTopCustomers,
   getSalesTrend,
   getCustomerCounts,
+  getStockGroupPerformance,
   getPurchaseSummary,
   getPurchaseComparison,
   getTopSuppliers,

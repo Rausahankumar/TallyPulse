@@ -10,6 +10,7 @@ const {
   getTopCustomers,
   getSalesTrend,
   getCustomerCounts,
+  getStockGroupPerformance,
   getPurchaseSummary,
   getPurchaseComparison,
   getTopSuppliers,
@@ -31,6 +32,7 @@ router.get("/sales/declining-products", getDecliningProducts);
 router.get("/sales/top-customers", getTopCustomers);
 router.get("/sales/trend", getSalesTrend);
 router.get("/sales/customer-counts", getCustomerCounts);
+router.get("/sales/stock-groups", getStockGroupPerformance);
 router.get("/purchases/summary", getPurchaseSummary);
 router.get("/purchases/comparison", getPurchaseComparison);
 router.get("/purchases/top-suppliers", getTopSuppliers);
