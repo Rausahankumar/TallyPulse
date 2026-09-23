@@ -14,6 +14,8 @@ const odbcRoutes = require("./src/routes/odbcRoutes");
 const chatRoutes = require("./src/routes/chatRoutes");
 const syncRoutes = require("./src/routes/syncRoutes");
 const analyticsRoutes = require("./src/routes/analyticsRoutes");
+const voucherRoutes = require("./src/routes/voucherRoutes");
+const reportRoutes = require("./src/routes/reportRoutes");
 
 
 //console.log("Odbc routes" , typeof odbcRoutes);
@@ -56,6 +58,8 @@ app.use("/api/odbc", odbcRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/sync", syncRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/vouchers", voucherRoutes);
+app.use("/api/reports", reportRoutes);
 
 
 // 404 Handler
