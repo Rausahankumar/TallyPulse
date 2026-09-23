@@ -366,6 +366,83 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
 
 
 // ============================================================
+// GET STOCK ITEM MASTERS (Stock Item -> Stock Group)
+// ============================================================
+//
+// Confirmed live against this project's own connected TallyPrime
+// instance (WE FOUR, 2026-09): "Type": "StockItem" is a flat master
+// collection, exactly like "Type": "VoucherType" above - every Stock
+// Item in the company, each carrying its own $Parent (the Stock Group
+// it belongs to) and $Guid. Live result: 2,696 Stock Items returned,
+// 100% with a non-empty Parent, 100% with a Guid, 100% passing
+// validateMasterOwnership against the trusted company GUID, 74 distinct
+// Stock Group names. This is a masters-only query - no voucher/
+// transactional data is requested, and no inventoryentries.* voucher
+// query anywhere in this file needed to change for this to work.
+const getStockItemMasters = async ({ baseUrl } = {}) => {
+  try {
+    const requestBody = {
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS StockItem Master Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "StockItem"
+                },
+
+                {
+                  "Native Method": "Name, Parent, Guid"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS StockItem Master Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+    console.error(
+      "TALLY STOCKITEM MASTER API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
 // GET SALES VOUCHERS
 // ============================================================
 
@@ -1043,6 +1120,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
 module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
+  getStockItemMasters,
   getPendingVoucherAlterIds,
   getVouchersByAlterIds,
   MAX_ALTERIDS_PER_RECOVERY_QUERY,

@@ -48,6 +48,12 @@ function shiftYears(date, delta) {
   return new Date(d.getFullYear() + delta, d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
 }
 
+function shiftDays(date, delta) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + delta);
+  return d;
+}
+
 // Shift a whole {from, to} window back by N months/years, preserving the
 // exact day-of-month range so a month-to-date window stays month-to-date
 // in the shifted period, and a full-month window stays full-month.
@@ -198,6 +204,7 @@ module.exports = {
   endOfMonth,
   shiftMonths,
   shiftYears,
+  shiftDays,
   shiftPeriod,
   currentMonthToDate,
   previousFullMonth,
