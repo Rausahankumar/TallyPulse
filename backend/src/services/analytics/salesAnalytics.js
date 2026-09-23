@@ -291,6 +291,19 @@ async function getTopCustomers(tenantId, period, { limit = 10 } = {}) {
 // collapse it into its generic "no matching records" message, which
 // would erase the found/not-found distinction. The tool description in
 // tools.js tells Claude how to phrase each of the resulting cases.
+// AMOUNT SOURCE: totalSales sums header.voucherTotalAmount - the
+// GST/tax-inclusive voucher total, the SAME field getTopCustomers above
+// already uses - not the pre-tax line-item subtotal
+// (Sale.inventory.amount) that stockGroupAnalytics.js's Top-Stock-Group
+// analytics deliberately uses instead. These two modules answer
+// different questions ("what did this customer pay us, in total" vs
+// "what did this product group sell, before tax") and are intentionally
+// on different amount bases - never make them match just for
+// consistency. Exposed as CUSTOMER_SALES_AMOUNT_BASIS below (mirroring
+// stockGroupAnalytics's own exported AMOUNT_BASIS) so a caller/tool
+// consumer is never left guessing.
+const CUSTOMER_SALES_AMOUNT_BASIS = "voucher_total_incl_tax";
+
 async function getCustomerSales(tenantId, rawCustomerName, period) {
   const customerName =
     typeof rawCustomerName === "string" ? rawCustomerName.trim() : "";
@@ -357,6 +370,7 @@ async function getCustomerSales(tenantId, rawCustomerName, period) {
     totalSales,
     orderCount,
     averageOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
+    amountBasis: CUSTOMER_SALES_AMOUNT_BASIS,
     period: periodInfo,
     hasData: true,
   };
@@ -478,4 +492,5 @@ module.exports = {
   getCustomerCounts,
   getCategoryPerformance,
   computeGrowth,
+  CUSTOMER_SALES_AMOUNT_BASIS,
 };

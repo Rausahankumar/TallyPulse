@@ -75,6 +75,7 @@ const { resolveAuthorizedCompany } = require("./src/services/auth/companyContext
 const { buildVoucherMatchStage } = require("./src/services/analytics/analyticsScope");
 const { wrapAnalyticsResult } = require("./src/services/analytics/trustEnvelope");
 const salesAnalytics = require("./src/services/analytics/salesAnalytics");
+const stockGroupAnalytics = require("./src/services/analytics/stockGroupAnalytics");
 const dateRanges = require("./src/services/analytics/dateRanges");
 const { executeToolCall } = require("./src/services/ai/toolRouter");
 const { handleChatTurn } = require("./src/services/ai/chatOrchestrator");
@@ -251,6 +252,86 @@ async function testTrustEnvelope() {
   check("internal error -> analytics_error, no fabricated result", errored.state === "analytics_error" && errored.data === null);
 }
 
+// getCustomerSales amount-basis regression (2026-09-23, customer-sales
+// investigation Phase 2). Fully deterministic - NO Claude call anywhere
+// in this function. Ground truth is a hand-written aggregation against
+// Sale directly (header.voucherTotalAmount, case-insensitive anchored
+// match, active vouchers) - never getCustomerSales itself - exactly the
+// independent-verification discipline the earlier investigation used.
+//
+// Background: a live AI test once flagged this as a "casing bug"
+// because three differently-cased spellings of "DHINGRA GENERAL STORE"
+// all returned the SAME total, which happened not to match a stale
+// fixture value. The investigation proved the casing match was correct
+// the whole time - the fixture's expected value had just been computed
+// against the wrong amount field (Sale.inventory.amount, the pre-tax
+// basis Stock Group analytics uses) instead of the field
+// getCustomerSales actually and consistently sums
+// (header.voucherTotalAmount). This test codifies that finding: it
+// re-proves case-insensitivity AND locks in which amount field is
+// correct for this tool, on real WE FOUR data, so both regressions - an
+// actual casing break, or a future accidental amount-basis change - are
+// caught without needing a live LLM call to notice.
+async function testCustomerSalesAmountBasis() {
+  console.log("\n=== getCustomerSales: amount basis + case-insensitivity (real WE FOUR data) ===");
+
+  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
+  if (!weFour) {
+    check("WE FOUR company exists for this real-data regression", false, "no WE FOUR company found - skipped");
+    return;
+  }
+  const tenantId = weFour.tenantId;
+  const CUSTOMER = "DHINGRA GENERAL STORE";
+
+  // Independent ground truth: hand-written, NOT calling getCustomerSales
+  // or buildVoucherMatchStage - straight from Sale.
+  const escaped = CUSTOMER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const [groundTruth] = await Sale.aggregate([
+    { $match: { tenantId, voucherStatus: "active", "header.partyName": { $regex: `^${escaped}$`, $options: "i" } } },
+    { $group: { _id: null, total: { $sum: "$header.voucherTotalAmount" }, count: { $sum: 1 } } },
+  ]);
+  check("independent ground truth found real DHINGRA GENERAL STORE vouchers", !!groundTruth && groundTruth.count > 0, groundTruth ? `count=${groundTruth.count}` : "none found");
+  if (!groundTruth) return;
+
+  // Documented as of 2026-09-23 (see the investigation report) - if this
+  // ever legitimately drifts (new real vouchers synced), the comparison
+  // below against the FRESH ground truth still passes; only this fixed
+  // snapshot check would need updating, and its own failure is the
+  // signal to do that.
+  check("ground truth matches the documented 2026-09-23 snapshot (2478874.00 / 80)", groundTruth.total === 2478874.0 && groundTruth.count === 80, `total=${groundTruth.total} count=${groundTruth.count}`);
+
+  const allTimePeriod = { from: undefined, to: undefined, label: "All time", isPartial: false };
+  const variants = ["DHINGRA GENERAL STORE", "dhingra general store", "Dhingra General Store"];
+  const results = [];
+
+  for (const variant of variants) {
+    const res = await salesAnalytics.getCustomerSales(tenantId, variant, allTimePeriod);
+    results.push({ variant, res });
+    check(`"${variant}" -> customerFound: true`, res.customerFound === true);
+    check(`"${variant}" -> orderCount matches independent ground truth (${groundTruth.count})`, res.orderCount === groundTruth.count, `got ${res.orderCount}`);
+    check(`"${variant}" -> totalSales matches independent ground truth (${groundTruth.total})`, res.totalSales === groundTruth.total, `got ${res.totalSales}`);
+    check(`"${variant}" -> amountBasis === "voucher_total_incl_tax"`, res.amountBasis === "voucher_total_incl_tax", `got ${res.amountBasis}`);
+    check(`"${variant}" -> amountBasis matches the exported CUSTOMER_SALES_AMOUNT_BASIS constant`, res.amountBasis === salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS);
+  }
+
+  check(
+    "all 3 casings return equivalent totalSales/orderCount (case-insensitivity confirmed, not a casing bug)",
+    results.every((r) => r.res.totalSales === results[0].res.totalSales && r.res.orderCount === results[0].res.orderCount),
+    JSON.stringify(results.map((r) => ({ variant: r.variant, totalSales: r.res.totalSales, orderCount: r.res.orderCount })))
+  );
+
+  // Requirement: the two modules' amount bases must be DIFFERENT by
+  // design, never made to match "for consistency" - assert the
+  // divergence itself, not just each value in isolation.
+  check(
+    "getCustomerSales and Stock Group analytics use intentionally DIFFERENT amount bases",
+    salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS === "voucher_total_incl_tax" &&
+      stockGroupAnalytics.AMOUNT_BASIS === "line_item_pre_tax" &&
+      salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS !== stockGroupAnalytics.AMOUNT_BASIS,
+    `customer=${salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS} stockGroup=${stockGroupAnalytics.AMOUNT_BASIS}`
+  );
+}
+
 async function testCompanyContext() {
   console.log("\n=== Company context authorization ===");
 
@@ -343,6 +424,7 @@ async function main() {
     await testVoucherIdentity();
     await testAnalyticsScope();
     await testTrustEnvelope();
+    await testCustomerSalesAmountBasis();
     await testCompanyContext();
     await testToolLayerSecurity();
     await testChatOrchestratorAdversarial();
