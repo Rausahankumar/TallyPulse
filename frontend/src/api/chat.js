@@ -24,9 +24,18 @@ export async function deleteChat(chatId) {
 // configured on the server, this comes back as HTTP 503 — callers
 // should treat that as an expected, distinct "AI not available" state,
 // not a generic error.
+//
+// Chat requests get their own, longer timeout (per-call override, not a
+// change to `client`'s shared default): a turn needing 2-3 sequential
+// Claude tool calls can legitimately take longer than the 20s default
+// that exists for Tally/network protection on every other endpoint. See
+// client.js's own comment for why that default exists and stays
+// untouched for every other call.
+const CHAT_TIMEOUT_MS = 60000;
+
 export async function sendChatMessage({ chatId, message }) {
   const path = chatId ? `/chat/${chatId}/message` : "/chat/message";
-  const { data } = await client.post(path, { message });
+  const { data } = await client.post(path, { message }, { timeout: CHAT_TIMEOUT_MS });
   return data; // { success, chatId, data: structuredResponse }
 }
 

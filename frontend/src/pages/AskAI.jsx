@@ -84,9 +84,13 @@ export default function AskAI() {
       if (err instanceof ApiError && (err.status === 503 || err.status === 501)) {
         setTurns((t) => [...t, { kind: "not-connected", message: err.message }]);
       } else {
+        // retryText carries the original message forward so "Retry"
+        // resends the exact same question as a new, explicit send — it
+        // never auto-retries and never re-fires the request that just
+        // failed, so one timeout can't silently turn into two requests.
         setTurns((t) => [
           ...t,
-          { kind: "error", text: err instanceof ApiError ? err.message : "Something went wrong." },
+          { kind: "error", text: err instanceof ApiError ? err.message : "Something went wrong.", retryText: text },
         ]);
       }
     } finally {
@@ -150,9 +154,19 @@ export default function AskAI() {
               if (turn.kind === "demo") return <DemoInsightCard key={i} turn={turn.turn} onFollowUp={handleSend} />;
               if (turn.kind === "error")
                 return (
-                  <p key={i} className="text-center text-[12.5px] text-danger-600">
-                    {turn.text}
-                  </p>
+                  <div key={i} className="flex flex-col items-center gap-1">
+                    <p className="text-center text-[12.5px] text-danger-600">{turn.text}</p>
+                    {turn.retryText && (
+                      <button
+                        type="button"
+                        onClick={() => handleSend(turn.retryText)}
+                        disabled={sending}
+                        className="text-[12.5px] font-medium text-brand-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
                 );
               return null;
             })}
