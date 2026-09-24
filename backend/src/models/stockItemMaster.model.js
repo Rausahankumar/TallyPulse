@@ -71,4 +71,7 @@ stockItemMasterSchema.index({ tenantId: 1, itemName: 1 }, { unique: true });
 // stale duplicate under the old name.
 stockItemMasterSchema.index({ tenantId: 1, tallyGuid: 1 }, { unique: true });
 
+// Bumps the per-tenant data version after every write so cached answers can never go stale.
+stockItemMasterSchema.plugin(require("../services/query/dataVersion").tenantDataVersionPlugin);
+
 module.exports = mongoose.model("StockItemMaster", stockItemMasterSchema);

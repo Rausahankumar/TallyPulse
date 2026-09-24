@@ -153,4 +153,7 @@ salesSchema.index({ tenantId: 1, "header.voucherNo": 1 });
 // but would not scale) - not a broad index redesign.
 salesSchema.index({ tenantId: 1, voucherStatus: 1, "header.voucherDate": 1 });
 
+// Bumps the per-tenant data version after every write so cached answers can never go stale.
+salesSchema.plugin(require("../services/query/dataVersion").tenantDataVersionPlugin);
+
 module.exports = mongoose.model("Sale", salesSchema);

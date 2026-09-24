@@ -153,4 +153,7 @@ purchaseSchema.index({ tenantId: 1, "header.voucherNo": 1 });
 // analyticsScope.buildVoucherMatchStage's filter shape exactly.
 purchaseSchema.index({ tenantId: 1, voucherStatus: 1, "header.voucherDate": 1 });
 
+// Bumps the per-tenant data version after every write so cached answers can never go stale.
+purchaseSchema.plugin(require("../services/query/dataVersion").tenantDataVersionPlugin);
+
 module.exports = mongoose.model("Purchase", purchaseSchema);
