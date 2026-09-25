@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
 const Chat = require("../models/chat.model");
 const { handleChatTurn, callClaude } = require("../services/ai/chatOrchestrator");
+const { tryAnswerWithQueryEngine } = require("../services/query/queryChat");
 
 // --------------------------------------------------
 // POST /api/chat/:chatId?/message
@@ -65,12 +66,20 @@ const sendChatMessage = async (req, res) => {
 
     chat.messages.push({ role: "user", text: message });
 
-    const structured = await handleChatTurn({
-      context: { tenantId, companyGuid: req.companyContext.companyGuid },
-      userMessage: message,
-      conversationHistory,
-      claudeClient: callClaude,
-    });
+    const chatContext = { tenantId, companyGuid: req.companyContext.companyGuid };
+
+    // Sales/Purchase questions go router -> planner -> validator -> cache -> engine first. Anything that
+    // path cannot answer (or a disabled/failed engine) falls through to the existing tool chat unchanged.
+    const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory });
+
+    const structured = engine.handled
+      ? engine.structured
+      : await handleChatTurn({
+          context: chatContext,
+          userMessage: message,
+          conversationHistory,
+          claudeClient: callClaude,
+        });
 
     chat.messages.push({
       role: "assistant",

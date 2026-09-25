@@ -676,4 +676,9 @@ async function routeAndExecute(question, { tenantId, referenceDate, resolveEntit
   return { route, result, executed: true };
 }
 
-module.exports = { routeQuestion, routeAndExecute, normalizeText, MAX_QUESTION_CHARS };
+/** The same safety gate the router applies first; the planner reuses it so it can never see unsafe text. */
+function isUnsafeQuestion(question) {
+  return typeof question !== "string" || UNSAFE_INPUT.some((re) => re.test(question));
+}
+
+module.exports = { routeQuestion, routeAndExecute, normalizeText, isUnsafeQuestion, MAX_QUESTION_CHARS };

@@ -509,8 +509,8 @@ section("10. Phase 1A guarantee: nothing in production imports the new modules")
         walk(full);
       } else if (entry.name.endsWith(".js")) {
         const text = fs.readFileSync(full, "utf8");
-        // Phase 1E: the data models may reference ONLY services/query/dataVersion (the cache-invalidation plugin).
-        if (/services\/query|semanticCatalog|queryPlan\.schema/.test(text.replace(/\\/g, "/").replace(/services\/query\/dataVersion/g, ""))) offenders.push(path.relative(__dirname, full));
+        // Phase 1E: the data models may reference ONLY services/query/dataVersion (the cache-invalidation plugin); Phase 1G: the chat controller may reference ONLY services/query/queryChat (the chat entry point).
+        if (/services\/query|semanticCatalog|queryPlan\.schema/.test(text.replace(/\\/g, "/").replace(/services\/query\/(?:dataVersion|queryChat)/g, ""))) offenders.push(path.relative(__dirname, full));
       }
     }
   })(root);
