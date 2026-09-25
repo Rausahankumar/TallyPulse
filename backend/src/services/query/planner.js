@@ -38,7 +38,12 @@ const { CATALOG, LIMITS } = catalog;
 const PLANNER_TOOL_NAME = "submit_query_plan";
 const PLANNER_MAX_TOKENS = 700;
 const PLANNER_MAX_QUESTION_CHARS = 600;
-const PLANNER_TIMEOUT_MS = 30000;
+// Bounded planner call (the chat frontend gives up after 60s; the rest of the turn - router, freshness,
+// engine with its 8s maxTimeMS, persistence - must still fit). One SDK retry at most, each attempt capped,
+// and an overall deadline that aborts the request whatever the SDK is doing.
+const PLANNER_ATTEMPT_TIMEOUT_MS = 15000;
+const PLANNER_MAX_RETRIES = 1;
+const PLANNER_DEADLINE_MS = 30000;
 const DEFAULT_PLANNER_MODEL = "claude-sonnet-4-5-20250929";
 const MAX_REPAIRS_CAP = 1;
 const VALIDATION_FALLBACK_REF = new Date(2025, 0, 15, 12, 0, 0);
@@ -180,7 +185,10 @@ async function planQuestion(question, options = {}) {
         max_tokens: PLANNER_MAX_TOKENS,
       });
     } catch (error) {
-      return failed("planner_call_failed", "The planning service is unavailable right now.", usage, { retryable: true });
+      const timedOut = !!error && (error.code === "PLANNER_DEADLINE_EXCEEDED" || /timeout|timed out|abort/i.test(`${error.name} ${error.message}`));
+      return timedOut
+        ? failed("planner_timeout", "The planning service did not respond in time.", usage, { retryable: true })
+        : failed("planner_call_failed", "The planning service is unavailable right now.", usage, { retryable: true });
     }
     addUsage(usage, response && response.usage);
 
@@ -291,24 +299,46 @@ async function routeAndPlan(question, { resolveEntity, claudeClient, referenceDa
 
 // ---------------------------------------------------------------- real Anthropic client (not used by tests)
 
-/** Production planner client: same request shape the fake client receives. Lazily reads the key. */
-function createAnthropicPlannerClient({ timeoutMs = PLANNER_TIMEOUT_MS } = {}) {
+/**
+ * Production planner client: same request shape the fake client receives. Lazily reads the key.
+ * Bounded: explicit maxRetries (never the SDK default), a per-attempt timeout, and an overall deadline
+ * that aborts the in-flight request and rejects with code PLANNER_DEADLINE_EXCEEDED.
+ * `sdkOptions` exists only so tests can point a real SDK client at a local stub (never api.anthropic.com).
+ */
+function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEOUT_MS, maxRetries = PLANNER_MAX_RETRIES, deadlineMs = PLANNER_DEADLINE_MS, sdkOptions = {} } = {}) {
   let client = null;
   return async function anthropicPlannerClient(request) {
     if (!client) {
       const Anthropic = require("@anthropic-ai/sdk");
-      const apiKey = process.env.ANTHROPIC_API_KEY;
+      const apiKey = sdkOptions.apiKey || process.env.ANTHROPIC_API_KEY;
       if (!apiKey) {
         const err = new Error("AI planner is not configured: ANTHROPIC_API_KEY is missing on the backend.");
         err.code = "AI_NOT_CONFIGURED";
         throw err;
       }
-      client = new Anthropic({ apiKey });
+      client = new Anthropic({ ...sdkOptions, apiKey, maxRetries, timeout: attemptTimeoutMs });
     }
-    return client.messages.create(
-      { model: process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || DEFAULT_PLANNER_MODEL, temperature: 0, ...request },
-      { timeout: timeoutMs }
-    );
+    const controller = new AbortController();
+    let timer = null;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Planner deadline of ${deadlineMs}ms exceeded.`);
+        err.code = "PLANNER_DEADLINE_EXCEEDED";
+        controller.abort(err);
+        reject(err);
+      }, deadlineMs);
+    });
+    try {
+      return await Promise.race([
+        client.messages.create(
+          { model: process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || DEFAULT_PLANNER_MODEL, temperature: 0, ...request },
+          { timeout: attemptTimeoutMs, maxRetries, signal: controller.signal }
+        ),
+        deadline,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
 }
 
@@ -320,6 +350,9 @@ module.exports = {
   PLANNER_TOOL_NAME,
   PLANNER_MAX_TOKENS,
   PLANNER_MAX_QUESTION_CHARS,
+  PLANNER_ATTEMPT_TIMEOUT_MS,
+  PLANNER_MAX_RETRIES,
+  PLANNER_DEADLINE_MS,
   SKIP_ROUTER_CODES,
   DECLINE_CODES,
 };

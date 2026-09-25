@@ -437,6 +437,142 @@ async function expectStatus(label, q, status, code) {
     }
   }
 
+  // ================================================================ C1-C3 router correctness patch
+  section("C1. comparison direction: 'vs last month' compares the CURRENT period with last month");
+  {
+    const REF = new Date(2025, 11, 8, 12); // 2025-12-08
+    const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+    const ranges = (plan) => {
+      const n = validateQueryPlan(plan, { referenceDate: REF }).normalized;
+      return { subject: [ymd(n.period.from), ymd(n.period.to)], compare: n.comparison ? [ymd(n.comparison.from), ymd(n.comparison.to)] : null };
+    };
+    const productChange = (dir) => P.agg("sales", { kind: "current_month" }, ["lineAmount", "quantity"], { groupBy: [{ dim: "product" }], compare: { mode: "like_for_like" }, having: [{ metric: "lineAmount.delta", op: dir === "down" ? "lt" : "gt", value: 0 }], sort: [{ by: "lineAmount.delta", dir: dir === "down" ? "asc" : "desc" }] });
+
+    let r = await expectPlan("products declined vs last month", "Which products' sales declined vs last month?", productChange("down"));
+    let g = ranges(r.plan);
+    check("  -> subject = current month (2025-12-01..12-08), compared with last month same elapsed days (2025-11-01..11-08)", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-08"]), JSON.stringify(g));
+    r = await expectPlan("products grew vs last month", "Which products' sales grew vs last month?", productChange("up"));
+    check("  -> entity sales, metric lineAmount, having delta > 0", r.plan.entity === "sales" && r.plan.metrics[0] === "lineAmount" && r.plan.having[0].op === "gt");
+    await expectPlan("products sold less than last month", "Products sold less than last month", productChange("down"));
+    await expectPlan("customers grew vs last month", "Customers whose sales grew vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+    await expectPlan("customers bought less than last month", "Customers who bought less than last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] }));
+    await expectPlan("sales vs last month", "Sales vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("sales compared with the previous quarter", "Sales compared with the previous quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("purchases against last financial year", "Purchases against last financial year", P.agg("purchase", { kind: "current_fy" }, P_AMT, { compare: { mode: "like_for_like" } }));
+    r = await expectPlan("sales to a named customer vs last month", "Sales to Dhingra General Store vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }], compare: { mode: "like_for_like" } }));
+
+    r = await expectPlan("sales last month vs month before", "Sales last month vs month before", P.agg("sales", { kind: "previous_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    g = ranges(r.plan);
+    check("  -> subject = last month (2025-11-01..11-30), compared with the complete month before (2025-10-01..10-31)", eq(g.subject, ["2025-11-01", "2025-11-30"]) && eq(g.compare, ["2025-10-01", "2025-10-31"]), JSON.stringify(g));
+    await expectPlan("sales last month vs the month before", "Sales last month vs the month before", P.agg("sales", { kind: "previous_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("this quarter vs the quarter before", "Sales this quarter vs the quarter before", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("last month vs the full month before", "Sales last month vs the full month before", P.agg("sales", { kind: "previous_month" }, S_AMT, { compare: { mode: "full_previous" } }));
+
+    // unchanged behaviour
+    r = await expectPlan("explicit this month vs last month (unchanged)", "sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    g = ranges(r.plan);
+    check("  -> subject current month, compare last month same elapsed days", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-08"]));
+    await expectPlan("explicit this quarter vs last quarter (unchanged)", "compare sales this quarter with last quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("'grew LAST month' still means during last month (no connector)", "Customers who grew last month", P.agg("sales", { kind: "previous_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+    await expectPlan("full previous (unchanged)", "sales this month vs the full last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
+    await expectStatus("misaligned units still refused (unchanged)", "sales this month vs last quarter", "needs_planner", "comparison_periods_not_aligned");
+    await expectStatus("connector with no target still refused (unchanged)", "sales this month vs", "needs_planner", "comparison_target_missing");
+    // Exact wording without sales/purchase stays entity_ambiguous (defaulting the entity is a later, separate change);
+    // it never produces the old backwards plan.
+    for (const q of ["Which products declined vs last month?", "Which products grew vs last month?"]) {
+      const x = await R(q);
+      check(`"${q}" -> no plan built (entity not stated), never the old last-month-as-subject plan`, x.status === "needs_planner" && x.code === "entity_ambiguous" && !x.plan);
+    }
+  }
+
+  section("C2. more than one comparison is never silently reduced to one");
+  {
+    const multi = [
+      "Sales this month vs last month and vs last year",
+      "Sales this month compared with last month and same month last year",
+      "Sales vs last month and vs last year",
+      "Sales August 2025 vs August 2024 and vs last year",
+      "Sales MoM and YoY this month",
+      "Customers growing MoM and YoY this month",
+      "Sales this month MoM and QoQ",
+      "Sales this month vs last month and the month before",
+      "Products whose sales grew vs last month and year over year",
+    ];
+    for (const q of multi) {
+      const x = await R(q);
+      check(`"${q}" -> clarification (multiple_comparisons), no plan`, x.status === "unsupported" && x.code === "unsupported_combination" && x.clarification === "multiple_comparisons" && !x.plan && /one period at a time/.test(x.reason), `${x.status}/${x.code}`);
+    }
+    await expectPlan("single comparison unchanged", "Sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("single YoY unchanged", "Sales this month vs last year", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "same_period_last_year" } }));
+    await expectPlan("single YoY (same period last year) unchanged", "purchases last month vs same period last year", P.agg("purchase", { kind: "previous_month" }, P_AMT, { compare: { mode: "same_period_last_year" } }));
+    await expectPlan("hyphenated year-over-year recognised", "Sales year-over-year this month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "same_period_last_year" } }));
+    await expectPlan("redundant markers for the SAME comparison are one comparison", "Sales this month vs last month MoM", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("two explicit months unchanged", "sales April 2025 vs April 2024", P.agg("sales", { kind: "custom", from: "2025-04-01", to: "2025-04-30" }, S_AMT, { compare: { mode: "custom", period: { kind: "custom", from: "2024-04-01", to: "2024-04-30" } } }));
+
+    // Claude-free end to end: routeAndPlan and the chat entry point never call the planner for it
+    const { routeAndPlan } = require("./src/services/query/planner");
+    const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
+    let claudeCalls = 0;
+    const forbidden = async () => { claudeCalls += 1; throw new Error("Claude must not be called"); };
+    const rp = await routeAndPlan("Sales this month vs last month and vs last year", { resolveEntity: resolver, claudeClient: forbidden });
+    check("routeAndPlan: multi-comparison -> Claude not called", rp.claudeCalled === false && claudeCalls === 0);
+    let executed = 0;
+    for (const history of [[], [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]]) {
+      const chat = await tryAnswerWithQueryEngine({ context: { tenantId: "TEST-TENANT" }, userMessage: "Sales this month vs last month and vs last year", conversationHistory: history, deps: { resolveEntity: resolver, plannerClient: forbidden, execute: async () => (executed += 1, { result: { ok: true }, cache: {} }), getFreshness: async () => ({ state: "fresh" }) } });
+      check(`chat (${history.length ? "mid-conversation" : "new chat"}): answered with the clarification, no Claude, no engine, no legacy fallback`, chat.handled === true && /one period at a time/.test(chat.structured.answer) && claudeCalls === 0 && executed === 0);
+    }
+  }
+
+  section("C3. grammar words never reach the tenant entity resolver");
+  {
+    const grammarOnly = [
+      ["Sales MoM", "needs_planner", "period_missing"],
+      ["Month over month sales", "needs_planner", "period_missing"],
+      ["Sales month-over-month this month", "supported"],
+      ["Sales month on month this month", "supported"],
+      ["Sales this month MoM", "supported"],
+      ["Sales QoQ this quarter", "supported"],
+      ["Sales quarter-over-quarter this quarter", "supported"],
+      ["Customers growing MoM", "needs_planner", "period_missing"],
+      ["Customers growing month over month this month", "supported"],
+      ["Declining customers MoM this month", "supported"],
+      ["Sales vs last month", "supported"],
+      ["Top 10 customers this month", "supported"],
+      ["Largest 5 purchase bills last month", "supported"],
+      ["Smallest 3 sales invoices this month", "supported"],
+      ["Customers whose sales declined this quarter", "supported"],
+      ["Sales previous month", "supported"],
+      ["Sales last month vs month before", "supported"],
+      ["Sales the month before last", "needs_planner", "comparison_periods_not_aligned"],
+    ];
+    for (const [q, status, code] of grammarOnly) {
+      resolverCalls.length = 0;
+      const x = await R(q);
+      check(`"${q}" -> ${status}${code ? "/" + code : ""}, resolver NOT called`, x.status === status && (!code || x.code === code) && resolverCalls.length === 0, `${x.status}/${x.code} resolver=${JSON.stringify(resolverCalls.map((c) => c.text))}`);
+    }
+    await expectPlan("largest N = top N by amount (list)", "Largest 5 purchase bills last month", { v: 1, entity: "purchase", mode: "list", period: { kind: "previous_month" }, filters: [], sort: [{ by: "purchaseAmount", dir: "desc" }], limit: 5 });
+    await expectPlan("smallest N = bottom N by amount (list)", "Smallest 3 sales invoices this month", { v: 1, entity: "sales", mode: "list", period: { kind: "current_month" }, filters: [], sort: [{ by: "invoiceAmount", dir: "asc" }], limit: 3 });
+    await expectPlan("largest N customers = top N", "Largest 5 customers this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 5 }));
+    await expectPlan("MoM with a current period = like-for-like", "Customers growing MoM this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+    await expectStatus("MoM on a quarter subject is not silently re-interpreted", "Sales this month QoQ", "needs_planner", "comparison_periods_not_aligned");
+
+    // real entity candidates still go through the (tenant-scoped) resolver, exactly once, with no tenant field
+    resolverCalls.length = 0;
+    let x = await R("Sales to Dhingra General Store vs last month");
+    check("genuine name + grammar: resolver called once with ONLY the name", x.status === "supported" && resolverCalls.length === 1 && resolverCalls[0].text === "dhingra general store" && eq(Object.keys(resolverCalls[0]).sort(), ["entity", "hintDim", "text"]));
+    resolverCalls.length = 0;
+    x = await R("Sales of Maggi Noodles MoM this month");
+    check("product name with MoM: resolver sees only 'maggi noodles'", x.status === "supported" && resolverCalls.length === 1 && resolverCalls[0].text === "maggi noodles" && x.plan.compare.mode === "like_for_like");
+    resolverCalls.length = 0;
+    x = await R("Sales blorp last month");
+    check("genuinely unknown word still goes to the resolver (unchanged) and is not found", x.status === "needs_planner" && x.code === "entity_not_resolved" && resolverCalls.length === 1 && resolverCalls[0].text === "blorp");
+    // tenant scope unchanged: a name only another tenant has is still not resolved
+    const tenantB = createEntityResolver({ tenantId: "TEST-TENANT-B", sources: { customer: async () => ["Bhola Traders"], supplier: async () => [], product: async () => [], productGroup: async () => [] } });
+    x = await routeQuestion("Sales to Bhola Traders vs last month", { resolveEntity: resolver });
+    const xb = await routeQuestion("Sales to Bhola Traders vs last month", { resolveEntity: tenantB });
+    check("tenant scoping unchanged: B-only customer not resolved for A, resolved for B", x.status === "needs_planner" && x.code === "entity_not_resolved" && xb.status === "supported" && xb.plan.filters[0].value === "Bhola Traders" && xb.plan.period.kind === "current_month");
+  }
+
   section("L2. tenant isolation with safe fixtures (no DB)");
   {
     const mk = (t) => createEntityResolver({ tenantId: t, sources: { customer: async () => (t === "A" ? ["Only-A Traders", "Common Co"] : ["Only-B Traders", "Common Co"]), supplier: async () => [], product: async () => (t === "A" ? ["A-only Widget"] : ["B-only Widget"]), productGroup: async () => [] } });

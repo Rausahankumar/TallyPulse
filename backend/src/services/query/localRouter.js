@@ -232,7 +232,12 @@ async function routeQuestion(question, context = {}) {
   take(st, /\b(?:(?:vs|versus|compared (?:with|to)|against|than)\s+(?:the\s+)?)?(?:same (?:period|time|month|quarter|week) )?(?:last|previous|prior) year\b/g, (g, m) =>
     /\b(?:vs|versus|compared|against|than|same)\b/.test(m) ? { type: "sply" } : { type: "period", period: { type: "ambiguous" } }
   );
-  take(st, /\b(?:yoy|year over year|year on year|y o y)\b/g, () => ({ type: "sply" }));
+  take(st, /\b(?:yoy|y-o-y|y o y|year[\s-](?:over|on)[\s-]year)\b/g, () => ({ type: "sply" }));
+  // period-over-period comparison words and "the month before": grammar, never entity names
+  take(st, /\b(?:mom|m-o-m|month[\s-](?:over|on)[\s-]month)\b/g, () => ({ type: "pop", unit: "month" }));
+  take(st, /\b(?:qoq|q-o-q|quarter[\s-](?:over|on)[\s-]quarter)\b/g, () => ({ type: "pop", unit: "quarter" }));
+  take(st, /\bweek[\s-](?:over|on)[\s-]week\b/g, () => ({ type: "pop", unit: "week" }));
+  take(st, /\b(?:the\s+)?(month|quarter|week) before(?:\s+(?:that|it|last))?\b/g, (g) => ({ type: "priorOf", unit: g[0] }));
   take(st, /\b(?:(?:vs|versus|compared (?:with|to)|against|than)\s+)?(?:the\s+)?(?:previous|prior|preceding) period\b/g, () => ({ type: "prevPeriod" }));
 
   // ---- 6. date series words (before periods)
@@ -287,9 +292,9 @@ async function routeQuestion(question, context = {}) {
   take(st, /\bby\s+(quantity|qty|units|amount|value|count|number of invoices)\b/g, (g) => ({ type: "sortHint", hint: g[0] }));
   let topN = null;
   let rankDir = null;
-  take(st, /\b(top|bottom)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|fifty|hundred)\b/g, (g) => {
+  take(st, /\b(top|bottom|largest|biggest|highest|smallest|lowest)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|fifty|hundred)\b/g, (g) => {
     topN = /^\d+$/.test(g[1]) ? Number(g[1]) : NUM_WORDS[g[1]];
-    rankDir = g[0] === "top" ? "desc" : "asc";
+    rankDir = ["top", "largest", "biggest", "highest"].includes(g[0]) ? "desc" : "asc";
     return { type: "rank" };
   });
   const recency = { dir: null };
@@ -319,7 +324,7 @@ async function routeQuestion(question, context = {}) {
 
   // ---- 11. read the markers
   const items = markersInOrder(st);
-  const periods = ofType(items, "period").map((x) => x.period);
+  let periods = ofType(items, "period").map((x) => x.period);
   const bad = periods.find((p) => p.type === "invalid");
   if (bad) return needsPlanner(bad.reason, `Period could not be resolved safely (${bad.reason}).`, { normalized });
   if (periods.some((p) => p.type === "ambiguous")) {
@@ -328,6 +333,37 @@ async function routeQuestion(question, context = {}) {
   if (items.some((x) => x.type === "invalid")) {
     const inv = items.find((x) => x.type === "invalid");
     return needsPlanner(inv.reason, "A numeric condition in the question cannot be mapped safely.", { normalized });
+  }
+
+  // ---- 11a. a lone previous period right after a comparison word ("declined vs last month",
+  // "less than last month") is the comparison TARGET: the subject is the current period of that unit.
+  if (periods.length === 1 && RELATIVE_UNIT[periods[0].kind] && RELATIVE_UNIT[periods[0].kind][1] === "previous") {
+    const at = items.findIndex((x) => x.type === "period");
+    if (at > 0 && items[at - 1].type === "connector") periods = [{ kind: periods[0].kind.replace("previous_", "current_") }, periods[0]];
+  }
+
+  // ---- 11b. the DSL holds ONE comparison. A question asking for more than one is never answered with just one.
+  const pop = ofType(items, "pop");
+  const prior = ofType(items, "priorOf");
+  {
+    const popUnits = new Set(pop.map((x) => x.unit));
+    const priorUnits = new Set(prior.map((x) => x.unit));
+    const pair = periods.length === 2 ? periods.map((p) => RELATIVE_UNIT[p.kind]) : null;
+    const alignedPair = !!(pair && pair[0] && pair[1] && pair[0][0] === pair[1][0] && pair[0][1] === "current" && pair[1][1] === "previous");
+    let targets = 0;
+    if (ofType(items, "sply").length) targets += 1;
+    if (periods.length === 2) targets += 1;
+    if (prior.length) targets += 1;
+    const prevLike = ofType(items, "prevPeriod").length > 0 || pop.length > 0;
+    if (prevLike && !(alignedPair && (!pop.length || [...popUnits][0] === pair[0][0]))) targets += 1;
+    if (popUnits.size > 1 || priorUnits.size > 1 || targets > 1) {
+      return unsupported(
+        "unsupported_combination",
+        null,
+        "This question asks for more than one comparison, but I can compare one period at a time. Please ask for one comparison, for example against the previous period or against the same period last year.",
+        { normalized, clarification: "multiple_comparisons" }
+      );
+    }
   }
 
   // ---- 12. leftover words: dimensions, names, or unrecognised text
@@ -486,6 +522,16 @@ async function routeQuestion(question, context = {}) {
     } else {
       return needsPlanner("comparison_periods_not_aligned", "The two periods cannot be compared with a supported comparison mode.", { normalized });
     }
+  } else if (periods.length === 1 && (pop.length || prior.length)) {
+    // "this month MoM", "last month vs the month before": compare with the period just before the subject
+    period = periods[0];
+    const unit = (pop[0] || prior[0]).unit;
+    if (!RELATIVE_UNIT[period.kind] || RELATIVE_UNIT[period.kind][0] !== unit) {
+      return needsPlanner("comparison_periods_not_aligned", "The comparison does not match the period asked about.", { normalized });
+    }
+    const fullWords = ofType(items, "full").length > 0;
+    compare = { mode: fullWords ? "full_previous" : "like_for_like" };
+    if (!fullWords && RELATIVE_UNIT[period.kind][1] === "current") assumptions.push({ code: "comparison_like_for_like_default", message: "Compared with the same elapsed portion of the previous period (the product's standard comparison)." });
   } else if (periods.length === 1) {
     period = periods[0];
     if (wantsCompare) {
@@ -496,7 +542,9 @@ async function routeQuestion(question, context = {}) {
         assumptions.push({ code: "comparison_like_for_like_default", message: "Compared with the same elapsed portion of the previous period (the product's standard comparison)." });
       }
     }
-  } else if (sply || prevPeriod || growthWords || connectors) {
+  } else if (prior.length) {
+    return needsPlanner("comparison_periods_not_aligned", "The period asked about could not be expressed.", { normalized });
+  } else if (sply || prevPeriod || growthWords || connectors || pop.length) {
     return needsPlanner("period_missing", "A comparison was requested without a period.", { normalized });
   }
 

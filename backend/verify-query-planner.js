@@ -463,6 +463,122 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     check("Claude's response object is not mutated by the planner", JSON.stringify(shared) === before);
   }
 
+  // =============================================================== O. F1: bounded planner client
+  section("O. F1: bounded planner client (real SDK against a LOCAL stub server - never api.anthropic.com)");
+  {
+    const http = require("http");
+    const planner = require("./src/services/query/planner");
+    const { PLANNER_ATTEMPT_TIMEOUT_MS, PLANNER_MAX_RETRIES, PLANNER_DEADLINE_MS } = planner;
+    const FRONTEND_CHAT_TIMEOUT_MS = 60000; // frontend/src/api/chat.js CHAT_TIMEOUT_MS
+    const ENGINE_MAX_TIME_MS = require("./src/services/query/semanticCatalog").LIMITS.queryTimeoutMs;
+    const frontendSrc = fs.readFileSync(path.join(__dirname, "../frontend/src/api/chat.js"), "utf8");
+    check("frontend chat timeout is still 60s (not increased)", /CHAT_TIMEOUT_MS = 60000/.test(frontendSrc));
+    check(`explicit policy: maxRetries=${PLANNER_MAX_RETRIES}, attempt timeout=${PLANNER_ATTEMPT_TIMEOUT_MS}ms, overall deadline=${PLANNER_DEADLINE_MS}ms`, PLANNER_MAX_RETRIES === 1 && PLANNER_ATTEMPT_TIMEOUT_MS === 15000 && PLANNER_DEADLINE_MS === 30000);
+    check("deadline covers the worst case of all attempts' timeouts (no attempt can outlive it)", PLANNER_DEADLINE_MS <= (PLANNER_MAX_RETRIES + 1) * PLANNER_ATTEMPT_TIMEOUT_MS);
+    check("planner deadline + engine maxTimeMS leaves >= 20s of headroom under the 60s frontend timeout", PLANNER_DEADLINE_MS + ENGINE_MAX_TIME_MS <= FRONTEND_CHAT_TIMEOUT_MS - 20000, `${PLANNER_DEADLINE_MS}+${ENGINE_MAX_TIME_MS}`);
+
+    // tiny Anthropic-compatible stub
+    const okMessage = (input) => ({ id: "msg_stub", type: "message", role: "assistant", model: "stub", content: [{ type: "tool_use", id: "toolu_stub", name: PLANNER_TOOL_NAME, input }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 440, output_tokens: 150, cache_read_input_tokens: 2694, cache_creation_input_tokens: 0 } });
+    async function withStub(handler, fn) {
+      const seen = { requests: [], aborted: 0 };
+      const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          seen.requests.push({ path: req.url, headers: req.headers, body: body ? JSON.parse(body) : null });
+          handler(req, res, seen.requests.length);
+        });
+        res.on("close", () => { if (!res.writableEnded) seen.aborted += 1; });
+      });
+      await new Promise((r) => server.listen(0, "127.0.0.1", r));
+      const baseURL = `http://127.0.0.1:${server.address().port}`;
+      try {
+        return await fn(baseURL, seen);
+      } finally {
+        server.closeAllConnections && server.closeAllConnections();
+        await new Promise((r) => server.close(r));
+      }
+    }
+    const json = (res, status, obj, headers = {}) => { res.writeHead(status, { "content-type": "application/json", ...headers }); res.end(JSON.stringify(obj)); };
+    const client = (baseURL, over = {}) => createAnthropicPlannerClient({ sdkOptions: { apiKey: "test-key-not-real", baseURL }, ...over });
+    const goodPlan = { plan: plan({ metrics: ["invoiceAmount"] }) };
+
+    // 1. succeeds normally
+    await withStub((req, res) => json(res, 200, okMessage(goodPlan)), async (baseURL, seen) => {
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL) });
+      check("1. success through the real SDK: supported plan, exactly one HTTP request", r.status === "supported" && r.plan.metrics[0] === "invoiceAmount" && seen.requests.length === 1);
+      const b = seen.requests[0].body;
+      check("   request is the planner's own: forced submit_query_plan tool, temperature 0, capped max_tokens, stub key only", seen.requests[0].path === "/v1/messages" && b.tool_choice.name === PLANNER_TOOL_NAME && b.temperature === 0 && b.max_tokens === PLANNER_MAX_TOKENS && b.tools.length === 1 && seen.requests[0].headers["x-api-key"] === "test-key-not-real");
+      check("   usage reported from the response", r.usage.calls === 1 && r.usage.input_tokens === 440 && r.usage.cache_read_input_tokens === 2694);
+    });
+
+    // 2. attempt timeout (server never answers)
+    await withStub(() => {}, async (baseURL, seen) => {
+      const t0 = Date.now();
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL, { attemptTimeoutMs: 150, maxRetries: 0, deadlineMs: 5000 }) });
+      const ms = Date.now() - t0;
+      check("2. no response: planner_timeout (structured failure, no hang), one request, returned by the attempt timeout", r.status === "planner_failed" && r.code === "planner_timeout" && !r.plan && seen.requests.length === 1 && ms < 2000, `${r.code} ${ms}ms req=${seen.requests.length}`);
+    });
+
+    // 3. request rejected (non-retryable 400)
+    await withStub((req, res) => json(res, 400, { type: "error", error: { type: "invalid_request_error", message: "bad" } }), async (baseURL, seen) => {
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL) });
+      check("3. rejected request: planner_call_failed, not retried (1 request), no plan", r.status === "planner_failed" && r.code === "planner_call_failed" && !r.plan && seen.requests.length === 1, `${r.code} req=${seen.requests.length}`);
+    });
+
+    // 4. retries bounded by the configured amount (529 overloaded is retryable)
+    const overloaded = (req, res) => json(res, 529, { type: "error", error: { type: "overloaded_error", message: "overloaded" } }, { "retry-after-ms": "5" });
+    await withStub(overloaded, async (baseURL, seen) => {
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL) });
+      check(`4. retryable 529 with the PRODUCTION policy: exactly ${PLANNER_MAX_RETRIES + 1} HTTP requests (1 + ${PLANNER_MAX_RETRIES} retry), then planner_call_failed`, r.status === "planner_failed" && r.code === "planner_call_failed" && seen.requests.length === PLANNER_MAX_RETRIES + 1 && r.usage.calls === 1, `req=${seen.requests.length}`);
+    });
+    await withStub(overloaded, async (baseURL, seen) => {
+      await planQuestion("show revenue last month", { claudeClient: client(baseURL, { maxRetries: 0 }) });
+      check("   maxRetries=0 -> exactly 1 HTTP request (the SDK default of 2 is never used)", seen.requests.length === 1, `req=${seen.requests.length}`);
+    });
+    await withStub((req, res, n) => (n === 1 ? overloaded(req, res) : json(res, 200, okMessage(goodPlan))), async (baseURL, seen) => {
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL) });
+      check("   one transient 529 then success: supported after 2 requests (still ONE planner operation)", r.status === "supported" && seen.requests.length === 2 && r.usage.calls === 1);
+    });
+
+    // 5. overall deadline wins even with slow retries and a generous retry setting
+    await withStub((req, res) => setTimeout(() => overloaded(req, res), 120), async (baseURL, seen) => {
+      const t0 = Date.now();
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL, { maxRetries: 10, attemptTimeoutMs: 5000, deadlineMs: 400 }) });
+      const ms = Date.now() - t0;
+      check("5. overall deadline respected: 10 allowed retries are cut off at the 400ms deadline -> planner_timeout", r.status === "planner_failed" && r.code === "planner_timeout" && ms < 1200 && seen.requests.length < 10, `${r.code} ${ms}ms req=${seen.requests.length}`);
+    });
+    await withStub(() => {}, async (baseURL, seen) => {
+      const t0 = Date.now();
+      const r = await planQuestion("show revenue last month", { claudeClient: client(baseURL, { maxRetries: 0, attemptTimeoutMs: 10000, deadlineMs: 300 }) });
+      const ms = Date.now() - t0;
+      await new Promise((res) => setTimeout(res, 100));
+      check("   deadline shorter than the attempt timeout: returns at the deadline and ABORTS the in-flight request", r.code === "planner_timeout" && ms < 1000 && seen.aborted >= 1, `${ms}ms aborted=${seen.aborted}`);
+    });
+
+    // 6. timeout/error vs valid response are distinguishable
+    await withStub(() => {}, async (baseURL) => {
+      const bad = await planQuestion("show revenue last month", { claudeClient: client(baseURL, { maxRetries: 0, attemptTimeoutMs: 100, deadlineMs: 2000 }) });
+      await withStub((req, res) => json(res, 200, okMessage(goodPlan)), async (baseURL2) => {
+        const ok = await planQuestion("show revenue last month", { claudeClient: client(baseURL2) });
+        check("6. timeout -> planner_failed/planner_timeout with no plan; valid response -> supported with a plan", bad.status === "planner_failed" && bad.code === "planner_timeout" && bad.retryable === true && !bad.plan && ok.status === "supported" && !!ok.plan);
+      });
+    });
+    const plainErr = await planQuestion("show revenue", { claudeClient: fakeClaude(new Error("boom")) });
+    const deadlineErr = await planQuestion("show revenue", { claudeClient: fakeClaude(Object.assign(new Error("x"), { code: "PLANNER_DEADLINE_EXCEEDED" })) });
+    check("   generic error -> planner_call_failed; deadline error -> planner_timeout", plainErr.code === "planner_call_failed" && deadlineErr.code === "planner_timeout");
+    check("   the planner itself never retries (1 client call per question, retries live only inside the bounded client)", plainErr.usage.calls === 1 && deadlineErr.usage.calls === 1);
+    let missingKey;
+    const saved = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      missingKey = await planQuestion("show revenue", { claudeClient: createAnthropicPlannerClient() });
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+    }
+    check("   missing API key -> structured planner_call_failed (no throw, no network)", missingKey.status === "planner_failed" && missingKey.code === "planner_call_failed");
+  }
+
   // =============================================================== N. end to end with real engine + cache (read-only)
   section("N. planner -> validator -> real engine + answer cache (read-only, fake Claude)");
   const mongoose = require("mongoose");

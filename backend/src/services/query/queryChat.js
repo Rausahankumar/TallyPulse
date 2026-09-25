@@ -9,11 +9,14 @@
 //        needs_planner:                                               v
 //            with chat history -> not handled here (legacy chat path keeps follow-up context)
 //            dead-end code     -> clarification message (NO Claude)
-//            otherwise         -> ONE Claude planner call -> validated plan | decline
+//            otherwise         -> freshness gate (both entities) -> ONE bounded Claude planner call
+//                                 -> validated plan | decline | honest failure message (never legacy chat)
 //   plan -> freshness gate -> answer cache -> executor (tenant-scoped) -> deterministic text
 //
 // Fail-safe: anything this module cannot answer returns {handled:false} and the
-// existing chat path runs exactly as before. It never throws to the caller.
+// existing chat path runs exactly as before - EXCEPT once the planner has been
+// called: then the turn always ends here, so no second Claude path is paid for.
+// It never throws to the caller.
 // Tenant scope comes ONLY from `context.tenantId` (set by the authorization
 // middleware); no tenant value is read from the question, the planner or the plan.
 // --------------------------------------------------
@@ -74,6 +77,18 @@ function baseResponse(answer, { toolCalls = [], warnings = [], freshness = null,
 
 const FRESH_TO_STATE = { stale: "stale_data", sync_failed: "sync_failed", never_synced: "no_usable_data" };
 
+// Honest, fixed text for a planner that failed. Only the entity-check message carries planner output, and that
+// text is already sanitised and length-capped by the planner.
+function plannerFailureMessage(planned) {
+  if (planned.code === "planner_timeout" || planned.code === "planner_call_failed") {
+    return "The AI query planner is unavailable right now, so I couldn't answer this. Please try again shortly, or ask a direct question such as \"sales last month\" or \"top 5 customers this month\".";
+  }
+  if (planned.code === "planner_entity_not_resolved") {
+    return `${planned.reason} Please check the name and try again.`;
+  }
+  return "I couldn't turn this question into a query I can run safely. Please rephrase it, for example by naming the period and whether it is about sales or purchases.";
+}
+
 // ---------------------------------------------------------------- main entry
 
 /**
@@ -104,6 +119,8 @@ async function tryAnswerWithQueryEngine({ context, userMessage, conversationHist
     let plannerAssumptions = [];
     let routerAssumptions = [];
     let plannerUsage = null;
+    let preFreshness = null; // freshness read BEFORE the planner, keyed by entity
+    const getFreshness = deps.getFreshness || require("../analytics/freshness").getFreshness;
 
     if (route.status === "supported") {
       plan = route.plan;
@@ -115,6 +132,15 @@ async function tryAnswerWithQueryEngine({ context, userMessage, conversationHist
       if (SKIP_ROUTER_CODES.has(route.code)) {
         return { handled: true, structured: baseResponse(formatNonAnswer({ status: "needs_clarification", code: route.code, reason: route.reason }), { meta: { route: "router", status: "needs_clarification", code: route.code, claudeCalls: 0 } }) };
       }
+      // Freshness gate BEFORE paying for the planner. The planner decides sales vs purchase, so both are read;
+      // if neither has ever synced, no plan could be answered and the planner is not called.
+      const [salesFreshness, purchaseFreshness] = await Promise.all([getFreshness(tenantId, "Sales"), getFreshness(tenantId, "Purchase")]);
+      preFreshness = { sales: salesFreshness, purchase: purchaseFreshness };
+      if (salesFreshness.state === "never_synced" && purchaseFreshness.state === "never_synced") {
+        const msg = `${salesFreshness.message} ${purchaseFreshness.message}`.trim();
+        return { handled: true, structured: baseResponse(msg, { toolCalls: [{ toolName: "query_engine", state: "no_usable_data" }], warnings: [msg], freshness: salesFreshness, meta: { route: "router", status: "no_usable_data", claudeCalls: 0 } }) };
+      }
+
       const planned = await planQuestion(userMessage, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, routerCode: route.code });
       plannerUsage = planned.usage;
       if (planned.status === "needs_clarification" || planned.status === "unsupported") {
@@ -122,7 +148,8 @@ async function tryAnswerWithQueryEngine({ context, userMessage, conversationHist
         return { handled: true, structured: baseResponse(answer, { meta: { route: "planner", status: planned.status, code: planned.code, claudeCalls: plannerUsage.calls, usage: plannerUsage } }) };
       }
       if (planned.status !== "supported") {
-        return { handled: false, reason: `planner_${planned.code}` };
+        // Planner failure / timeout / unusable plan: answer honestly. Never hand the question to another Claude path.
+        return { handled: true, structured: baseResponse(plannerFailureMessage(planned), { meta: { route: "planner", status: "planner_failed", code: planned.code, claudeCalls: plannerUsage.calls, usage: plannerUsage } }) };
       }
       plan = planned.plan;
       source = "planner";
@@ -131,8 +158,7 @@ async function tryAnswerWithQueryEngine({ context, userMessage, conversationHist
 
     // ---- freshness gate: never present numbers for a company that never synced
     const voucherType = plan.entity === "sales" ? "Sales" : "Purchase";
-    const getFreshness = deps.getFreshness || require("../analytics/freshness").getFreshness;
-    const freshness = await getFreshness(tenantId, voucherType);
+    const freshness = preFreshness ? preFreshness[plan.entity] : await getFreshness(tenantId, voucherType);
     const meta = { route: source, status: "answered", claudeCalls: plannerUsage ? plannerUsage.calls : 0, usage: plannerUsage || undefined };
     if (freshness.state === "never_synced") {
       return { handled: true, structured: baseResponse(freshness.message, { toolCalls: [{ toolName: "query_engine", state: "no_usable_data" }], warnings: [freshness.message], freshness, meta: { ...meta, status: "no_usable_data" } }) };
@@ -146,6 +172,10 @@ async function tryAnswerWithQueryEngine({ context, userMessage, conversationHist
       if (NO_FALLBACK_EXEC_ERRORS.has(code)) {
         const msg = code === "query_timeout" ? "That question took too long to compute. Try a shorter period or a narrower breakdown." : "That question returned too much data to summarise. Try a narrower filter or period.";
         return { handled: true, structured: baseResponse(msg, { warnings: [], freshness, meta: { ...meta, status: "execution_failed", code, cache: cache && cache.status } }) };
+      }
+      if (source === "planner") {
+        // Already paid for the planner: do not add a second Claude path on top of an engine failure.
+        return { handled: true, structured: baseResponse("I couldn't compute that answer right now. Please try again shortly.", { warnings: [], freshness, meta: { ...meta, status: "execution_failed", code: code || "failed", cache: cache && cache.status } }) };
       }
       return { handled: false, reason: `execution_${code || "failed"}` };
     }

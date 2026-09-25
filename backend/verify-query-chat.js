@@ -139,7 +139,8 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     for (const [label, client] of failures) {
       const e3 = engine(okScalar());
       r = await ask("show revenue last month", { plannerClient: client, execute: e3 });
-      check(`planner failure (${label}) -> not handled (legacy chat continues), engine never runs`, r.handled === false && /^planner_/.test(r.reason) && e3.calls.length === 0, r.reason);
+      // F3: a planner failure is answered honestly HERE (handled) so the legacy Claude chat is never called.
+      check(`planner failure (${label}) -> honest failure message, handled (no legacy chat), engine never runs`, r.handled === true && r.structured.details.queryEngine.status === "planner_failed" && /^planner_/.test(r.structured.details.queryEngine.code) && e3.calls.length === 0 && r.structured.details.toolCalls.length === 0, JSON.stringify(r.structured && r.structured.details.queryEngine));
     }
 
     const e4 = engine(okScalar());
@@ -220,7 +221,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const p = planner(() => toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Only Other Traders" }] }) }));
     const e3 = engine(okScalar());
     r = await ask("show revenue from only other traders last month", { plannerClient: p, execute: e3 });
-    check("another tenant's customer named via the planner is refused (not resolved for this tenant)", r.handled === false && e3.calls.length === 0);
+    check("another tenant's customer named via the planner is refused (not resolved for this tenant)", r.handled === true && r.structured.details.queryEngine.code === "planner_entity_not_resolved" && /did not match/.test(r.structured.answer) && e3.calls.length === 0);
     r = await tryAnswerWithQueryEngine({ context: { tenantId: "OTHER" }, userMessage: "show revenue from only other traders last month", conversationHistory: [], deps: { resolveEntity: other, getFreshness: fresh, plannerClient: p, execute: e3 } });
     check("...and accepted for the tenant that owns it", r.handled === true && e3.calls.length === 1);
 
@@ -381,11 +382,149 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       check("controller: needs_planner inside an existing chat falls through to the legacy handler with full context", res.code === 200 && legacyCalls.length === 1 && legacyCalls[0].conversationHistory.length >= 2 && res.body.data.answer === "LEGACY ANSWER");
       res = await send("");
       check("controller: empty message still rejected (400) exactly as before", res.code === 400);
+
+      // F3 end to end through the REAL controller: the planner fails (no API key -> the real planner client
+      // throws before any network), and the legacy Claude chat must NOT be called.
+      const savedKey = process.env.ANTHROPIC_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+      try {
+        legacyCalls.length = 0;
+        res = await send("show revenue last month");
+        check("controller: planner failure in a new chat -> 200 with an honest 'planner unavailable' answer, legacy chat NOT called", res.code === 200 && legacyCalls.length === 0 && /planner is unavailable/i.test(res.body.data.answer) && res.body.data.details.queryEngine.status === "planner_failed", JSON.stringify(res.body).slice(0, 240));
+      } finally {
+        if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey;
+      }
     } finally {
       await Chat.deleteMany({ _id: { $in: made }, tenantId, userId });
       delete require.cache[orchPath];
     }
     check("synthetic chats removed", (await Chat.countDocuments({ userId })) === 0);
+  }
+
+  // ============================================================ L. F3 + freshness ordering (fakes only)
+  section("L. F3: planner failure never falls back to legacy Claude; freshness is checked BEFORE the planner");
+  {
+    const events = [];
+    const fr = (states = {}) => async (t, type) => {
+      events.push(`freshness-check:${type}`);
+      const state = states[type] || "fresh";
+      return { state, dataAsOf: state === "never_synced" ? null : new Date("2025-12-08T10:00:00Z"), message: state === "never_synced" ? `No ${type} sync has ever run for this company yet.` : `${type} data is current.` };
+    };
+    const tracingPlanner = (reply) => {
+      const fn = async (req) => {
+        fn.calls += 1;
+        events.push("planner");
+        const out = typeof reply === "function" ? reply(req) : reply;
+        if (out instanceof Error) throw out;
+        return out;
+      };
+      fn.calls = 0;
+      return fn;
+    };
+    const tracingEngine = (result = okScalar()) => {
+      const fn = async (plan) => {
+        fn.calls += 1;
+        events.push("execute");
+        return { result: typeof result === "function" ? result(plan) : result, cache: { status: "miss" } };
+      };
+      fn.calls = 0;
+      return fn;
+    };
+    const run = (q, deps, history = []) => tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: history, deps: { resolveEntity: fakeResolver, ...deps } });
+    const timeoutErr = () => Object.assign(new Error("Planner deadline of 30000ms exceeded."), { code: "PLANNER_DEADLINE_EXCEEDED" });
+
+    // ---- F3: failures are answered here (handled) -> the controller never reaches legacy Claude
+    const failureCases = [
+      ["API error (request rejected)", () => new Error("529 overloaded"), "planner_call_failed", /planner is unavailable/i],
+      ["timeout / overall deadline", () => timeoutErr(), "planner_timeout", /planner is unavailable/i],
+      ["SDK connection timeout", () => Object.assign(new Error("Request timed out."), { name: "APIConnectionTimeoutError" }), "planner_timeout", /planner is unavailable/i],
+      ["invalid planner output (matrix violation)", () => toolReply({ plan: planOf({ groupBy: [{ dim: "product" }] }) }), "planner_invalid_plan", /couldn.t turn this question into a query/i],
+      ["protocol violation (prose)", () => ({ content: [{ type: "text", text: "Sales were big" }] }), "planner_protocol_violation", /couldn.t turn this question into a query/i],
+      ["unknown name", () => toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Ltd" }] }) }), "planner_entity_not_resolved", /did not match a known customer/i],
+    ];
+    for (const [label, reply, code, msg] of failureCases) {
+      events.length = 0;
+      const p = tracingPlanner(reply);
+      const e = tracingEngine();
+      const r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      check(`${label}: exactly ONE planner call, handled with an honest message (${code}), no engine, no legacy`, r.handled === true && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.code === code && r.structured.details.queryEngine.status === "planner_failed" && r.structured.details.queryEngine.claudeCalls === 1 && msg.test(r.structured.answer), `${JSON.stringify(r.structured && r.structured.details.queryEngine)} :: ${r.structured && r.structured.answer}`);
+      check(`  -> the answer does not pretend to contain figures`, !/₹|Invoice amount:/.test(r.structured.answer) && r.structured.details.toolCalls.length === 0 && r.structured.freshness === null);
+    }
+    {
+      const r = await run("show revenue last month", { plannerClient: tracingPlanner(() => new Error("sk-ant-secret-key internal stack")), execute: tracingEngine(), getFreshness: fr() });
+      check("failure text never leaks the underlying error", !/sk-ant|secret|stack|529/.test(JSON.stringify(r.structured)));
+    }
+
+    // valid decline keeps the existing behaviour
+    events.length = 0;
+    let p = tracingPlanner(toolReply({ decline: { code: "not_a_data_query", message: "That asks for an explanation, not a figure." } }));
+    let e = tracingEngine();
+    let r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    check("valid planner decline: unchanged honest decline (status unsupported), one call, no engine", r.handled && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.status === "unsupported" && /explanation/.test(r.structured.answer));
+
+    // successful planner question: planner -> validated plan -> engine, no legacy
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }) }));
+    e = tracingEngine();
+    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    check("successful planner question: one planner call, the engine runs once, answered (handled)", r.handled && p.calls === 1 && e.calls === 1 && r.structured.details.queryEngine.status === "answered" && /Invoice amount:/.test(r.structured.answer));
+    check("ORDER: freshness (both entities) -> planner -> execute", JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase", "planner", "execute"]), JSON.stringify(events));
+    check("freshness is read once per entity (no second read after planning)", events.filter((x) => x.startsWith("freshness")).length === 2);
+
+    // planner-sourced plan + engine failure: no second Claude path
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }) }));
+    e = tracingEngine({ ok: false, errors: [{ code: "query_failed" }] });
+    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    check("planner plan + engine failure: handled honestly, no legacy fallback", r.handled === true && r.structured.details.queryEngine.status === "execution_failed" && p.calls === 1 && /couldn.t compute/i.test(r.structured.answer));
+    e = tracingEngine({ ok: false, errors: [{ code: "query_failed" }] });
+    r = await run("total sales last month", { plannerClient: forbidden, execute: e, getFreshness: fr() });
+    check("router plan + engine failure: unchanged (falls through to legacy, no planner was paid for)", r.handled === false && r.reason === "execution_query_failed");
+
+    // ---- freshness gate before the planner
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({}) }));
+    e = tracingEngine();
+    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced", Purchase: "never_synced" }) });
+    check("nothing ever synced: planner NOT called, honest no-data answer", r.handled && p.calls === 0 && e.calls === 0 && r.structured.details.toolCalls[0].state === "no_usable_data" && r.structured.details.queryEngine.claudeCalls === 0 && /Sales sync/.test(r.structured.answer) && /Purchase sync/.test(r.structured.answer));
+    check("  -> event order shows freshness checks and no planner", JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase"]), JSON.stringify(events));
+
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({}) }));
+    e = tracingEngine();
+    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced" }) });
+    check("only Sales never synced: planner must run (it chooses the entity); a sales plan then gets the honest no-data answer, engine not called", r.handled && p.calls === 1 && e.calls === 0 && r.structured.details.toolCalls[0].state === "no_usable_data" && JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase", "planner"]), JSON.stringify(events));
+
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({ entity: "purchase", metrics: ["purchaseAmount"] }) }));
+    e = tracingEngine(okScalar({ entity: "purchase", metrics: ["purchaseAmount"], amountBasis: { purchaseAmount: "voucher_total_incl_tax" }, totals: { values: { purchaseAmount: 10 } } }));
+    r = await run("how much did we spend last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced" }) });
+    check("only Sales never synced + purchase plan: answered with Purchase freshness", r.handled && p.calls === 1 && e.calls === 1 && r.structured.freshness.message === "Purchase data is current.");
+
+    events.length = 0;
+    r = await run("show revenue last month", { plannerClient: tracingPlanner(toolReply({ plan: planOf({}) })), execute: tracingEngine(), getFreshness: fr({ Sales: "stale" }) });
+    check("stale (not never-synced) data does not block the planner; the answer carries the stale warning", r.handled && events.includes("planner") && r.structured.warnings.includes("Sales data is current.") && r.structured.details.toolCalls[0].state === "stale_data");
+
+    events.length = 0;
+    const throwing = async (t, type) => { events.push(`freshness-check:${type}`); throw new Error("db down"); };
+    p = tracingPlanner(toolReply({ plan: planOf({}) }));
+    r = await run("show revenue last month", { plannerClient: p, execute: tracingEngine(), getFreshness: throwing });
+    check("freshness lookup error before planning: planner NOT called (no Claude spent)", p.calls === 0 && !events.includes("planner"));
+
+    // ---- Claude-free paths stay Claude-free, and router questions read freshness once for their own entity
+    events.length = 0;
+    p = tracingPlanner(toolReply({ plan: planOf({}) }));
+    r = await run("total sales last month", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() });
+    check("router-supported: 0 Claude, one freshness read for its entity, then execute", r.handled && p.calls === 0 && JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "execute"]), JSON.stringify(events));
+    events.length = 0;
+    r = await run("GST on sales last month", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() });
+    check("router-unsupported: 0 Claude, no freshness read, no engine", r.handled && p.calls === 0 && events.length === 0);
+    events.length = 0;
+    r = await run("sales this year", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() });
+    check("clarification: 0 Claude, no freshness read", r.handled && p.calls === 0 && events.length === 0);
+    events.length = 0;
+    r = await run("show revenue last month", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() }, [{ role: "user", content: "hi" }]);
+    check("mid-conversation needs_planner: unchanged (legacy path; no planner, no freshness read here)", r.handled === false && r.reason === "follow_up_uses_legacy_chat" && p.calls === 0 && events.length === 0);
   }
 
   // ============================================================ K. no network
