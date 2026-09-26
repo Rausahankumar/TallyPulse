@@ -157,7 +157,7 @@ const SCOPE_HINT = "I can answer questions about Sales and Purchase amounts, inv
 function formatNonAnswer(result) {
   if (result.status === "unsupported") {
     if (result.code === "unsafe_input" || result.code === "invalid_input" || result.code === "empty_question") return "I couldn’t process that question. Please rephrase it in plain words.";
-    if (result.code === "limit_too_large" || result.code === "unsupported_combination") return `${result.reason}`;
+    if (result.code === "limit_too_large" || result.code === "unsupported_combination" || result.code === "reasoning_not_supported") return `${result.reason}`;
     return `${result.reason} ${SCOPE_HINT}`;
   }
   const canned = CLARIFY[result.code];

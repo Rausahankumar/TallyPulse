@@ -2,7 +2,9 @@ const mongoose = require("mongoose");
 const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
 const Chat = require("../models/chat.model");
 const { handleChatTurn, callClaude } = require("../services/ai/chatOrchestrator");
-const { tryAnswerWithQueryEngine } = require("../services/query/queryChat");
+const { tryAnswerWithQueryEngine, chatTelemetry } = require("../services/query/queryChat");
+
+const { now, meterClaudeClient, emitChatTurn } = chatTelemetry;
 
 // --------------------------------------------------
 // POST /api/chat/:chatId?/message
@@ -19,6 +21,8 @@ const { tryAnswerWithQueryEngine } = require("../services/query/queryChat");
 // --------------------------------------------------
 
 const sendChatMessage = async (req, res) => {
+  const turnStart = now();
+  let turn = null; // per-turn telemetry (P1-1); set once the AI part of the turn starts
   try {
     const { message } = req.body;
 
@@ -70,7 +74,13 @@ const sendChatMessage = async (req, res) => {
 
     // Sales/Purchase questions go router -> planner -> validator -> cache -> engine first. Anything that
     // path cannot answer (or a disabled/failed engine) falls through to the existing tool chat unchanged.
+    turn = { tenantId, metrics: null, legacy: null, legacyMs: null, httpStatus: null };
     const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory });
+    turn.metrics = engine.telemetry || null;
+
+    // Legacy path: the same Claude client, only counted (calls + the usage Claude already returns) for the turn event.
+    if (!engine.handled) turn.legacy = meterClaudeClient(callClaude);
+    const legacyStart = now();
 
     const structured = engine.handled
       ? engine.structured
@@ -78,7 +88,9 @@ const sendChatMessage = async (req, res) => {
           context: chatContext,
           userMessage: message,
           conversationHistory,
-          claudeClient: callClaude,
+          claudeClient: turn.legacy.client,
+        }).finally(() => {
+          turn.legacyMs = now() - legacyStart;
         });
 
     chat.messages.push({
@@ -93,12 +105,14 @@ const sendChatMessage = async (req, res) => {
 
     await chat.save();
 
+    turn.httpStatus = 200;
     return res.status(200).json({
       success: true,
       chatId: String(chat._id),
       data: structured,
     });
   } catch (error) {
+    if (turn) turn.httpStatus = error && error.code === "AI_NOT_CONFIGURED" ? 503 : error && typeof error.status === "number" ? error.status : 500;
     // Missing/misconfigured API key -> a distinct, honest "not
     // available" response, never a generic 500 or a fabricated answer.
     if (error.code === "AI_NOT_CONFIGURED") {
@@ -124,6 +138,9 @@ const sendChatMessage = async (req, res) => {
         ? "The AI service is temporarily unavailable. Please try again shortly."
         : GENERIC_SERVER_ERROR,
     });
+  } finally {
+    // One structured event per AI turn; emitChatTurn never throws.
+    if (turn) emitChatTurn({ ...turn, totalMs: now() - turnStart });
   }
 };
 

@@ -94,7 +94,44 @@ const UNSUPPORTED_RULES = [
 ];
 
 const COMPLEX_RE = /\b(?:why|explain|explanation|reasons?|because|insights?|analy[sz]e|analysis|analytics?|recommend\w*|suggest\w*|should|contribut\w*|impact|drivers?|caus(?:e|es|ed)|correlat\w*|seasonal\w*|predict\w*|forecast\w*|anomal\w*|unusual|overview|performance|health|opportunit\w*|risks?|risky|trends? analysis)\b/;
-const AMBIGUOUS_METRIC_RE = /\b(?:revenue|turnover|spend|spending|spent|cost|costs|business|earnings?|volume|worth)\b/;
+const AMBIGUOUS_METRIC_RE = /\b(?:turnover|spend|spending|spent|cost|costs|business|earnings?|volume|worth)\b/;
+
+// G7: requests for business INTERPRETATION or DIAGNOSIS, not a measurable figure. No plan can answer them
+// truthfully, so they get a fixed honest answer - no planner, no legacy chat, no name lookup. Deliberately
+// narrow: each pattern is a whole phrase (question word + subject + intent), never a single keyword, so
+// "how much", "how did sales change", "which customers declined" etc. are untouched. Matched on the
+// normalized text (lower-case, punctuation and apostrophes removed: "how's" -> "hows").
+const REASONING_INTENTS = [
+  // "how is my business doing", "how's the business performing", "how is our company going"
+  /\bhow(?: is|s| are)? (?:my|our|the) (?:business|company|firm)(?: is)? (?:doing|performing|going|faring)\b/,
+  // "how is business", "how's business going" (whole question, so a customer "Business Solutions" is untouched)
+  /^how(?: is|s) business(?: (?:doing|going|performing))?$/,
+  // "how are we doing", "how am I doing"
+  /\bhow (?:are we|am i) (?:doing|performing|faring)\b/,
+  // "what does this tell us", "what do these numbers mean"
+  /\bwhat (?:does|do) (?:this|that|these|those|it)(?: (?:numbers?|figures?|data|results?))? (?:tell|say|mean|suggest|indicate)\b/,
+  // "what should I focus on", "where should we focus", "what should we prioritise" (no object: "which customers
+  // should I focus on" names something to rank and keeps its existing route)
+  /\b(?:what|where) should (?:i|we) (?:focus|prioriti[sz]e|concentrate)\b/,
+  // "what are the main problems (with my business)", "what are our biggest issues"
+  /\bwhat (?:are|is|s) (?:the|our|my) (?:main |biggest |key |major )?(?:problems?|issues?|weakness(?:es)?|challenges?)\b/,
+  // "why are my sales declining", "why did revenue decline", "why are purchases falling": WHY + a sales/revenue/
+  // purchase subject + a movement word, in that order
+  /\bwhy\b.*\b(?:sales?|revenues?|purchases?|business)\b.*\b(?:declin\w*|decreas\w*|fall\w*|fell|drop\w*|down|lower|reduc\w*|slow\w*|increas\w*|grow\w*|grew|rise|rises|rising|rose|up|higher|improv\w*|stagnat\w*|flat)\b/,
+];
+const REASONING_REASON =
+  'That question asks for a broader interpretation of the business, which I can\'t give reliably from the figures alone. I can answer specific, measurable questions - for example "sales this month vs last month", "customers whose sales declined vs last month" or "top 5 products by revenue this quarter".';
+
+// "Revenue" has ONE fixed meaning in TallyPulse: the pre-tax value of the items on active sales invoices
+// (lineAmount). Stated on every answer so the basis is never hidden.
+const REVENUE_ASSUMPTION = {
+  code: "revenue_is_pre_tax_item_value",
+  message: "Revenue = pre-tax value of the items sold (excludes GST, freight and other non-item charges, and invoices without item lines); gross of returns.",
+};
+// Same word test on every AI path (router, planner guard, chat fallbacks), so "revenue" can never reach a
+// path that reads it as the tax-inclusive Sales total.
+const REVENUE_RE = /\brevenues?\b/i;
+const mentionsRevenue = (text) => typeof text === "string" && REVENUE_RE.test(text);
 
 const DIM_WORD = {
   customer: "customer", customers: "customer",
@@ -145,6 +182,10 @@ function unsupported(code, capabilityId, reason, extra = {}) {
 function needsPlanner(code, detail, extra = {}) {
   return { status: "needs_planner", route: "claude_planner", code, reason: detail, ...extra };
 }
+// Infrastructure failure (not a property of the question): final, retryable, never handed to Claude.
+function temporarilyUnavailable(code, reason, extra = {}) {
+  return { status: "temporarily_unavailable", route: "honest_response", code, reason, retryable: true, ...extra };
+}
 
 // ---------------------------------------------------------------- period helpers
 
@@ -169,56 +210,9 @@ const RELATIVE_UNIT = {
   current_fy: ["fy", "current"], previous_fy: ["fy", "previous"],
 };
 
-// ---------------------------------------------------------------- the router
-
-/**
- * @param {string} question
- * @param {object} [context]
- * @param {Function} [context.resolveEntity] async ({entity, hintDim, text}) => {matches:[{dim,value}]}
- *        tenant-scoped, supplied by the server; the router never sees a tenant.
- * @param {Date} [context.referenceDate] only used to run the semantic validator
- */
-async function routeQuestion(question, context = {}) {
-  // ---- 0. input gate
-  if (typeof question !== "string") return unsupported("invalid_input", null, "The question must be text.");
-  if (question.length > MAX_QUESTION_CHARS) return needsPlanner("question_too_long", `Questions over ${MAX_QUESTION_CHARS} characters are not handled by the local router.`);
-  for (const re of UNSAFE_INPUT) {
-    if (re.test(question)) return unsupported("unsafe_input", null, "The question contains characters or terms that cannot be processed.");
-  }
-  if (!question.trim()) return unsupported("empty_question", null, "The question is empty.");
-
-  // ---- 1. quoted names out first (their content is opaque, never parsed)
-  const quoted = [];
-  const withoutQuotes = question.replace(/["“”]([^"“”]{1,200})["“”]/g, (m, inner) => {
-    quoted.push(inner.replace(/\s+/g, " ").trim());
-    return ` xqx${quoted.length - 1}xqx `;
-  });
-
-  let text = normalizeText(withoutQuotes);
-  text = text.replace(/\b(?:average|avg) order (?:value|amount|size)\b/g, "average invoice value");
-  text = normalizeDates(text).replace(/\s+/g, " ").trim();
-  const normalized = text;
-  if (!text) return unsupported("empty_question", null, "The question is empty.");
-
-  // ---- 2. honest refusals BEFORE any interpretation
-  for (const [id, re] of UNSUPPORTED_RULES) {
-    if (re.test(text)) {
-      const cap = CATALOG.unsupported.find((u) => u.id === id);
-      return unsupported("unsupported_capability", id, cap ? cap.reason : "Not supported in this phase.", { normalized });
-    }
-  }
-  const salesWord = /\b(?:sales?|sold|sell|sells|selling)\b/.test(text);
-  const purchaseNoun = /\b(?:purchases?|procurement)\b/.test(text);
-  const purchaseVerb = /\b(?:purchased|purchasing|bought|buy|buys|buying)\b/.test(text);
-  if (salesWord && purchaseNoun) {
-    const cap = CATALOG.unsupported.find((u) => u.id === "cross_entity_comparison");
-    return unsupported("unsupported_capability", "cross_entity_comparison", cap.reason, { normalized });
-  }
-
-  // ---- 3. reasoning / ambiguity gates
-  if (COMPLEX_RE.test(text)) return needsPlanner("requires_reasoning", "The question asks for analysis or explanation rather than a direct figure.", { normalized });
-  if (AMBIGUOUS_METRIC_RE.test(text)) return needsPlanner("ambiguous_metric", "The measure is ambiguous (e.g. revenue/turnover/spend/cost could mean different amounts).", { normalized });
-
+// Steps 4-10 of the router: every grammar recognizer, in its fixed order, consumes the words it understands
+// and leaves markers. Pure (no I/O). Also used to ask whether a single word is grammar at all (P1-2).
+function consumeGrammar(text) {
   // ---- 4. collapse multi-word dimension nouns
   text = text
     .replace(/\b(?:product|stock|item) groups?\b|\bcategor(?:y|ies)\b|\bgroups?\b/g, " productgroup ")
@@ -317,10 +311,192 @@ async function routeQuestion(question, context = {}) {
   take(st, /\bline (?:item )?amounts?\b/g, () => ({ type: "metric", metric: "line" }));
   take(st, /\b(?:quantity|quantities|qty|units|pieces|pcs)\b/g, () => ({ type: "metric", metric: "qty" }));
   take(st, /\b(?:invoices?|bills?|vouchers?)\b/g, () => ({ type: "invoiceNoun" }));
+  take(st, /\brevenues?\b/g, () => ({ type: "revenue" }));
   take(st, /\b(?:sales?|sold|sell|sells|selling)\b/g, (g, m) => ({ type: "entity", entity: "sales", noun: /^sales?$/.test(m) }));
   take(st, /\b(?:purchases?|procurement)\b/g, () => ({ type: "entity", entity: "purchase", noun: true }));
   take(st, /\b(?:purchased|purchasing|bought|buy|buys|buying)\b/g, () => ({ type: "entity", entity: "purchase", noun: false }));
   take(st, /\b(?:how much|amount|value)\b/g, () => ({ type: "metric", metric: "amount" }));
+  return { text, st, pct, topN, rankDir, recency };
+}
+
+// ---------------------------------------------------------------- resolver-first span matching (P1-2)
+//
+// A question containing a known tenant name is read twice: grammar-only (the existing router) and span-first
+// (the known name is opaque, the grammar reads only the rest). Both use the same tenant-scoped resolver.
+
+// Picks between the two readings. Never guesses between two different valid plans.
+function chooseReading(grammarOnly, spanFirst) {
+  if (spanFirst.status === "supported") {
+    if (grammarOnly.status !== "supported") return spanFirst;
+    if (samePlan(grammarOnly.plan, spanFirst.plan)) return grammarOnly;
+    return needsPlanner("entity_ambiguous", "The question reads differently with and without a known customer/supplier/product/group name.", { normalized: spanFirst.normalized });
+  }
+  if (grammarOnly.status === "supported") return grammarOnly;
+  // Unsafe text OUTSIDE a known name is refused exactly as before and never handed to any other path.
+  if (grammarOnly.code === "unsafe_input") return grammarOnly;
+  return spanFirst;
+}
+
+const canonJson = (v) => (Array.isArray(v) ? v.map(canonJson) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonJson(v[k])])) : v);
+const samePlan = (a, b) => JSON.stringify(canonJson(a)) === JSON.stringify(canonJson(b));
+
+const QUOTE_RE = /["“”]([^"“”]{1,200})["“”]/g;
+const PLACEHOLDER_RE = /^xqx\d+xqx$/;
+
+// A word the grammar itself uses: stop word, trigger, dimension noun, number, gate word, or anything a
+// recognizer consumes. A known-name span made ONLY of such words is never marked opaque, so a tenant name
+// like "A", "Top" or "Monthly" cannot take over an ordinary question.
+function isGrammarToken(tok) {
+  if (STOP.has(tok) || TRIGGERS.has(tok) || DIM_WORD[tok] || /^\d+$/.test(tok) || PLACEHOLDER_RE.test(tok)) return true;
+  if (UNSUPPORTED_RULES.some(([, re]) => re.test(tok)) || COMPLEX_RE.test(tok) || AMBIGUOUS_METRIC_RE.test(tok) || REVENUE_RE.test(tok)) return true;
+  const { st } = consumeGrammar(tok);
+  return !st.s.split(/\s+/).includes(tok);
+}
+// Stored names the input gate would reject are matched literally in the raw question. One stable predicate, so
+// the resolver can reuse its candidate list.
+const nameNeedsLiteral = (name) => UNSAFE_INPUT.some((re) => re.test(name));
+const acceptSpan = (slice) => !slice.some((t) => PLACEHOLDER_RE.test(t)) && slice.some((t) => !isGrammarToken(t));
+
+// Before the input gate: quoted text that is one of THIS tenant's names, and exact raw occurrences of tenant
+// names whose own characters the gate rejects, become opaque placeholders. Their text is literal data - it only
+// ever becomes a resolved filter value - and the gate then judges the remaining text.
+async function exciseKnownLiterals(question, context, { idx, probe }, quoted) {
+  let out = "";
+  let last = 0;
+  if (typeof context.resolveEntity === "function") {
+    for (const m of question.matchAll(QUOTE_RE)) {
+      const inner = m[1].replace(/\s+/g, " ").trim();
+      const resolved = await context.resolveEntity({ entity: null, hintDim: null, text: inner });
+      if (!resolved || !Array.isArray(resolved.matches) || !resolved.matches.length) continue;
+      quoted.push(inner);
+      out += `${question.slice(last, m.index)} xqx${quoted.length - 1}xqx `;
+      last = m.index + m[0].length;
+      probe.opaque += 1;
+    }
+  }
+  let text = out + question.slice(last);
+  const literals = await idx.findLiterals(text, nameNeedsLiteral);
+  if (literals.length) {
+    let rebuilt = "";
+    let at = 0;
+    for (const lit of literals) {
+      quoted.push(text.slice(lit.start, lit.end));
+      rebuilt += `${text.slice(at, lit.start)} xqx${quoted.length - 1}xqx `;
+      at = lit.end;
+      probe.opaque += 1;
+    }
+    text = rebuilt + text.slice(at);
+  }
+  return text;
+}
+
+// After normalization: the leftmost-longest known-name spans become opaque placeholders.
+async function markKnownNameSpans(text, { idx, probe }, quoted) {
+  const tokens = text.split(" ").filter(Boolean);
+  const spans = await idx.findSpans(tokens, acceptSpan);
+  if (!spans.length) return text;
+  probe.opaque += spans.length;
+  const out = [];
+  let i = 0;
+  for (const sp of spans) {
+    out.push(...tokens.slice(i, sp.start));
+    quoted.push(sp.text);
+    out.push(`xqx${quoted.length - 1}xqx`);
+    i = sp.end;
+  }
+  out.push(...tokens.slice(i));
+  return out.join(" ");
+}
+
+// ---------------------------------------------------------------- the router
+
+/**
+ * @param {string} question
+ * @param {object} [context]
+ * @param {Function} [context.resolveEntity] async ({entity, hintDim, text}) => {matches:[{dim,value}]}
+ *        tenant-scoped, supplied by the server; the router never sees a tenant.
+ * @param {{findSpans:Function, findLiterals:Function}} [context.entityIndex] the SAME resolver's name index
+ *        (resolveEntity.spanIndex); enables resolver-first span matching. Omitted = grammar-only.
+ * @param {Date} [context.referenceDate] only used to run the semantic validator
+ */
+async function routeQuestion(question, context = {}) {
+  const grammarOnly = await routeCore(question, context, null);
+  // P1-2 resolver-first span matching: only with this tenant's name index (server-supplied, tenant-bound).
+  const idx = context.entityIndex;
+  if (!idx || typeof idx.findSpans !== "function" || typeof idx.findLiterals !== "function" || typeof question !== "string") return grammarOnly;
+  if (["invalid_input", "question_too_long", "empty_question"].includes(grammarOnly.code)) return grammarOnly;
+  // Name lookup is down (P0-1): answer exactly as before - no second load attempt inside the same question.
+  if (grammarOnly.status === "temporarily_unavailable") return grammarOnly;
+  // G7: a whole interpretation phrase was asked - final, and no tenant name lookup is needed to say so.
+  if (grammarOnly.code === "reasoning_not_supported") return grammarOnly;
+  const probe = { opaque: 0 };
+  let spanFirst;
+  try {
+    spanFirst = await routeCore(question, context, { idx, probe });
+  } catch (error) {
+    // The name index could not be read: keep the grammar-only reading, whose own name lookup (if any)
+    // already reports an outage as temporarily_unavailable (P0-1).
+    return grammarOnly;
+  }
+  if (!probe.opaque) return grammarOnly; // no known name in the question: exactly the existing behaviour
+  return chooseReading(grammarOnly, spanFirst);
+}
+
+async function routeCore(question, context, spanMode) {
+  // ---- 0. input gate
+  if (typeof question !== "string") return unsupported("invalid_input", null, "The question must be text.");
+  if (question.length > MAX_QUESTION_CHARS) return needsPlanner("question_too_long", `Questions over ${MAX_QUESTION_CHARS} characters are not handled by the local router.`);
+  // P1-2: in the span-first reading, known tenant names are cut out as literal data first (exciseKnownLiterals);
+  // the gate then judges only the remaining text. The grammar-only reading gates the raw question exactly as before.
+  const quoted = [];
+  const gateText = spanMode ? await exciseKnownLiterals(question, context, spanMode, quoted) : question;
+  for (const re of UNSAFE_INPUT) {
+    if (re.test(gateText)) return unsupported("unsafe_input", null, "The question contains characters or terms that cannot be processed.");
+  }
+  if (!question.trim()) return unsupported("empty_question", null, "The question is empty.");
+
+  // ---- 1. quoted names out first (their content is opaque, never parsed)
+  const withoutQuotes = gateText.replace(QUOTE_RE, (m, inner) => {
+    quoted.push(inner.replace(/\s+/g, " ").trim());
+    return ` xqx${quoted.length - 1}xqx `;
+  });
+
+  let text = normalizeText(withoutQuotes);
+  if (spanMode) {
+    text = await markKnownNameSpans(text, spanMode, quoted);
+    if (!spanMode.probe.opaque) return { status: "no_known_name" }; // nothing opaque: the grammar-only reading stands
+  }
+  text = text.replace(/\b(?:average|avg) order (?:value|amount|size)\b/g, "average invoice value");
+  text = normalizeDates(text).replace(/\s+/g, " ").trim();
+  const normalized = text;
+  if (!text) return unsupported("empty_question", null, "The question is empty.");
+
+  // ---- 1b. G7: interpretation/diagnosis requests get a fixed honest answer (see REASONING_INTENTS). Known names
+  // are already opaque placeholders in the span-first reading, so a name can never supply the phrase there.
+  if (REASONING_INTENTS.some((re) => re.test(text))) return unsupported("reasoning_not_supported", null, REASONING_REASON, { normalized });
+
+  // ---- 2. honest refusals BEFORE any interpretation
+  for (const [id, re] of UNSUPPORTED_RULES) {
+    if (re.test(text)) {
+      const cap = CATALOG.unsupported.find((u) => u.id === id);
+      return unsupported("unsupported_capability", id, cap ? cap.reason : "Not supported in this phase.", { normalized });
+    }
+  }
+  const salesWord = /\b(?:sales?|sold|sell|sells|selling)\b/.test(text);
+  const purchaseNoun = /\b(?:purchases?|procurement)\b/.test(text);
+  const purchaseVerb = /\b(?:purchased|purchasing|bought|buy|buys|buying)\b/.test(text);
+  if (salesWord && purchaseNoun) {
+    const cap = CATALOG.unsupported.find((u) => u.id === "cross_entity_comparison");
+    return unsupported("unsupported_capability", "cross_entity_comparison", cap.reason, { normalized });
+  }
+
+  // ---- 3. reasoning / ambiguity gates
+  if (COMPLEX_RE.test(text)) return needsPlanner("requires_reasoning", "The question asks for analysis or explanation rather than a direct figure.", { normalized });
+  if (AMBIGUOUS_METRIC_RE.test(text)) return needsPlanner("ambiguous_metric", "The measure is ambiguous (e.g. turnover/spend/cost could mean different amounts).", { normalized });
+
+  const grammar = consumeGrammar(text);
+  text = grammar.text;
+  const { st, pct, topN, rankDir, recency } = grammar;
 
   // ---- 11. read the markers
   const items = markersInOrder(st);
@@ -333,6 +509,12 @@ async function routeQuestion(question, context = {}) {
   if (items.some((x) => x.type === "invalid")) {
     const inv = items.find((x) => x.type === "invalid");
     return needsPlanner(inv.reason, "A numeric condition in the question cannot be mapped safely.", { normalized });
+  }
+
+  // ---- 11-rev. revenue is an item-level amount: it cannot be mixed with invoice counts/averages (checked
+  // before any leftover word such as "average" could be mistaken for a name).
+  if (ofType(items, "revenue").length && (ofType(items, "metric").some((x) => x.metric === "count" || x.metric === "avg") || /\b(?:average|avg|mean)\b/.test(text))) {
+    return unsupported("unsupported_combination", null, "Revenue is the pre-tax item value, which cannot be combined with invoice counts or averages in one question. Please ask for them separately.", { normalized });
   }
 
   // ---- 11a. a lone previous period right after a comparison word ("declined vs last month",
@@ -381,6 +563,7 @@ async function routeQuestion(question, context = {}) {
   const dims = [];
   let nameRun = null;
   let nameHint = null;
+  let nameHintIsPreposition = false;
   let unrecognised = false;
 
   for (const run of runs) {
@@ -393,8 +576,12 @@ async function routeQuestion(question, context = {}) {
 
     // leading trigger words give the name a dimension hint
     let hint = null;
+    let hintIsPreposition = false;
     while (core.length && (TRIGGERS.has(core[0]) || STOP.has(core[0]))) {
-      if (TRIGGER_HINT[core[0]] && !hint) hint = TRIGGER_HINT[core[0]];
+      if (TRIGGER_HINT[core[0]] && !hint) {
+        hint = TRIGGER_HINT[core[0]];
+        hintIsPreposition = core[0] === "to" || core[0] === "from";
+      }
       core = core.slice(1);
     }
     if (!core.length) {
@@ -419,6 +606,7 @@ async function routeQuestion(question, context = {}) {
     if (lead.length) hint = DIM_WORD[lead[lead.length - 1]];
     nameRun = core;
     nameHint = hint;
+    nameHintIsPreposition = hintIsPreposition && !lead.length;
     void words;
   }
   if (unrecognised) return needsPlanner("unrecognized_words", "The question contains words the router cannot map safely.", { normalized });
@@ -433,9 +621,19 @@ async function routeQuestion(question, context = {}) {
     if (!rawText && nameRun.some((w) => /xqx\d+xqx/.test(w))) return needsPlanner("unrecognized_words", "A quoted name is mixed with other words.", { normalized });
 
     const entityWords = ofType(items, "entity").map((x) => x.entity);
-    const impliedEntity = entityWords.length ? entityWords[0] : null;
+    const impliedEntity = entityWords.length ? entityWords[0] : ofType(items, "revenue").length ? "sales" : null;
+    // "to"/"from" only say which side of the trade the name is on: for sales that side is a customer
+    // ("revenue from X"), for purchases a supplier. Explicit nouns ("supplier X") are never remapped.
+    if (nameHintIsPreposition && impliedEntity === "sales" && nameHint === "supplier") nameHint = "customer";
+    if (nameHintIsPreposition && impliedEntity === "purchase" && nameHint === "customer") nameHint = "supplier";
     if (typeof context.resolveEntity === "function") {
-      const resolved = await context.resolveEntity({ entity: impliedEntity, hintDim: nameHint, text: rawText || surface });
+      let resolved;
+      try {
+        resolved = await context.resolveEntity({ entity: impliedEntity, hintDim: nameHint, text: rawText || surface });
+      } catch (error) {
+        // The lookup itself failed (database/load error): that is NOT "no such name", and no other path may guess it.
+        return temporarilyUnavailable("entity_lookup_unavailable", "The customer/supplier/product lookup is temporarily unavailable.", { normalized });
+      }
       const matches = (resolved && resolved.matches) || [];
       if (matches.length === 0) return needsPlanner("entity_not_resolved", `"${rawText || surface}" did not match a known customer, supplier, product or group.`, { normalized });
       if (matches.length > 1) return needsPlanner("entity_ambiguous", `"${rawText || surface}" matches more than one kind of entity.`, { normalized });
@@ -458,7 +656,8 @@ async function routeQuestion(question, context = {}) {
   const nounEntities = new Set(entityItems.filter((x) => x.noun || x.entity === "sales").map((x) => x.entity));
   const whatDid = ofType(items, "whatDid")[0];
   const countEntity = ofType(items, "metric").map((x) => x.entity).filter(Boolean);
-  const signals = new Set([...nounEntities, ...dimEntity, ...(whatDid ? [whatDid.entity] : []), ...countEntity]);
+  const revenue = ofType(items, "revenue").length > 0;
+  const signals = new Set([...nounEntities, ...dimEntity, ...(whatDid ? [whatDid.entity] : []), ...countEntity, ...(revenue ? ["sales"] : [])]);
   // purchase VERBS ("purchased", "bought") are neutral when a customer/supplier is named
   const verbOnly = entityItems.filter((x) => !x.noun && x.entity === "purchase");
   if (signals.size === 0 && verbOnly.length && dimEntity.size === 0) signals.add("purchase");
@@ -485,13 +684,14 @@ async function routeQuestion(question, context = {}) {
   const metricWords = ofType(items, "metric");
   const want = { avg: false, count: false, qty: false, line: false, amount: false };
   for (const m of metricWords) want[m.metric] = true;
+  if (revenue) want.line = true;
   const invoiceNoun = ofType(items, "invoiceNoun").length > 0;
   const sortHint = ofType(items, "sortHint")[0];
   const M = METRIC_DEFAULTS[entity];
 
   // ---- 17. list mode (individual invoices)
   const listMode = invoiceNoun && !want.avg && !want.count && !want.qty && !want.line;
-  const assumptions = [];
+  const assumptions = revenue ? [REVENUE_ASSUMPTION] : [];
   const plan = { v: 1, entity, mode: listMode ? "list" : "aggregate", period: null };
 
   // ---- 18. period + comparison
@@ -729,4 +929,4 @@ function isUnsafeQuestion(question) {
   return typeof question !== "string" || UNSAFE_INPUT.some((re) => re.test(question));
 }
 
-module.exports = { routeQuestion, routeAndExecute, normalizeText, isUnsafeQuestion, MAX_QUESTION_CHARS };
+module.exports = { routeQuestion, routeAndExecute, normalizeText, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION, MAX_QUESTION_CHARS };

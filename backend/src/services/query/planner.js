@@ -31,7 +31,7 @@
 const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
-const { routeQuestion, isUnsafeQuestion } = require("./localRouter");
+const { routeQuestion, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION } = require("./localRouter");
 
 const { CATALOG, LIMITS } = catalog;
 
@@ -84,6 +84,7 @@ function buildCatalogDigest() {
     "Rules: invoice-grain metrics (amount/count/average) cannot be grouped or filtered by product or productGroup - use lineAmount/quantity for those. Never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare.",
     `Period kinds: ${catalog.PERIOD_KINDS.filter((k) => k !== "ytd").join(", ")}; custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. compare modes: ${CATALOG.compare.modes.join(", ")} (custom needs a period). all_time cannot be compared. Financial year is April-March.`,
     "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + LIMITS.maxLimit + ".",
+    '"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount (never invoiceAmount, invoiceCount or averageInvoiceValue). If a revenue question needs purchases or an invoice-level metric, decline.',
     "Copy customer/supplier/product/group names exactly as the user wrote them; never invent names. Never add a period the user did not state unless the question clearly implies one.",
     'If the question needs anything else (tax/GST, profit, returns/credit notes, payments/outstanding, orders, stock valuation, forecasts, explanations) or is truly ambiguous (for example "this year" without saying financial or calendar), do NOT guess: send decline {code, message}. Otherwise send plan, plus up to 3 short assumptions you made.',
   ].join("\n");
@@ -141,6 +142,13 @@ function addUsage(total, usage) {
 
 function newUsage() {
   return { calls: 0, input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+}
+
+const REVENUE_BASIS_REFUSAL = 'Revenue in TallyPulse means the pre-tax value of the items sold, and this question can\'t be answered on that basis. Ask for revenue on its own (for example "revenue last month" or "top 5 customers by revenue this month"), or ask for sales if you want tax-inclusive invoice totals.';
+
+function isRevenuePlan(plan) {
+  const metrics = plan.metrics || [];
+  return plan.entity === "sales" && metrics.includes("lineAmount") && metrics.every((m) => CATALOG.metrics[m] && CATALOG.metrics[m].grain === "line");
 }
 
 const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed", route: "honest_response", source: "claude_planner", code, reason, usage, ...extra });
@@ -239,6 +247,14 @@ async function planQuestion(question, options = {}) {
       return failed("planner_invalid_plan", "The planner produced a plan the query engine cannot run.", usage, { errors: errors.slice(0, 5) });
     }
 
+    // ---- revenue basis: enforced here, not trusted to the prompt. A revenue question may only become the
+    // pre-tax item-value plan (sales + lineAmount, no invoice-level metric); anything else is refused -
+    // never answered as the tax-inclusive Sales total.
+    const revenue = mentionsRevenue(text);
+    if (revenue && !isRevenuePlan(parsed.plan)) {
+      return { status: "unsupported", route: "honest_response", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL, usage };
+    }
+
     // ---- entity names: re-resolved against the tenant's own data
     let plan = JSON.parse(JSON.stringify(parsed.plan));
     if (typeof resolveEntity === "function" && Array.isArray(plan.filters)) {
@@ -272,6 +288,7 @@ async function planQuestion(question, options = {}) {
       source: "claude_planner",
       plan,
       plannerAssumptions,
+      definitionNotes: revenue ? [REVENUE_ASSUMPTION] : [],
       assumptions: validation.assumptions,
       warnings: validation.warnings,
       usage,
