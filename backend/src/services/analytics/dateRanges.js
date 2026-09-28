@@ -38,14 +38,21 @@ function endOfMonth(date) {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
+// Shifts by whole months, CLAMPING the day-of-month to the target month's last day. A plain
+// `new Date(y, m + delta, day)` rolls over instead (31 Mar - 1 month = "31 Feb" = 3 Mar), which made
+// "previous month" resolve to the CURRENT month on 29-31 Mar, 31 May/Jul/Oct/Dec. Time of day is kept.
 function shiftMonths(date, delta) {
   const d = new Date(date);
-  return new Date(d.getFullYear(), d.getMonth() + delta, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+  const monthIndex = d.getMonth() + delta;
+  const year = d.getFullYear() + Math.floor(monthIndex / 12);
+  const month = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return new Date(year, month, Math.min(d.getDate(), lastDay), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
 }
 
+// Same clamp for years: 29 Feb 2024 - 1 year = 28 Feb 2023 (not 1 Mar 2023).
 function shiftYears(date, delta) {
-  const d = new Date(date);
-  return new Date(d.getFullYear() + delta, d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+  return shiftMonths(date, delta * 12);
 }
 
 function shiftDays(date, delta) {
@@ -70,9 +77,11 @@ function shiftPeriod({ from, to }, { months = 0, years = 0 } = {}) {
   const shiftedFrom = shift(from);
   let shiftedTo = shift(to);
 
-  // Clamp: if the shift caused `to` to roll into a later month than
-  // `from` shifted to (e.g. from=Jan1, to=Jan31 -> Feb shift gives
-  // to=Mar3), pull it back to the last real day of that month instead.
+  // A `to` day that does not exist in the target month (31 Mar -> Feb) means "through the end of that
+  // month": the whole last day, not the clamped day at `to`'s time of day.
+  if (shiftedTo.getDate() !== new Date(to).getDate()) shiftedTo = endOfMonth(shiftedTo);
+
+  // Clamp: never let `to` run past the month `from` shifted into.
   const monthEnd = endOfMonth(shiftedFrom);
   if (shiftedTo > monthEnd) {
     shiftedTo = monthEnd;

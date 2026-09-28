@@ -127,7 +127,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       ["show turnover last month", plan({ metrics: ["invoiceAmount"] }), ["Treated turnover as invoice amount"]],
       ["top customers by sales and by month this fy", plan({ period: { kind: "current_fy" }, groupBy: [{ dim: "customer" }, { dim: "date", bucket: "month" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 20 }), []],
       ["customers that bought less than 20% of last year", plan({ period: { kind: "current_quarter" }, groupBy: [{ dim: "customer" }], compare: { mode: "same_period_last_year" }, having: [{ metric: "invoiceAmount.deltaPct", op: "lt", value: 20 }], sort: [{ by: "invoiceAmount.deltaPct", dir: "asc" }] }), []],
-      ["compare this month with last quarter", plan({ period: { kind: "current_month" }, compare: { mode: "custom", period: { kind: "custom", from: "2025-01-01", to: "2025-03-31" } } }), []],
+      ["compare this month with Jan-Mar 2025", plan({ period: { kind: "current_month" }, compare: { mode: "custom", period: { kind: "custom", from: "2025-01-01", to: "2025-03-31" } } }), []],
       ["purchases by supplier and product group last quarter", { v: 1, entity: "purchase", mode: "aggregate", period: { kind: "previous_quarter" }, metrics: ["lineAmount"], groupBy: [{ dim: "supplier" }, { dim: "productGroup" }], filters: [], sort: [{ by: "lineAmount", dir: "desc" }], limit: 10 }, []],
     ];
     for (const [q, p, assumptions] of cases) {
@@ -136,6 +136,20 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       const v = r.plan ? validateQueryPlan(r.plan, { referenceDate: new Date(2025, 5, 15, 12) }) : { ok: false };
       check(`"${q}" -> supported plan, equals Claude's plan, passes schema + validator`, r.status === "supported" && eq(r.plan, parseQueryPlan(p).plan) && v.ok && claude.requests.length === 1, `${r.status}/${r.code} ${JSON.stringify(r.errors || "")}`);
     }
+    // P-SF: the planner is never given a date, so literal years it did not read in the question are invented. This
+    // case used to be accepted ("compare this month with last quarter" -> a guessed 2025-01-01..2025-03-31); it is
+    // now a clarification (the same case with the year stated is accepted above).
+    for (const [q, p] of [
+      ["compare this month with last quarter", plan({ period: { kind: "current_month" }, compare: { mode: "custom", period: { kind: "custom", from: "2025-01-01", to: "2025-03-31" } } })],
+      ["sales in April", plan({ period: { kind: "custom", from: "2024-04-01", to: "2024-04-30" } })],
+      ["sales for the financial year", plan({ period: { kind: "specific_fy", fy: "2023-24" } })],
+    ]) {
+      const cl = fakeClaude(reply({ plan: p, assumptions: [] }));
+      const rr = await planQuestion(q, { claudeClient: cl, resolveEntity: resolver });
+      check(`P-SF: a year the user never wrote is refused, not run: "${q}" -> needs_clarification/year_missing, no plan`, rr.status === "needs_clarification" && rr.code === "year_missing" && !rr.plan, `${rr.status}/${rr.code}`);
+    }
+    const stated = await planQuestion("sales for FY 2023-24", { claudeClient: fakeClaude(reply({ plan: plan({ period: { kind: "specific_fy", fy: "2023-24" } }), assumptions: [] })), resolveEntity: resolver });
+    check("P-SF: ...and the same FY is accepted when the user wrote it", stated.status === "supported");
     const claude = fakeClaude(reply({ plan: plan({}), assumptions: ["Assumed\u0000 net\nof tax ".repeat(30), "b", "c", "d-too-many"] }));
     const r = await planQuestion("turnover", { claudeClient: claude });
     check("planner assumptions are capped (3), cleaned of control chars and length-bounded", r.plannerAssumptions.length === 3 && r.plannerAssumptions.every((a) => a.length <= 160 && !/[\u0000-\u001f]/.test(a)));

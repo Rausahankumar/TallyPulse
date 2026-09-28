@@ -37,7 +37,7 @@ const FILTERABLE_DIMENSION_IDS = Object.values(catalog.CATALOG.dimensions)
   .filter((d) => d.filterOps.length > 0)
   .map((d) => d.id);
 const BUCKETS = catalog.CATALOG.dimensions.date.buckets;
-const FILTER_OPS = ["eq_ci", "in_ci", "contains_ci"];
+const FILTER_OPS = ["eq_ci", "in_ci", "contains_ci", "new_in_period"];
 const HAVING_OPS = ["gt", "gte", "lt", "lte", "eq", "neq"];
 // having: selected metrics or their compare-derived variants.
 const METRIC_REFS = catalog.metricRefs();
@@ -124,7 +124,10 @@ const filterItem = z
     if (!dim.filterOps.includes(f.op)) {
       ctx.addIssue({ code: "custom", path: ["op"], message: `operator ${f.op} is not allowed on ${f.dim}` });
     }
-    if (f.op === "in_ci") {
+    if (f.op === "new_in_period") {
+      // the only value: the rule is "created inside the query's own period"
+      if (f.value !== "period") ctx.addIssue({ code: "custom", path: ["value"], message: 'new_in_period takes the value "period"' });
+    } else if (f.op === "in_ci") {
       if (!Array.isArray(f.value)) ctx.addIssue({ code: "custom", path: ["value"], message: "in_ci requires an array of values" });
     } else if (Array.isArray(f.value)) {
       ctx.addIssue({ code: "custom", path: ["value"], message: `${f.op} requires a single string value` });

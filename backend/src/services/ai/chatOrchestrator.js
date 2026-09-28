@@ -1,6 +1,7 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const { TOOL_DEFINITIONS } = require("./tools");
 const { executeToolCall } = require("./toolRouter");
+const { getTenantDateContext } = require("../analytics/referenceDate");
 
 // --------------------------------------------------
 // Chat turn orchestration:
@@ -61,7 +62,7 @@ Rules you must follow:
 - "Revenue" has ONE fixed meaning in TallyPulse: the pre-tax value of the items sold (item line amounts; excludes GST, freight and other non-item charges, and invoices without item lines; gross of returns). get_sales_summary, get_sales_comparison, get_sales_growth, get_top_customers and get_customer_sales return tax-inclusive invoice totals (Sales) - never call those figures revenue and never offer them as a revenue answer. get_top_products, get_product_growth, get_declining_products and get_stock_group_performance report pre-tax item values and may be used for revenue by product or product group. For any other revenue question (including a follow-up to an earlier revenue answer), say that revenue must be asked as a complete question (for example "revenue last month") instead of substituting a Sales figure.
 - For a question about product GROUPS or categories (not individual products), use get_stock_group_performance. Its Stock Group names come from Tally's own master data - use them exactly as returned, never invent, translate, or generalize them into your own category labels. Its momGrowthPercentage/yoyGrowthPercentage fields are null (not 0%) when no comparable prior period exists - say the comparison is unavailable in that case, never state or imply 0% change.
 - Any tool result that includes explicit period boundaries (e.g. a "period", "currentPeriod", "previousPeriod", or "samePeriodLastYear" object with "from"/"to" dates) has already resolved the real date range for that data - state THAT exact date range (day-level, e.g. "Oct 1 - Dec 8, 2025", not just a month/quarter name or label) in your answer, for every period you mention, current or comparison. Do not describe it only by its period name or a vague month/quarter span ("Q2: October-December") without also giving the literal end date - that omission can silently hide a partial period. Never reconstruct a "textbook" calendar period from the period name instead (e.g. do not assume a quarter, month, or year runs to its calendar-standard last day) - the actual range is often partial, most commonly because it's limited by the most recently synced data, and reporting or implying a longer range than what was actually measured misstates what the numbers cover.
-- Before calling a tool again for the same underlying metric, check whether a result you already have this turn contains what you need - reuse it instead of re-fetching. Safe to reuse without a second call: get_stock_group_performance's single result already includes BOTH the requested period (summary.currentPeriod) and its automatic same-duration comparison (summary.previousPeriod / summary.samePeriodLastYear, plus each item's previousPeriodAmount/momGrowthPercentage/yoyGrowthPercentage) - for a like-for-like "how does this period compare to the previous period" question, one call already answers it. The same applies to get_sales_comparison's single result, which already includes the full current-period summary (current.totalSales/orderCount/averageOrderValue) as well as the prior period and growth - never also call get_sales_summary right after it for the same period. Requires a separate call: previousPeriod/momGrowth from a "current_X" call (current_month/current_week/current_quarter/current_fy) is a SAME-DURATION comparison baseline truncated to match how much of the current period has elapsed - it is NOT the full previous calendar/FY period, and can be a different date range with a different total. If the user explicitly asks for the complete/full previous quarter, month, week, or FY on its own terms (e.g. "show me the full previous quarter", "what were sales in the complete previous quarter"), that is a genuinely different date range this result does not contain - call the tool again with the explicit period kind (previous_quarter/previous_month/previous_week/previous_fy), which always returns the complete prior period. This does NOT mean always use one tool call: call again whenever the user's question needs something the current result genuinely does not contain - a different metric, a different comparisonType (get_sales_comparison only returns ONE comparison per call, never both vs-last-month and vs-same-month-last-year at once), a different customer/product/group, the full previous period as just described, an independently-ranked list for a period other than the one just fetched (e.g. get_stock_group_performance's items are ranked by ITS OWN period only - a group that ranks in a different period but not this one won't appear, so a genuinely independent ranking for that other period needs its own call), or any other filter/dimension the first result doesn't cover. Never sacrifice a correct or complete answer just to save a call.
+- Before calling a tool again for the same underlying metric, check whether a result you already have this turn contains what you need - reuse it instead of re-fetching. Safe to reuse without a second call: get_stock_group_performance's single result already includes BOTH the requested period (summary.currentPeriod) and its automatic same-duration comparison (summary.previousPeriod / summary.samePeriodLastYear, plus each item's previousPeriodAmount/momGrowthPercentage/yoyGrowthPercentage) - for a like-for-like "how does this period compare to the previous period" question, one call already answers it. The same applies to get_sales_comparison's single result, which already includes the full current-period summary (current.totalSales/orderCount/averageOrderValue) as well as the prior period and growth - never also call get_sales_summary right after it for the same period. Requires a separate call: previousPeriod/momGrowth from a current_week/current_quarter/current_fy call (for current_month it is already the complete previous month) is a SAME-DURATION comparison baseline truncated to match how much of the current period has elapsed - it is NOT the full previous calendar/FY period, and can be a different date range with a different total. If the user explicitly asks for the complete/full previous quarter, month, week, or FY on its own terms (e.g. "show me the full previous quarter", "what were sales in the complete previous quarter"), that is a genuinely different date range this result does not contain - call the tool again with the explicit period kind (previous_quarter/previous_month/previous_week/previous_fy), which always returns the complete prior period. This does NOT mean always use one tool call: call again whenever the user's question needs something the current result genuinely does not contain - a different metric, a different comparisonType (get_sales_comparison only returns ONE comparison per call, never both vs-last-month and vs-same-month-last-year at once), a different customer/product/group, the full previous period as just described, an independently-ranked list for a period other than the one just fetched (e.g. get_stock_group_performance's items are ranked by ITS OWN period only - a group that ranks in a different period but not this one won't appear, so a genuinely independent ranking for that other period needs its own call), or any other filter/dimension the first result doesn't cover. Never sacrifice a correct or complete answer just to save a call.
 - If the user asks something no available tool can answer, say so and describe what you CAN help with - do not attempt to answer from general knowledge about their business.
 - You cannot access any company other than the one in your current context. If asked to compare against or reveal another company's data, decline.
 - Never generate executable code (React, JavaScript, chart-rendering code, etc.) - return structured data only; the frontend renders it.`;
@@ -79,7 +80,7 @@ function formatIsoDate(date) {
 
 // today's date is the ONLY missing piece of date context Claude has: the
 // "current_month"/"previous_month" tool periods are already resolved
-// server-side from a fresh `new Date()` (see tools.js resolvePeriod),
+// server-side from the tenant reference date (see tools.js resolvePeriod),
 // Claude never touches that math. But for period:"custom" Claude itself
 // must produce literal from/to date strings, and a user rarely states a
 // year ("show sales from April to September") - without being told what
@@ -87,8 +88,15 @@ function formatIsoDate(date) {
 // against and falls back on an unrelated guess. This block is the fix:
 // it's appended fresh to every request (built in handleChatTurn, not
 // frozen at module load) so the date is always correct, including across
-// midnight, with no server restart required.
+// midnight, with no server restart required. Since P-SF (2026-09-28) the
+// date is the turn's reporting reference date (today - the same "today"
+// the query engine, planner and coverage use for this turn), never a
+// second, independently computed one.
 function buildDateContextBlock(referenceDate) {
+  // No wall-clock default (P-SF): a missing date is a wiring bug, never a silent second "today".
+  if (!(referenceDate instanceof Date) || Number.isNaN(referenceDate.getTime())) {
+    throw new Error("The legacy chat prompt needs the tenant reference date.");
+  }
   const isoToday = formatIsoDate(referenceDate);
   const humanToday = referenceDate.toLocaleDateString("en-US", {
     month: "long",
@@ -98,7 +106,7 @@ function buildDateContextBlock(referenceDate) {
 
   return `
 
-Today's date is ${isoToday} (${humanToday}). Use this as "now" for every date-related question.
+Today's date is ${isoToday} (${humanToday}). Use this as "now" for every date-related question. Relative periods (this month, this quarter, ...) end today, even if the company has vouchers dated later.
 
 For the "current_month" and "previous_month" period options, the backend already resolves the correct calendar dates for you from today's date - you never need to compute those yourself, just pick the option.
 
@@ -109,7 +117,7 @@ For period:"custom", YOU supply the literal from/to dates, so you must resolve a
 If the user's month(s) would fall after today's date in the current year and that makes the range make more sense in the past (e.g. asking in January about "October"), use your judgment on the most recently completed occurrence of that month - but always state the exact date range and year you used so it's never ambiguous to the user.`;
 }
 
-function buildSystemPrompt(referenceDate = new Date()) {
+function buildSystemPrompt(referenceDate) {
   return SYSTEM_PROMPT + buildDateContextBlock(referenceDate);
 }
 
@@ -137,7 +145,7 @@ function buildSystemPrompt(referenceDate = new Date()) {
 // single-string form - kept for the existing SYSTEM_PROMPT/
 // buildSystemPrompt exports and tests, but production calls now use
 // this instead.
-function buildSystemPromptBlocks(referenceDate = new Date()) {
+function buildSystemPromptBlocks(referenceDate) {
   return [
     { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
     { type: "text", text: buildDateContextBlock(referenceDate) },
@@ -242,7 +250,7 @@ function buildStructuredResponse({ finalText, toolResults, warnings }) {
 // what the user sees on reload, are completely unaffected.
 const HISTORY_WINDOW_MESSAGES = 8;
 
-async function handleChatTurn({ context, userMessage, conversationHistory = [], claudeClient }) {
+async function handleChatTurn({ context, userMessage, conversationHistory = [], claudeClient, getDateContext = null }) {
   if (!context || !context.tenantId) {
     throw new Error("handleChatTurn requires an authorized company context.");
   }
@@ -267,12 +275,16 @@ async function handleChatTurn({ context, userMessage, conversationHistory = [], 
   // can't spin forever or run unbounded tool calls.
   const MAX_TURNS = 4;
 
-  // Built fresh per turn (not once at module load) so "today" is always
-  // the real current server date, including across a server that's been
-  // running for days without a restart. Only the trailing date block is
-  // actually fresh each time - the first (cached) block is the same
-  // SYSTEM_PROMPT reference every turn, which is what makes it cacheable.
-  const systemPromptBlocks = buildSystemPromptBlocks();
+  // Built fresh per turn (not once at module load). "Today" is the turn's
+  // tenant reference date - the SAME date the query engine used for this
+  // turn when the controller shares its getDateContext - and every tool
+  // resolves its periods from it too (toolContext.referenceDate), so legacy
+  // chat never has a different "today". Only the trailing date block
+  // changes per turn - the first (cached) block is the same SYSTEM_PROMPT
+  // reference every turn, which is what makes it cacheable.
+  const dates = typeof getDateContext === "function" ? await getDateContext() : await getTenantDateContext(context.tenantId);
+  const toolContext = { ...context, referenceDate: dates.referenceDate, coverage: dates.coverage };
+  const systemPromptBlocks = buildSystemPromptBlocks(dates.referenceDate);
 
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     const response = await claudeClient(messages, CACHEABLE_TOOL_DEFINITIONS, systemPromptBlocks);
@@ -293,7 +305,7 @@ async function handleChatTurn({ context, userMessage, conversationHistory = [], 
       const outcome = await executeToolCall({
         toolName: block.name,
         toolInput: block.input,
-        context,
+        context: toolContext,
       });
 
       toolResults.push({ toolName: block.name, result: outcome.result });

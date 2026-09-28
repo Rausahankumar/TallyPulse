@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
 const Chat = require("../models/chat.model");
 const { handleChatTurn, callClaude } = require("../services/ai/chatOrchestrator");
-const { tryAnswerWithQueryEngine, chatTelemetry } = require("../services/query/queryChat");
+const { tryAnswerWithQueryEngine, createTurnDates, chatTelemetry } = require("../services/query/queryChat");
 
 const { now, meterClaudeClient, emitChatTurn } = chatTelemetry;
 
@@ -67,6 +67,10 @@ const sendChatMessage = async (req, res) => {
       role: m.role,
       content: m.text,
     }));
+    // Structured context of the previous ENGINE answer (the plan it ran), for follow-ups such as "and by
+    // customer?". Server-side only: it is never part of the history sent to Claude.
+    const last = chat.messages[chat.messages.length - 1];
+    const previousQuery = last && last.role === "assistant" && last.queryContext ? last.queryContext : null;
 
     chat.messages.push({ role: "user", text: message });
 
@@ -74,8 +78,10 @@ const sendChatMessage = async (req, res) => {
 
     // Sales/Purchase questions go router -> planner -> validator -> cache -> engine first. Anything that
     // path cannot answer (or a disabled/failed engine) falls through to the existing tool chat unchanged.
-    turn = { tenantId, metrics: null, legacy: null, legacyMs: null, httpStatus: null };
-    const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory });
+    // ONE tenant reference date per turn (read at most once, only if needed), shared by the engine and legacy chat.
+    const turnDates = createTurnDates(tenantId);
+    turn = { tenantId, metrics: null, legacy: null, legacyMs: null, httpStatus: null, turnDates };
+    const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory, previousQuery, getDateContext: turnDates });
     turn.metrics = engine.telemetry || null;
 
     // Legacy path: the same Claude client, only counted (calls + the usage Claude already returns) for the turn event.
@@ -89,6 +95,7 @@ const sendChatMessage = async (req, res) => {
           userMessage: message,
           conversationHistory,
           claudeClient: turn.legacy.client,
+          getDateContext: turnDates,
         }).finally(() => {
           turn.legacyMs = now() - legacyStart;
         });
@@ -101,6 +108,7 @@ const sendChatMessage = async (req, res) => {
       dataAsOf: structured.dataAsOf,
       freshness: structured.freshness,
       warnings: structured.warnings,
+      queryContext: engine.handled && engine.queryContext ? engine.queryContext : undefined,
     });
 
     await chat.save();
@@ -140,7 +148,7 @@ const sendChatMessage = async (req, res) => {
     });
   } finally {
     // One structured event per AI turn; emitChatTurn never throws.
-    if (turn) emitChatTurn({ ...turn, totalMs: now() - turnStart });
+    if (turn) emitChatTurn({ ...turn, dates: turn.turnDates.peek(), totalMs: now() - turnStart });
   }
 };
 

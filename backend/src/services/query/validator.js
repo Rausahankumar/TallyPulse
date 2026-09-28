@@ -36,6 +36,11 @@ function isValidatedPlan(value) {
 
 const METRIC_SUFFIXES = Object.keys(CATALOG.compare.derivedSuffixes);
 
+const NEW_PARTY_NOTE = {
+  code: "new_party_by_ledger_created_date",
+  message: '"New" means the party\'s Tally ledger was created in this period and they traded in it (from the synced ledger master).',
+};
+
 function parseRef(ref) {
   const dot = ref.indexOf(".");
   if (dot === -1) return { base: ref, suffix: null };
@@ -179,6 +184,14 @@ function validateQueryPlan(raw, { referenceDate } = {}) {
   plan.filters.forEach((f, i) => {
     if (!entityDimIds.has(f.dim)) err("dimension_not_applicable_to_entity", `${f.dim} does not exist for ${plan.entity}.`, `filters.${i}.dim`);
   });
+
+  // New party = Tally ledger created inside the period (LedgerMaster), so the
+  // period must be bounded and there is no second period to compare against.
+  if (plan.filters.some((f) => f.op === "new_in_period")) {
+    if (plan.period.kind === "all_time") err("new_party_needs_period", "New customers/suppliers need a period (for example this month).", "period");
+    if (plan.compare) err("new_party_comparison_unsupported", "New customers/suppliers are defined by ledger creation date inside one period; remove the comparison.", "compare");
+    assumptions.push(NEW_PARTY_NOTE);
+  }
 
   // 2. Grain + compatibility matrix ---------------------------------------
   const usableMetrics = plan.metrics.filter((id) => entityMetricIds.has(id));
@@ -350,7 +363,7 @@ function validateQueryPlan(raw, { referenceDate } = {}) {
   if (NEEDS_REFERENCE_DATE(plan.period.kind)) {
     assumptions.push({
       code: "period_anchored_to_latest_data",
-      message: `Relative periods are anchored to the latest synced voucher date (${referenceDate.toISOString().slice(0, 10)}), not the wall clock.`,
+      message: `Relative periods are measured up to the reporting reference date (${referenceDate.getFullYear()}-${String(referenceDate.getMonth() + 1).padStart(2, "0")}-${String(referenceDate.getDate()).padStart(2, "0")}).`,
     });
   }
   if (resolvedPeriod.isPartial) {
@@ -389,4 +402,4 @@ function deepFreeze(value) {
   return value;
 }
 
-module.exports = { validateQueryPlan, isValidatedPlan, parseRef, estimateBuckets };
+module.exports = { validateQueryPlan, isValidatedPlan, parseRef, estimateBuckets, NEW_PARTY_NOTE };

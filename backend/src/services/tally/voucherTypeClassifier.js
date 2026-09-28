@@ -33,6 +33,8 @@ const { validateMasterOwnership } = require("./companyOwnership");
 
 const RESERVED_SALES = "Sales";
 const RESERVED_PURCHASE = "Purchase";
+const RESERVED_CREDIT_NOTE = "Credit Note";
+const RESERVED_DEBIT_NOTE = "Debit Note";
 
 // Generous bound on hierarchy depth - purely a safety net against a
 // malformed/never-terminating chain. Real Tally hierarchies observed so
@@ -146,6 +148,11 @@ function classifyVoucherTypes(voucherTypeMasters) {
 
   const salesResolution = resolveRootFor(RESERVED_SALES);
   const purchaseResolution = resolveRootFor(RESERVED_PURCHASE);
+  // Additive: Credit/Debit Note resolution, same algorithm, never touches
+  // the sales/purchase branches above. Feeds the AdjustmentNote sync
+  // modules (tallySyncWorker.js) - see docs/PROJECT_CONTEXT.md.
+  const creditNoteResolution = resolveRootFor(RESERVED_CREDIT_NOTE);
+  const debitNoteResolution = resolveRootFor(RESERVED_DEBIT_NOTE);
 
   // Walk a single voucher type's parent chain to its ultimate self-parented
   // root. Memoized since the same intermediate nodes get walked repeatedly
@@ -224,9 +231,19 @@ function classifyVoucherTypes(voucherTypeMasters) {
     );
   }
 
+  if (creditNoteResolution.status === "ok") {
+    creditNoteResolution.typeNames = collectTypeNamesForRoot(creditNoteResolution.rootName);
+  }
+
+  if (debitNoteResolution.status === "ok") {
+    debitNoteResolution.typeNames = collectTypeNamesForRoot(debitNoteResolution.rootName);
+  }
+
   return {
     sales: salesResolution,
     purchase: purchaseResolution,
+    creditNote: creditNoteResolution,
+    debitNote: debitNoteResolution,
     totalVoucherTypes: allNames.length,
     unresolvedTypeNames,
   };
@@ -236,6 +253,8 @@ function buildFetchFailureResult(reason) {
   return {
     sales: { status: "error", typeNames: [], rootName: null, reason },
     purchase: { status: "error", typeNames: [], rootName: null, reason },
+    creditNote: { status: "error", typeNames: [], rootName: null, reason },
+    debitNote: { status: "error", typeNames: [], rootName: null, reason },
     totalVoucherTypes: 0,
     unresolvedTypeNames: [],
     resolvedAt: new Date(),
@@ -369,4 +388,6 @@ module.exports = {
   DEFAULT_CACHE_TTL_MS,
   RESERVED_SALES,
   RESERVED_PURCHASE,
+  RESERVED_CREDIT_NOTE,
+  RESERVED_DEBIT_NOTE,
 };

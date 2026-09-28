@@ -31,7 +31,7 @@
 const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
-const { routeQuestion, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION } = require("./localRouter");
+const { routeQuestion, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION, NEW_PARTY_REASON, NOTES } = require("./localRouter");
 
 const { CATALOG, LIMITS } = catalog;
 
@@ -62,6 +62,14 @@ const SKIP_ROUTER_CODES = new Set([
   "invalid_fy",
   "unsupported_window",
   "period_missing",
+  // period wording the DSL cannot express; the planner has no reference date, so it could only guess dates
+  "period_label_unsupported",
+  "relative_offset_unsupported",
+  "open_ended_range",
+  // P-SF: the missing fact is which party / which direction / which measure - the user's to state
+  "who_ambiguous",
+  "threshold_direction_missing",
+  "vague_performance",
 ]);
 
 // ---------------------------------------------------------------- prompt + tool (built once from the catalog)
@@ -150,6 +158,38 @@ function isRevenuePlan(plan) {
   const metrics = plan.metrics || [];
   return plan.entity === "sales" && metrics.includes("lineAmount") && metrics.every((m) => CATALOG.metrics[m] && CATALOG.metrics[m].grain === "line");
 }
+
+// Years the user actually wrote: 2025, '25, 2025-26, 24-25 (both years of an FY label).
+function statedYears(text) {
+  const years = new Set();
+  for (const m of text.matchAll(/\b(20\d{2})\b/g)) years.add(Number(m[1]));
+  for (const m of text.matchAll(/\b(?:20)?(\d{2})\s*-\s*(\d{2})\b/g)) {
+    years.add(2000 + Number(m[1]));
+    years.add(2000 + Number(m[2]));
+  }
+  for (const m of text.matchAll(/'(\d{2})\b/g)) years.add(2000 + Number(m[1]));
+  return years;
+}
+
+function datesStated(plan, text) {
+  const years = statedYears(String(text));
+  const ok = (p) => {
+    if (!p) return true;
+    if (p.kind === "custom") return years.has(Number(p.from.slice(0, 4))) && years.has(Number(p.to.slice(0, 4)));
+    if (p.kind === "specific_fy") return years.has(Number(p.fy.slice(0, 4))) || years.has(Number(p.fy.slice(0, 4)) + 1);
+    return true; // relative kinds stay symbolic: the server resolves them with the tenant reference date
+  };
+  return ok(plan.period) && (!plan.compare || plan.compare.mode !== "custom" || ok(plan.compare.period));
+}
+
+// Product rules the planner's plan must follow, enforced here (never left to Claude):
+//  decision 2 - "this month vs last month" compares with the COMPLETE previous month unless the user asked for the
+//               same days; decision 3 - "new customer/supplier" (absent in the comparison period) is not answerable
+//               without the party master.
+const SAME_DAYS_WORDING = /\b(?:same (?:period|days|dates|date range|number of days|day count|elapsed days)|like[- ]for[- ]like|month[- ]to[- ]date|lmtd|same[- ]day[- ]count)\b/i;
+const isNewPartyPlan = (plan) =>
+  (plan.groupBy || []).some((g) => g.dim === "customer" || g.dim === "supplier") &&
+  (plan.having || []).some((h) => /\.previous$/.test(h.metric) && h.op === "eq" && h.value === 0);
 
 const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed", route: "honest_response", source: "claude_planner", code, reason, usage, ...extra });
 
@@ -255,6 +295,12 @@ async function planQuestion(question, options = {}) {
       return { status: "unsupported", route: "honest_response", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL, usage };
     }
 
+    // ---- dates (P-SF): the planner is never given a date, so a literal year in its plan that the user did not
+    // write would be invented. Custom ranges and specific FYs must use years stated in the question.
+    if (!datesStated(parsed.plan, text)) {
+      return { status: "needs_clarification", route: "honest_response", source: "date_guard", code: "year_missing", reason: "Which year do you mean?", usage };
+    }
+
     // ---- entity names: re-resolved against the tenant's own data
     let plan = JSON.parse(JSON.stringify(parsed.plan));
     if (typeof resolveEntity === "function" && Array.isArray(plan.filters)) {
@@ -281,6 +327,17 @@ async function planQuestion(question, options = {}) {
       plan = JSON.parse(JSON.stringify(reparsed.plan));
     }
 
+    if (isNewPartyPlan(plan)) {
+      return { status: "unsupported", route: "honest_response", source: "new_party_guard", code: "unsupported_new_party", reason: NEW_PARTY_REASON, usage };
+    }
+    const definitionNotes = revenue ? [REVENUE_ASSUMPTION] : [];
+    if (plan.period.kind === "current_month" && plan.compare && plan.compare.mode === "like_for_like" && !SAME_DAYS_WORDING.test(text)) {
+      plan.compare = { mode: "full_previous" };
+      validation = validateQueryPlan(plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
+      if (!validation.ok) return failed("planner_invalid_plan", "The plan was not valid after applying the month comparison rule.", usage);
+      definitionNotes.push(NOTES.MONTH_FULL_NOTE);
+    }
+
     const plannerAssumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);
     return {
       status: "supported",
@@ -288,7 +345,7 @@ async function planQuestion(question, options = {}) {
       source: "claude_planner",
       plan,
       plannerAssumptions,
-      definitionNotes: revenue ? [REVENUE_ASSUMPTION] : [],
+      definitionNotes,
       assumptions: validation.assumptions,
       warnings: validation.warnings,
       usage,

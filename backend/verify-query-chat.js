@@ -25,7 +25,12 @@ global.fetch = () => { netCalls += 1; throw new Error("network blocked in test")
 http.request = () => { netCalls += 1; throw new Error("network blocked in test"); };
 https.request = () => { netCalls += 1; throw new Error("network blocked in test"); };
 
-const { tryAnswerWithQueryEngine, getTenantResolver } = require("./src/services/query/queryChat");
+const { tryAnswerWithQueryEngine: realTryAnswer, getTenantResolver } = require("./src/services/query/queryChat");
+// P-SF: the engine now reads ONE tenant date context per turn. Synthetic (fake-resolver) turns have no database,
+// so they get a fixed one (latest voucher 2025-12-08 = the fake freshness date; history from 2024-04-01).
+const { buildDateContext } = require("./src/services/analytics/referenceDate");
+const SYNTH_DATES = buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } }, new Date(2025, 11, 8, 18));
+const tryAnswerWithQueryEngine = (a) => realTryAnswer(a && a.deps && a.deps.resolveEntity && !a.deps.getDateContext ? { ...a, deps: { ...a.deps, getDateContext: async () => SYNTH_DATES } } : a);
 const { formatQueryAnswer, formatNonAnswer, fmtMoney } = require("./src/services/query/answerFormatter");
 const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
@@ -209,7 +214,9 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   {
     const eng = engine(okScalar());
     await tryAnswerWithQueryEngine({ context: { tenantId: "TENANT-A", companyGuid: "G", extra: "x" }, userMessage: "total sales last month", conversationHistory: [], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
-    check("engine receives exactly {tenantId} from the context (nothing else)", eng.calls.length === 1 && JSON.stringify(eng.calls[0].ctx) === JSON.stringify({ tenantId: "TENANT-A" }));
+    // P-SF: the engine now also receives the turn's ONE tenant reference date (server-computed), so it never reads a
+    // second one. Still nothing from the request context besides tenantId.
+    check("engine receives exactly {tenantId, referenceDate}: tenantId from the context, the date = the turn's tenant date context", eng.calls.length === 1 && Object.keys(eng.calls[0].ctx).sort().join(",") === "referenceDate,tenantId" && eng.calls[0].ctx.tenantId === "TENANT-A" && eng.calls[0].ctx.referenceDate.getTime() === SYNTH_DATES.referenceDate.getTime());
     check("the plan handed to the engine carries no tenant/company field", !/tenant|company|guid/i.test(JSON.stringify(eng.calls[0].plan)));
     const eng2 = engine(okScalar());
     let r = await ask("total sales for tenant OTHER last month", { plannerClient: forbidden, execute: eng2 });
@@ -271,7 +278,8 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     f = formatQueryAnswer({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }] }), result: okScalar({ assumptions: [{ code: "a", message: "Relative periods are anchored to the latest synced voucher date (2025-12-08), not the wall clock." }], warnings: [{ code: "w", message: "Careful." }] }), routerAssumptions: [{ code: "period_defaulted_to_all_time", message: "No period was stated, so all available history is used." }], plannerAssumptions: ["I assumed X"], source: "planner" });
     check("header shows the filter; notes list interpretation, router assumption, anchoring and basis; warnings separate", /customer: Dhingra General Store/.test(f.text) && /Interpretation \(AI-assisted\): I assumed X/.test(f.text) && /all available history/.test(f.text) && /anchored to the latest synced voucher date/.test(f.text) && f.warnings.length === 1 && f.warnings[0] === "Careful.");
     const many = formatQueryAnswer({ plan: pl, result: okScalar({ assumptions: Array.from({ length: 12 }, (_, i) => ({ message: `note ${i}` })) }) });
-    check("notes are capped and de-duplicated", (many.text.match(/•/g) || []).length <= 6);
+    // P-SF raised the cap from 6 to 8 so coverage / period-scope / follow-up notes never push the basis note out.
+    check("notes are capped (8) and de-duplicated", (many.text.match(/•/g) || []).length <= 8);
     f = formatQueryAnswer({ plan: planOf({ entity: "purchase", metrics: ["lineAmount", "quantity"] }), result: okScalar({ entity: "purchase", metrics: ["lineAmount", "quantity"], amountBasis: { lineAmount: "line_item_pre_tax" }, totals: { values: { lineAmount: 10, quantity: 3.5 } } }) });
     check("line amounts disclosed as before tax; quantities are plain numbers", /before tax/.test(f.text) && /Quantity: 3\.5/.test(f.text));
     const a = formatQueryAnswer({ plan: pl, result: okScalar() }).text;
@@ -694,6 +702,33 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     // a factual follow-up is unchanged: needs_planner + history still goes to the legacy path as before
     const r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "show turnover last month", conversationHistory: history, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
     check("non-G7 follow-up keeps its existing route (legacy follow-up path)", r.handled === false && r.reason === "follow_up_uses_legacy_chat");
+  }
+
+  // ============================================================ P1-4 through the chat path (fakes only)
+  section("P1-4. period/growth wording answered honestly in chat: no false 'not found', 0 Claude");
+  {
+    const history = [{ role: "user", content: "Sales last month" }, { role: "assistant", content: "..." }];
+    const cases = [
+      ["Which customers grew over the last 6 months?", [], "needs_clarification", /Rolling windows are limited to the last 7, 30 or 90 days/],
+      ["Sales in Q1 2025", [], "needs_clarification", /financial year \(Q1 = April/],
+      ["Sales two months ago", [], "needs_clarification", /count back periods/],
+      ["Sales since April 2025", [], "needs_clarification", /both ends of the range/],
+      ["Which customers are growing fastest?", [], "unsupported", /rank by growth rate/],
+      ["Which customers are growing fastest?", history, "unsupported", /rank by growth rate/],
+      ["Which customers are consistently growing?", history, "unsupported", /every month or quarter of a range/],
+    ];
+    for (const [q, hist, status, text] of cases) {
+      const p = planner(() => { throw new Error("Claude must NOT be called"); });
+      const e = engine(okScalar());
+      let lookups = 0;
+      const r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: hist, deps: { resolveEntity: Object.assign(async (a) => ((lookups += 1), fakeResolver(a)), { spanIndex: fakeResolver.spanIndex }), getFreshness: fresh, plannerClient: p, execute: e } });
+      const qe = r.structured && r.structured.details.queryEngine;
+      check(`"${q}"${hist.length ? " (mid-conversation)" : ""}: honest ${status} answer, 0 Claude, no engine, no name lookup`, r.handled === true && qe.status === status && qe.claudeCalls === 0 && p.requests.length === 0 && e.calls.length === 0 && lookups === 0 && text.test(r.structured.answer) && !/couldn.t find/i.test(r.structured.answer), JSON.stringify(qe) + " " + (r.structured && r.structured.answer));
+    }
+    const e = engine(okScalar());
+    const r = await ask("Sales growth over last month", { plannerClient: forbidden, execute: e });
+    // Decision 2 (2026-09-28): this month to date is compared with the COMPLETE previous month (was like-for-like)
+    check("'Sales growth over last month' reaches the engine as this month vs the complete previous month", r.handled && e.calls.length === 1 && e.calls[0].plan.period.kind === "current_month" && e.calls[0].plan.compare.mode === "full_previous");
   }
 
   // ============================================================ K. no network

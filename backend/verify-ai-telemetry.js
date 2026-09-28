@@ -18,7 +18,12 @@ http.request = () => { netCalls += 1; throw new Error("network disabled in this 
 https.request = () => { netCalls += 1; throw new Error("network disabled in this test"); };
 
 const telemetry = require("./src/services/query/turnTelemetry");
-const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
+const { tryAnswerWithQueryEngine: realTryAnswer } = require("./src/services/query/queryChat");
+// P-SF: the engine now reads ONE tenant date context per turn. Synthetic (fake-resolver) turns have no database,
+// so they get a fixed one (latest voucher 2025-12-08 = the fake freshness date; history from 2024-04-01).
+const { buildDateContext } = require("./src/services/analytics/referenceDate");
+const SYNTH_DATES = buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } }, new Date(2025, 11, 8, 18));
+const tryAnswerWithQueryEngine = (a) => realTryAnswer(a && a.deps && a.deps.resolveEntity && !a.deps.getDateContext ? { ...a, deps: { ...a.deps, getDateContext: async () => SYNTH_DATES } } : a);
 const { createEntityResolver } = require("./src/services/query/entityResolver");
 const { createAnswerCache } = require("./src/services/query/answerCache");
 const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
@@ -181,6 +186,9 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
     const callClaude = async () => fakeResponses[callClaude.n++ % 2];
     callClaude.n = 0;
     require.cache[chatPath] = { id: chatPath, filename: chatPath, loaded: true, exports: FakeChat };
+    // no database here: the controller's per-turn tenant date context comes from the same fixed synthetic one
+    const refPath = require.resolve("./src/services/analytics/referenceDate");
+    require.cache[refPath] = { id: refPath, filename: refPath, loaded: true, exports: { ...require(refPath), getTenantDateContext: async () => SYNTH_DATES } };
     require.cache[orchPath] = {
       id: orchPath, filename: orchPath, loaded: true,
       exports: {

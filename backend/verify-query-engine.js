@@ -843,8 +843,12 @@ const EXAMPLES = [
         const engTop = await executeQuery({ ...base, period: { kind: "all_time" }, groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 1 }, { tenantId: tid });
         check("top customer equals an independent aggregation", engTop.ok && engTop.rows[0].key.customer === top._id && near(engTop.rows[0].values.invoiceAmount, top.t, 1e-4));
         const quarter = await executeQuery({ ...base, period: { kind: "current_quarter" }, compare: { mode: "like_for_like" }, metrics: ["invoiceAmount"] }, { tenantId: tid });
-        check("relative period on real data resolves via the tenant reference date (partial current quarter, comparison range echoed)", quarter.ok && quarter.period.isPartial === true && quarter.assumptions.some((a) => a.code === "period_anchored_to_latest_data") && /^2025-/.test(quarter.comparison.from));
-        check("tenant reference date came from data, not the wall clock (period ends in 2025)", /^2025-1[12]/.test(quarter.period.to));
+        // Decision 1 (2026-09-28): with no date passed, the engine uses the AI reporting rule - TODAY (was: the tenant's
+        // latest voucher). The current quarter therefore ends today, whatever the tenant's data holds.
+        const today = new Date();
+        const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        check("relative period on real data resolves via the reporting reference date (current quarter to date, comparison range echoed)", quarter.ok && quarter.assumptions.some((a) => a.code === "period_anchored_to_latest_data") && !!quarter.comparison.from);
+        check("the reference date is today, not the tenant's latest voucher (current quarter ends today)", ymdLocal(new Date(quarter.period.to)) === ymdLocal(today), quarter.period.to);
       }
     }
 

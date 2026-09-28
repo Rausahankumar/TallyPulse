@@ -5,7 +5,8 @@ const purchaseAnalytics = require("../analytics/purchaseAnalytics");
 const stockGroupAnalytics = require("../analytics/stockGroupAnalytics");
 const dateRanges = require("../analytics/dateRanges");
 const periodEngine = require("../analytics/periodEngine");
-const { getTenantReferenceDate } = require("../analytics/referenceDate");
+const { getTenantDateContext } = require("../analytics/referenceDate");
+const { assessCoverage } = require("../analytics/coverage");
 const { wrapAnalyticsResult } = require("../analytics/trustEnvelope");
 
 // --------------------------------------------------
@@ -48,7 +49,7 @@ const periodSchema = z
   })
   .strict();
 
-function resolvePeriod({ period, from, to }, referenceDate = new Date()) {
+function resolvePeriod({ period, from, to }, referenceDate) {
   if (period === "custom") {
     if (!from || !to) {
       throw new Error('period "custom" requires both from and to.');
@@ -57,10 +58,41 @@ function resolvePeriod({ period, from, to }, referenceDate = new Date()) {
   }
 
   if (period === "previous_month") {
+    if (!(referenceDate instanceof Date) || Number.isNaN(referenceDate.getTime())) throw new Error("A relative period needs the tenant reference date.");
     return dateRanges.previousFullMonth(referenceDate);
   }
 
+  // No wall-clock default (P-SF): relative periods need the tenant reference date.
+  if (!(referenceDate instanceof Date) || Number.isNaN(referenceDate.getTime())) throw new Error("A relative period needs the tenant reference date.");
   return dateRanges.currentMonthToDate(referenceDate);
+}
+
+// ONE "today" (P-SF): every tool resolves relative periods from the turn's tenant reference date
+// (handleChatTurn passes it in the server-built context); called on its own, a tool reads the same rule itself.
+// Never the wall clock.
+async function toolDates(context) {
+  if (context && context.referenceDate instanceof Date && !Number.isNaN(context.referenceDate.getTime())) {
+    return { referenceDate: context.referenceDate, coverage: context.coverage || null };
+  }
+  const dc = await getTenantDateContext(context.tenantId);
+  return { referenceDate: dc.referenceDate, coverage: dc.coverage };
+}
+
+// A period entirely outside the synced history is missing data, not zero: the tool returns the fixed coverage
+// message (trust envelope state no_usable_data) instead of a zero figure for Claude to narrate.
+function outsideCoverage(coverage, voucherType, period, comparison = null) {
+  if (!coverage) return null;
+  const r = assessCoverage({ entity: voucherType === "Purchase" ? "purchase" : "sales", period, comparison, coverage });
+  return r.status === "outside" ? r.message : null;
+}
+const refused = (message) => async () => ({ supported: false, reason: message });
+
+// Decision 2 (final, 2026-09-28) for the AI tools: "vs previous month" = this month to date vs the COMPLETE previous
+// calendar month (same rule as the query engine). The REST dashboard keeps resolveComparisonPeriods below unchanged.
+function resolveToolComparison(comparisonType, referenceDate) {
+  if (comparisonType === "vs_same_month_last_year") return resolveComparisonPeriods(comparisonType, referenceDate);
+  if (!(referenceDate instanceof Date) || Number.isNaN(referenceDate.getTime())) throw new Error("A comparison needs the tenant reference date.");
+  return { current: dateRanges.currentMonthToDate(referenceDate), previous: dateRanges.previousFullMonth(referenceDate) };
 }
 
 const comparisonSchema = z
@@ -102,7 +134,7 @@ const customerSalesSchema = z
   })
   .strict();
 
-function resolveCustomerPeriod({ period, from, to }, referenceDate = new Date()) {
+function resolveCustomerPeriod({ period, from, to }, referenceDate) {
   if (period === "all_time") {
     // No from/to at all - buildVoucherMatchStage() already treats a
     // missing from/to as "no date filter", so this is genuinely
@@ -143,7 +175,8 @@ const stockGroupPeriodSchema = z
   })
   .strict();
 
-function resolveComparisonPeriods(comparisonType, referenceDate = new Date()) {
+function resolveComparisonPeriods(comparisonType, referenceDate) {
+  if (!(referenceDate instanceof Date) || Number.isNaN(referenceDate.getTime())) throw new Error("A comparison needs the tenant reference date.");
   if (comparisonType === "vs_same_month_last_year") {
     return {
       current: dateRanges.currentMonthToDate(referenceDate),
@@ -170,11 +203,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(periodSchema),
     handler: async (rawArgs, context) => {
       const args = periodSchema.parse(rawArgs || {});
-      const period = resolvePeriod(args);
+      const { referenceDate, coverage } = await toolDates(context);
+      const period = resolvePeriod(args, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", period);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () => salesAnalytics.getSalesSummary(context.tenantId, period),
+        run: refusal ? refused(refusal) : () => salesAnalytics.getSalesSummary(context.tenantId, period),
       });
     },
   },
@@ -182,15 +217,17 @@ const TOOLS = [
   {
     name: "get_sales_comparison",
     description:
-      "Compare current sales (month to date) against a prior comparable period: either the same date range last month, or the same date range in the same month last year. Returns both totals and the growth amount/percentage.",
+      "Compare current sales (month to date) against a prior period: either the COMPLETE previous calendar month (vs_previous_month), or the same date range in the same month last year. Returns both totals and the growth amount/percentage.",
     input_schema: zodToJsonSchema(comparisonSchema),
     handler: async (rawArgs, context) => {
       const args = comparisonSchema.parse(rawArgs || {});
-      const { current, previous } = resolveComparisonPeriods(args.comparisonType);
+      const { referenceDate, coverage } = await toolDates(context);
+      const { current, previous } = resolveToolComparison(args.comparisonType, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", current, previous);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () => salesAnalytics.getSalesComparison(context.tenantId, current, previous),
+        run: refusal ? refused(refusal) : () => salesAnalytics.getSalesComparison(context.tenantId, current, previous),
       });
     },
   },
@@ -202,11 +239,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(comparisonSchema),
     handler: async (rawArgs, context) => {
       const args = comparisonSchema.parse(rawArgs || {});
-      const { current, previous } = resolveComparisonPeriods(args.comparisonType);
+      const { referenceDate, coverage } = await toolDates(context);
+      const { current, previous } = resolveToolComparison(args.comparisonType, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", current, previous);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () => salesAnalytics.getSalesComparison(context.tenantId, current, previous),
+        run: refusal ? refused(refusal) : () => salesAnalytics.getSalesComparison(context.tenantId, current, previous),
       });
     },
   },
@@ -218,11 +257,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(periodSchema.merge(limitSchema)),
     handler: async (rawArgs, context) => {
       const args = periodSchema.merge(limitSchema).strict().parse(rawArgs || {});
-      const period = resolvePeriod(args);
+      const { referenceDate, coverage } = await toolDates(context);
+      const period = resolvePeriod(args, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", period);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           salesAnalytics.getTopProducts(context.tenantId, period, { limit: args.limit }),
       });
     },
@@ -235,11 +276,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(limitWithComparisonSchema),
     handler: async (rawArgs, context) => {
       const args = limitWithComparisonSchema.parse(rawArgs || {});
-      const { current, previous } = resolveComparisonPeriods(args.comparisonType);
+      const { referenceDate, coverage } = await toolDates(context);
+      const { current, previous } = resolveToolComparison(args.comparisonType, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", current, previous);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           salesAnalytics.getTopGrowingProducts(context.tenantId, current, previous, {
             limit: args.limit,
           }),
@@ -254,11 +297,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(limitWithComparisonSchema),
     handler: async (rawArgs, context) => {
       const args = limitWithComparisonSchema.parse(rawArgs || {});
-      const { current, previous } = resolveComparisonPeriods(args.comparisonType);
+      const { referenceDate, coverage } = await toolDates(context);
+      const { current, previous } = resolveToolComparison(args.comparisonType, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", current, previous);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           salesAnalytics.getDecliningProducts(context.tenantId, current, previous, {
             limit: args.limit,
           }),
@@ -273,11 +318,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(periodSchema.merge(limitSchema)),
     handler: async (rawArgs, context) => {
       const args = periodSchema.merge(limitSchema).strict().parse(rawArgs || {});
-      const period = resolvePeriod(args);
+      const { referenceDate, coverage } = await toolDates(context);
+      const period = resolvePeriod(args, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", period);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           salesAnalytics.getTopCustomers(context.tenantId, period, { limit: args.limit }),
       });
     },
@@ -290,11 +337,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(customerSalesSchema),
     handler: async (rawArgs, context) => {
       const args = customerSalesSchema.parse(rawArgs || {});
-      const period = resolveCustomerPeriod(args);
+      const { referenceDate, coverage } = await toolDates(context);
+      const period = resolveCustomerPeriod(args, referenceDate);
+      const refusal = outsideCoverage(coverage, "Sales", period);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           salesAnalytics.getCustomerSales(context.tenantId, args.customerName, period),
       });
     },
@@ -317,11 +366,11 @@ const TOOLS = [
   {
     name: "get_stock_group_performance",
     description:
-      "Get sales performance by STOCK GROUP / PRODUCT GROUP (not individual products) - total sales amount and quantity per group, ranked highest first, for a period. Use this for questions like 'top product groups', 'best-selling categories', 'sales by product group'. Stock Group names come directly from Tally's own Stock Group master data (via Sale.inventory.itemName -> StockItemMaster.stockGroupName) - use them EXACTLY as returned in your answer, never rename, translate, or generalize them into your own category labels (e.g. if the result says the group is named \"Oddy\", say \"Oddy\" - never turn it into something like \"Stationery\" or \"Adhesives\"). Supports the same period kinds as the rest of the analytics: current_month, previous_month, current_quarter, previous_quarter, current_fy, previous_fy, same_month_last_year, specific_fy (pass fy, e.g. \"2025-26\"), custom (pass from/to), plus today/yesterday/current_week/previous_week/last_7_days/last_30_days/last_90_days/ytd - the backend resolves the exact date range for you, you never compute dates yourself. Quarters are financial-year-aligned (Q1 Apr-Jun ... Q4 Jan-Mar), not calendar quarters. Each result item includes momGrowthPercentage and yoyGrowthPercentage, which are null (not 0%) whenever no comparable prior-period data exists - if either is null, tell the user that comparison is unavailable, never state or imply a 0% change or invent a number. IMPORTANT - what previousPeriod/momGrowth actually is: when called with a \"current_X\" period kind (current_month/current_week/current_quarter/current_fy), the result's previousPeriod and momGrowth compare against a SAME-DURATION, like-for-like prior period, not the full previous calendar/FY period - e.g. if current_quarter is Oct 1 - Dec 8 (in progress), previousPeriod is Jul 1 - Sep 8 (the same 69 elapsed days last quarter), NOT the complete Jul 1 - Sep 30. This is deliberate: comparing an in-progress period's growth against a full prior period would produce a misleading percentage. previousPeriod/momGrowth from a current_X call is the right baseline for \"how are we trending vs last period\" questions - use it directly, no second call needed. But if the user explicitly asks for the FULL/complete previous quarter, month, week, or FY (its own figures, not a growth baseline), that is a genuinely different date range this result does not contain - call this tool again with the explicit period kind instead (period: \"previous_quarter\", \"previous_month\", \"previous_week\", or \"previous_fy\"), which always returns the complete prior period. The result's amountBasis field (always \"line_item_pre_tax\") means every sales figure is the pre-tax line-item amount, not the tax/freight/rounding-corrected invoice total - mention this if the user asks about exact invoice totals or margins. The mapping field reports mappedLines/unmappedLines/mappedAmount/unmappedAmount - if unmappedAmount is a material share of the period's real sales, say so, so the ranking isn't presented as more complete than it actually is.",
+      "Get sales performance by STOCK GROUP / PRODUCT GROUP (not individual products) - total sales amount and quantity per group, ranked highest first, for a period. Use this for questions like 'top product groups', 'best-selling categories', 'sales by product group'. Stock Group names come directly from Tally's own Stock Group master data (via Sale.inventory.itemName -> StockItemMaster.stockGroupName) - use them EXACTLY as returned in your answer, never rename, translate, or generalize them into your own category labels (e.g. if the result says the group is named \"Oddy\", say \"Oddy\" - never turn it into something like \"Stationery\" or \"Adhesives\"). Supports the same period kinds as the rest of the analytics: current_month, previous_month, current_quarter, previous_quarter, current_fy, previous_fy, same_month_last_year, specific_fy (pass fy, e.g. \"2025-26\"), custom (pass from/to), plus today/yesterday/current_week/previous_week/last_7_days/last_30_days/last_90_days/ytd - the backend resolves the exact date range for you, you never compute dates yourself. Quarters are financial-year-aligned (Q1 Apr-Jun ... Q4 Jan-Mar), not calendar quarters. Each result item includes momGrowthPercentage and yoyGrowthPercentage, which are null (not 0%) whenever no comparable prior-period data exists - if either is null, tell the user that comparison is unavailable, never state or imply a 0% change or invent a number. IMPORTANT - what previousPeriod/momGrowth actually is: when called with current_month, previousPeriod and momGrowth are the COMPLETE previous calendar month (month to date vs the whole previous month - TallyPulse's standard month comparison). When called with current_week/current_quarter/current_fy, they compare against a SAME-DURATION, like-for-like prior period, not the full previous calendar/FY period - e.g. if current_quarter is Oct 1 - Dec 8 (in progress), previousPeriod is Jul 1 - Sep 8 (the same 69 elapsed days last quarter), NOT the complete Jul 1 - Sep 30. This is deliberate: comparing an in-progress period's growth against a full prior period would produce a misleading percentage. previousPeriod/momGrowth from a current_X call is the right baseline for \"how are we trending vs last period\" questions - use it directly, no second call needed. But if the user explicitly asks for the FULL/complete previous quarter, month, week, or FY (its own figures, not a growth baseline), that is a genuinely different date range this result does not contain - call this tool again with the explicit period kind instead (period: \"previous_quarter\", \"previous_month\", \"previous_week\", or \"previous_fy\"), which always returns the complete prior period. The result's amountBasis field (always \"line_item_pre_tax\") means every sales figure is the pre-tax line-item amount, not the tax/freight/rounding-corrected invoice total - mention this if the user asks about exact invoice totals or margins. The mapping field reports mappedLines/unmappedLines/mappedAmount/unmappedAmount - if unmappedAmount is a material share of the period's real sales, say so, so the ranking isn't presented as more complete than it actually is.",
     input_schema: zodToJsonSchema(stockGroupPeriodSchema),
     handler: async (rawArgs, context) => {
       const args = stockGroupPeriodSchema.parse(rawArgs || {});
-      const referenceDate = await getTenantReferenceDate(context.tenantId);
+      const { referenceDate, coverage } = await toolDates(context);
       const options = {};
       if (args.period === "custom") {
         options.from = args.from;
@@ -332,13 +381,16 @@ const TOOLS = [
       }
 
       const current = periodEngine.resolvePeriod(args.period, referenceDate, options);
-      const previous = periodEngine.resolveComparisonPeriod(args.period, referenceDate, options);
+      // decision 2: this month's baseline is the complete previous month; other kinds keep the like-for-like baseline
+      const previous = args.period === "current_month" ? periodEngine.resolvePeriod("previous_month", referenceDate) : periodEngine.resolveComparisonPeriod(args.period, referenceDate, options);
       const sameLastYear = periodEngine.resolveSamePeriodLastYear(args.period, referenceDate, options);
+
+      const refusal = outsideCoverage(coverage, "Sales", current);
 
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: () =>
+        run: refusal ? refused(refusal) : () =>
           stockGroupAnalytics.getTopStockGroups(context.tenantId, current, previous, sameLastYear, {
             limit: args.limit,
           }),
@@ -353,11 +405,13 @@ const TOOLS = [
     input_schema: zodToJsonSchema(periodSchema),
     handler: async (rawArgs, context) => {
       const args = periodSchema.parse(rawArgs || {});
-      const period = resolvePeriod(args);
+      const { referenceDate, coverage } = await toolDates(context);
+      const period = resolvePeriod(args, referenceDate);
+      const refusal = outsideCoverage(coverage, "Purchase", period);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Purchase",
-        run: () => purchaseAnalytics.getPurchaseSummary(context.tenantId, period),
+        run: refusal ? refused(refusal) : () => purchaseAnalytics.getPurchaseSummary(context.tenantId, period),
       });
     },
   },
@@ -365,13 +419,16 @@ const TOOLS = [
   {
     name: "get_purchase_growth",
     description:
-      "Compare current purchases (month to date) against the same date range last month, returning the growth amount/percentage.",
+      "Compare current purchases (month to date) against the COMPLETE previous calendar month, returning the growth amount/percentage.",
     input_schema: zodToJsonSchema(z.object({}).strict()),
     handler: async (_rawArgs, context) => {
+      const { referenceDate, coverage } = await toolDates(context);
+      const { current, previous } = resolveToolComparison("vs_previous_month", referenceDate);
+      const refusal = outsideCoverage(coverage, "Purchase", current, previous);
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Purchase",
-        run: () => purchaseAnalytics.getPurchaseGrowthVsPreviousMonth(context.tenantId),
+        run: refusal ? refused(refusal) : () => purchaseAnalytics.getPurchaseComparison(context.tenantId, current, previous),
       });
     },
   },

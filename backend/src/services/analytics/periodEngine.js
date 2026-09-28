@@ -141,11 +141,10 @@ function shiftQuarters(date, delta) {
 // target month's real last day instead of letting it silently roll into
 // the next month (JS's plain `new Date(y, m, day)` does this rollover,
 // e.g. 29 Feb 2024 shifted +1 year becomes 1 Mar 2025, not 28 Feb 2025 -
-// confirmed live in this investigation). Used wherever an ARBITRARY
-// reference date (not a fixed day-1/day-31 period boundary) needs to be
-// shifted, which existing dateRanges.js helpers (shiftMonths/shiftYears)
-// do not guard against - see the report for why those are left
-// unchanged rather than fixed in place.
+// confirmed live in this investigation). dateRanges.shiftMonths/shiftYears
+// now clamp the same way (they used to roll over, which broke
+// previous_month on 29-31 Mar and 31 May/Jul/Oct/Dec); these two are
+// kept as the period engine's own exported names.
 function safeShiftMonths(date, deltaMonths) {
   const d = new Date(date);
   const day = d.getDate();

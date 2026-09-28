@@ -443,6 +443,75 @@ const getStockItemMasters = async ({ baseUrl } = {}) => {
 
 
 // ============================================================
+// GET LEDGER / GROUP MASTERS
+// ============================================================
+//
+// Flat master collections, the same shape as "Type": "StockItem" above.
+// Confirmed live (read-only diagnostic, WE FOUR, 2026-09): 1,979 ledgers in
+// 0.46 s and 70 groups in 30 ms, every record carrying a
+// "<companyGuid>-<hex>" Guid. Minimal field sets only - no GSTIN, no
+// balances. Masters only: no voucher data is requested.
+const postMasterCollection = async ({ baseUrl, id, type, nativeMethod }) => {
+  const requestBody = {
+    static_variables: [{ name: "svExportFormat", value: "jsonex" }],
+    tdlmessage: [
+      {
+        definitions: [
+          {
+            metadata: { name: id, type: "Collection" },
+            attributes: [{ "Type": type }, { "Native Method": nativeMethod }]
+          }
+        ]
+      }
+    ]
+  };
+
+  const response = await axios.post(resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL), requestBody, {
+    headers: {
+      "Content-Type": "application/json",
+      "Version": "1",
+      "TallyRequest": "Export",
+      "Type": "Collection",
+      "ID": id
+    },
+    timeout: 30000
+  });
+
+  return response.data;
+};
+
+const getLedgerMasters = async ({ baseUrl } = {}) => {
+  try {
+    return await postMasterCollection({
+      baseUrl,
+      id: "RTS Ledger Master Collection",
+      type: "Ledger",
+      nativeMethod: "Name, Parent, Guid, AlterID, MasterID, CreatedDate"
+    });
+  } catch (error) {
+    console.error("TALLY LEDGER MASTER API ERROR:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+// Groups carry metadata.reservedname ("Sundry Debtors", ...), which is what
+// the ledger party role is derived from - never the user-editable name.
+const getGroupMasters = async ({ baseUrl } = {}) => {
+  try {
+    return await postMasterCollection({
+      baseUrl,
+      id: "RTS Group Master Collection",
+      type: "Group",
+      nativeMethod: "Name, Parent, Guid"
+    });
+  } catch (error) {
+    console.error("TALLY GROUP MASTER API ERROR:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+
+// ============================================================
 // GET SALES VOUCHERS
 // ============================================================
 
@@ -775,6 +844,107 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
 
     console.error(
       "TALLY PURCHASE ALTERID API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
+// GET ADJUSTMENT NOTE VOUCHERS SINCE ALTERID (incremental sync)
+// ============================================================
+//
+// Credit Note / Debit Note. Same shape as getSalesVouchersSinceAlterId, with
+// two additions to the Native Method field list, proven live in the CN/DN
+// diagnostic (docs/../generic-tumbling-magpie.md): inventoryentries'
+// accountingallocations (which ledger an item's amount is booked to - what
+// adjustmentNoteClassifier.js needs) and ledgerentries' billallocations
+// (the "Agst Ref" original-invoice linkage, when Tally provides one).
+// Still a minimal, bounded, tenant/company-scoped request - not the ~223-
+// field "*" dump the diagnostic used to discover these field names.
+const getAdjustmentNoteVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
+  try {
+
+    requireVoucherTypeNames(voucherTypeNames, "getAdjustmentNoteVouchersSinceAlterId");
+
+    const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
+    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
+
+    const requestBody = {
+
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS Adjustment Note AlterID Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "Voucher"
+                },
+
+                {
+                  "Native Method":
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.accountingallocations.* , ledgerentries.* , ledgerentries.billallocations.*"
+                },
+
+                {
+                  "Filter": "RTS Adjustment Note AlterID Filter"
+                }
+              ]
+            },
+
+            {
+              metadata: {
+                name: "RTS Adjustment Note AlterID Filter",
+                type: "System",
+                sys_type: "Formulae",
+                ismodify: true
+              },
+
+              value:
+                `${alterIdClause} AND (${typeNameClause})`
+            }
+          ],
+
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS Adjustment Note AlterID Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      "TALLY ADJUSTMENT NOTE ALTERID API ERROR:",
       error.response?.data || error.message
     );
 
@@ -1121,6 +1291,8 @@ module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
   getStockItemMasters,
+  getLedgerMasters,
+  getGroupMasters,
   getPendingVoucherAlterIds,
   getVouchersByAlterIds,
   MAX_ALTERIDS_PER_RECOVERY_QUERY,
@@ -1128,5 +1300,6 @@ module.exports = {
   getSalesVouchersSinceAlterId,
   getAllSalesVoucherGuids,
   getAllPurchaseVoucherGuids,
-  getPurchaseVouchersSinceAlterId
+  getPurchaseVouchersSinceAlterId,
+  getAdjustmentNoteVouchersSinceAlterId
 };

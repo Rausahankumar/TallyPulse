@@ -34,6 +34,7 @@ const FIELDS = {
   executeMs: ms, engineRan: bool, engineLatencyMs: ms, engineStatus: code, engineErrorCode: code,
   resolverCalled: bool, resolverCalls: int, resolverLatencyMs: ms, resolverStatus: code,
   freshnessStatus: code,
+  referenceDateSource: code, futureVouchersPresent: bool, coverageStatus: code, followUp: code,
   queryEngineMs: ms, totalLatencyMs: ms, httpStatus: int, ok: bool,
 };
 
@@ -139,8 +140,13 @@ function emitTurnEvent(input) {
  */
 function emitChatTurn(input) {
   try {
-    const { tenantId, metrics, legacy, legacyMs, totalMs, httpStatus } = input || {};
+    const { tenantId, metrics, legacy, legacyMs, totalMs, httpStatus, dates } = input || {};
     const m = { ...(metrics || {}) };
+    // The turn's one tenant date context (shared by the engine and legacy chat), when it was read.
+    if (dates && typeof dates === "object") {
+      m.referenceDateSource = dates.source;
+      m.futureVouchersPresent = dates.futureVouchers;
+    }
     if (legacy) {
       m.legacyClaudeCalls = legacy.calls;
       m.legacyInputTokens = legacy.input_tokens;

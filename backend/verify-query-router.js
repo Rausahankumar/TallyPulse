@@ -193,16 +193,17 @@ async function expectStatus(label, q, status, code) {
 
   // ================================================================ I. comparisons
   section("I. comparisons");
-  await expectPlan("mom like-for-like", "sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+  await expectPlan("mom like-for-like", "sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
   await expectPlan("compare with", "compare sales this quarter with last quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
   await expectPlan("full previous", "sales this month vs the full last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
   await expectPlan("yoy", "sales this quarter compared to last year", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "same_period_last_year" } }));
   await expectPlan("same period last year", "purchases last month vs same period last year", P.agg("purchase", { kind: "previous_month" }, P_AMT, { compare: { mode: "same_period_last_year" } }));
   await expectPlan("two explicit months", "sales April 2025 vs April 2024", P.agg("sales", { kind: "custom", from: "2025-04-01", to: "2025-04-30" }, S_AMT, { compare: { mode: "custom", period: { kind: "custom", from: "2024-04-01", to: "2024-04-30" } } }));
-  await expectPlan("growth word", "how did sales grow this month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+  await expectPlan("growth word", "how did sales grow this month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
   {
     const r = await R("sales this month vs last month");
-    check("like-for-like default disclosed", r.assumptions.some((a) => a.code === "comparison_like_for_like_default"));
+    // Decision 2 (2026-09-28): this month to date vs the COMPLETE previous month (was the same elapsed days)
+    check("month comparison default disclosed (complete previous month)", r.assumptions.some((a) => a.code === "month_vs_complete_previous_month"));
     await expectStatus("comparison with no period", "compare sales", "needs_planner", "period_missing");
     await expectStatus("connector without target", "sales this month vs", "needs_planner", "comparison_target_missing");
     await expectStatus("misaligned units", "sales this month vs last quarter", "needs_planner", "comparison_periods_not_aligned");
@@ -211,11 +212,18 @@ async function expectStatus(label, q, status, code) {
     await expectStatus("trend + compare unsupported", "monthly sales fy 2024-25 vs same period last year", "unsupported", "unsupported_combination");
   }
   await expectPlan("customers declined", "customers whose sales declined this quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] }));
-  await expectPlan("customers grew", "customers who grew this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+  await expectPlan("customers grew", "customers who grew this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
   await expectPlan("grew by more than N%", "customers who grew more than 20% this quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.deltaPct", op: "gt", value: 20 }], sort: [{ by: "invoiceAmount.deltaPct", dir: "desc" }] }));
   await expectPlan("stopped buying", "customers who stopped buying this quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount", op: "eq", value: 0 }, { metric: "invoiceAmount.previous", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.previous", dir: "desc" }] }));
-  await expectPlan("new customers", "new customers this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.previous", op: "eq", value: 0 }, { metric: "invoiceAmount", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount", dir: "desc" }] }));
-  await expectStatus("stopped without dimension", "who stopped buying this quarter", "needs_planner");
+  // Decision 3 (LedgerMaster phase): "new customer" = Tally ledger created in the period -> new_in_period filter, no comparison
+  {
+    const r = await R("new customers this month");
+    check('new customers: "new customers this month" -> new_in_period plan', r.status === "supported" && !r.plan.compare && r.plan.filters.some((f) => f.dim === "customer" && f.op === "new_in_period"), `${r.status}/${r.code}`);
+  }
+  // P-SF (semantic foundation): "who" + a buying verb names the buyer, i.e. customers. Before, this went to the planner
+  // with no dimension; it now reads exactly like "customers who stopped buying this quarter" (the plan above).
+  await expectPlan("who stopped buying = customers who stopped buying", "who stopped buying this quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount", op: "eq", value: 0 }, { metric: "invoiceAmount.previous", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.previous", dir: "desc" }] }));
+  await expectStatus("stopped without a party or who", "stopped buying this quarter", "needs_planner");
   await expectStatus("mixed direction", "customers who grew and declined this month", "needs_planner", "conflicting_intents");
   await expectStatus("less-than % threshold", "customers who bought less than 20% last month", "needs_planner", "unsupported_threshold");
 
@@ -446,20 +454,21 @@ async function expectStatus(label, q, status, code) {
       const n = validateQueryPlan(plan, { referenceDate: REF }).normalized;
       return { subject: [ymd(n.period.from), ymd(n.period.to)], compare: n.comparison ? [ymd(n.comparison.from), ymd(n.comparison.to)] : null };
     };
-    const productChange = (dir) => P.agg("sales", { kind: "current_month" }, ["lineAmount", "quantity"], { groupBy: [{ dim: "product" }], compare: { mode: "like_for_like" }, having: [{ metric: "lineAmount.delta", op: dir === "down" ? "lt" : "gt", value: 0 }], sort: [{ by: "lineAmount.delta", dir: dir === "down" ? "asc" : "desc" }] });
+    const productChange = (dir) => P.agg("sales", { kind: "current_month" }, ["lineAmount", "quantity"], { groupBy: [{ dim: "product" }], compare: { mode: "full_previous" }, having: [{ metric: "lineAmount.delta", op: dir === "down" ? "lt" : "gt", value: 0 }], sort: [{ by: "lineAmount.delta", dir: dir === "down" ? "asc" : "desc" }] });
 
     let r = await expectPlan("products declined vs last month", "Which products' sales declined vs last month?", productChange("down"));
     let g = ranges(r.plan);
-    check("  -> subject = current month (2025-12-01..12-08), compared with last month same elapsed days (2025-11-01..11-08)", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-08"]), JSON.stringify(g));
+    // Decision 2 (2026-09-28): this month to date vs the COMPLETE previous month (was the same elapsed days)
+    check("  -> subject = current month (2025-12-01..12-08), compared with the complete last month (2025-11-01..11-30)", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-30"]), JSON.stringify(g));
     r = await expectPlan("products grew vs last month", "Which products' sales grew vs last month?", productChange("up"));
     check("  -> entity sales, metric lineAmount, having delta > 0", r.plan.entity === "sales" && r.plan.metrics[0] === "lineAmount" && r.plan.having[0].op === "gt");
     await expectPlan("products sold less than last month", "Products sold less than last month", productChange("down"));
-    await expectPlan("customers grew vs last month", "Customers whose sales grew vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
-    await expectPlan("customers bought less than last month", "Customers who bought less than last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] }));
-    await expectPlan("sales vs last month", "Sales vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("customers grew vs last month", "Customers whose sales grew vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+    await expectPlan("customers bought less than last month", "Customers who bought less than last month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] }));
+    await expectPlan("sales vs last month", "Sales vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
     await expectPlan("sales compared with the previous quarter", "Sales compared with the previous quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
     await expectPlan("purchases against last financial year", "Purchases against last financial year", P.agg("purchase", { kind: "current_fy" }, P_AMT, { compare: { mode: "like_for_like" } }));
-    r = await expectPlan("sales to a named customer vs last month", "Sales to Dhingra General Store vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }], compare: { mode: "like_for_like" } }));
+    r = await expectPlan("sales to a named customer vs last month", "Sales to Dhingra General Store vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }], compare: { mode: "full_previous" } }));
 
     r = await expectPlan("sales last month vs month before", "Sales last month vs month before", P.agg("sales", { kind: "previous_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
     g = ranges(r.plan);
@@ -469,9 +478,13 @@ async function expectStatus(label, q, status, code) {
     await expectPlan("last month vs the full month before", "Sales last month vs the full month before", P.agg("sales", { kind: "previous_month" }, S_AMT, { compare: { mode: "full_previous" } }));
 
     // unchanged behaviour
-    r = await expectPlan("explicit this month vs last month (unchanged)", "sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    r = await expectPlan("explicit this month vs last month (unchanged)", "sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
     g = ranges(r.plan);
-    check("  -> subject current month, compare last month same elapsed days", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-08"]));
+    check("  -> subject current month, compared with the complete last month", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-30"]));
+    r = await expectPlan("explicit same days stay like-for-like", "sales this month vs same period last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    g = ranges(r.plan);
+    check("  -> subject current month, compared with the same days last month (2025-11-01..11-08)", eq(g.subject, ["2025-12-01", "2025-12-08"]) && eq(g.compare, ["2025-11-01", "2025-11-08"]));
+    await expectPlan("'previous month vs current month' = the same comparison (subject = current month)", "compare sales previous month vs current month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
     await expectPlan("explicit this quarter vs last quarter (unchanged)", "compare sales this quarter with last quarter", P.agg("sales", { kind: "current_quarter" }, S_AMT, { compare: { mode: "like_for_like" } }));
     await expectPlan("'grew LAST month' still means during last month (no connector)", "Customers who grew last month", P.agg("sales", { kind: "previous_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
     await expectPlan("full previous (unchanged)", "sales this month vs the full last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
@@ -502,11 +515,11 @@ async function expectStatus(label, q, status, code) {
       const x = await R(q);
       check(`"${q}" -> clarification (multiple_comparisons), no plan`, x.status === "unsupported" && x.code === "unsupported_combination" && x.clarification === "multiple_comparisons" && !x.plan && /one period at a time/.test(x.reason), `${x.status}/${x.code}`);
     }
-    await expectPlan("single comparison unchanged", "Sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("single comparison unchanged", "Sales this month vs last month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
     await expectPlan("single YoY unchanged", "Sales this month vs last year", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "same_period_last_year" } }));
     await expectPlan("single YoY (same period last year) unchanged", "purchases last month vs same period last year", P.agg("purchase", { kind: "previous_month" }, P_AMT, { compare: { mode: "same_period_last_year" } }));
     await expectPlan("hyphenated year-over-year recognised", "Sales year-over-year this month", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "same_period_last_year" } }));
-    await expectPlan("redundant markers for the SAME comparison are one comparison", "Sales this month vs last month MoM", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "like_for_like" } }));
+    await expectPlan("redundant markers for the SAME comparison are one comparison", "Sales this month vs last month MoM", P.agg("sales", { kind: "current_month" }, S_AMT, { compare: { mode: "full_previous" } }));
     await expectPlan("two explicit months unchanged", "sales April 2025 vs April 2024", P.agg("sales", { kind: "custom", from: "2025-04-01", to: "2025-04-30" }, S_AMT, { compare: { mode: "custom", period: { kind: "custom", from: "2024-04-01", to: "2024-04-30" } } }));
 
     // Claude-free end to end: routeAndPlan and the chat entry point never call the planner for it
@@ -518,7 +531,7 @@ async function expectStatus(label, q, status, code) {
     check("routeAndPlan: multi-comparison -> Claude not called", rp.claudeCalled === false && claudeCalls === 0);
     let executed = 0;
     for (const history of [[], [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]]) {
-      const chat = await tryAnswerWithQueryEngine({ context: { tenantId: "TEST-TENANT" }, userMessage: "Sales this month vs last month and vs last year", conversationHistory: history, deps: { resolveEntity: resolver, plannerClient: forbidden, execute: async () => (executed += 1, { result: { ok: true }, cache: {} }), getFreshness: async () => ({ state: "fresh" }) } });
+      const chat = await tryAnswerWithQueryEngine({ context: { tenantId: "TEST-TENANT" }, userMessage: "Sales this month vs last month and vs last year", conversationHistory: history, deps: { getDateContext: async () => require("./src/services/analytics/referenceDate").buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: {} }, new Date(2025, 11, 8)), resolveEntity: resolver, plannerClient: forbidden, execute: async () => (executed += 1, { result: { ok: true }, cache: {} }), getFreshness: async () => ({ state: "fresh" }) } });
       check(`chat (${history.length ? "mid-conversation" : "new chat"}): answered with the clarification, no Claude, no engine, no legacy fallback`, chat.handled === true && /one period at a time/.test(chat.structured.answer) && claudeCalls === 0 && executed === 0);
     }
   }
@@ -543,7 +556,9 @@ async function expectStatus(label, q, status, code) {
       ["Customers whose sales declined this quarter", "supported"],
       ["Sales previous month", "supported"],
       ["Sales last month vs month before", "supported"],
-      ["Sales the month before last", "needs_planner", "comparison_periods_not_aligned"],
+      // P1-4: "the month before last" as the SUBJECT is a relative offset - a Claude-free "name the period"
+      // clarification (it used to reach the planner, which has no reference date and could only guess the dates)
+      ["Sales the month before last", "needs_planner", "relative_offset_unsupported"],
     ];
     for (const [q, status, code] of grammarOnly) {
       resolverCalls.length = 0;
@@ -553,7 +568,7 @@ async function expectStatus(label, q, status, code) {
     await expectPlan("largest N = top N by amount (list)", "Largest 5 purchase bills last month", { v: 1, entity: "purchase", mode: "list", period: { kind: "previous_month" }, filters: [], sort: [{ by: "purchaseAmount", dir: "desc" }], limit: 5 });
     await expectPlan("smallest N = bottom N by amount (list)", "Smallest 3 sales invoices this month", { v: 1, entity: "sales", mode: "list", period: { kind: "current_month" }, filters: [], sort: [{ by: "invoiceAmount", dir: "asc" }], limit: 3 });
     await expectPlan("largest N customers = top N", "Largest 5 customers this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 5 }));
-    await expectPlan("MoM with a current period = like-for-like", "Customers growing MoM this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
+    await expectPlan("MoM with a current period = like-for-like", "Customers growing MoM this month", P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }));
     await expectStatus("MoM on a quarter subject is not silently re-interpreted", "Sales this month QoQ", "needs_planner", "comparison_periods_not_aligned");
 
     // real entity candidates still go through the (tenant-scoped) resolver, exactly once, with no tenant field
@@ -562,7 +577,7 @@ async function expectStatus(label, q, status, code) {
     check("genuine name + grammar: resolver called once with ONLY the name", x.status === "supported" && resolverCalls.length === 1 && resolverCalls[0].text === "dhingra general store" && eq(Object.keys(resolverCalls[0]).sort(), ["entity", "hintDim", "text"]));
     resolverCalls.length = 0;
     x = await R("Sales of Maggi Noodles MoM this month");
-    check("product name with MoM: resolver sees only 'maggi noodles'", x.status === "supported" && resolverCalls.length === 1 && resolverCalls[0].text === "maggi noodles" && x.plan.compare.mode === "like_for_like");
+    check("product name with MoM: resolver sees only 'maggi noodles'", x.status === "supported" && resolverCalls.length === 1 && resolverCalls[0].text === "maggi noodles" && x.plan.compare.mode === "full_previous");
     resolverCalls.length = 0;
     x = await R("Sales blorp last month");
     check("genuinely unknown word still goes to the resolver (unchanged) and is not found", x.status === "needs_planner" && x.code === "entity_not_resolved" && resolverCalls.length === 1 && resolverCalls[0].text === "blorp");
@@ -586,8 +601,8 @@ async function expectStatus(label, q, status, code) {
       ["Top 10 products by revenue this month", REV({ kind: "current_month" }, { metrics: ["lineAmount", "quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }], limit: 10 })],
       ["Revenue by product group last quarter", REV({ kind: "previous_quarter" }, { groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] })],
       ["Monthly revenue for FY 2025-26", REV({ kind: "specific_fy", fy: "2025-26" }, { groupBy: [{ dim: "date", bucket: "month" }] })],
-      ["Revenue this month vs last month", REV({ kind: "current_month" }, { compare: { mode: "like_for_like" } })],
-      ["Customers whose revenue declined vs last month", REV({ kind: "current_month" }, { groupBy: [{ dim: "customer" }], compare: { mode: "like_for_like" }, having: [{ metric: "lineAmount.delta", op: "lt", value: 0 }], sort: [{ by: "lineAmount.delta", dir: "asc" }] })],
+      ["Revenue this month vs last month", REV({ kind: "current_month" }, { compare: { mode: "full_previous" } })],
+      ["Customers whose revenue declined vs last month", REV({ kind: "current_month" }, { groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "lineAmount.delta", op: "lt", value: 0 }], sort: [{ by: "lineAmount.delta", dir: "asc" }] })],
       ["Revenue from Dhingra General Store last month", REV({ kind: "previous_month" }, { filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }] })],
     ];
     for (const [q, expected] of cases) {
@@ -950,24 +965,26 @@ async function expectStatus(label, q, status, code) {
       ["How much did we sell in August 2025?", ["supported",null,"a823ee6c0a37"]],
       ["How many customers bought last month?", ["needs_planner","entity_not_resolved",null]],
       ["How did sales change from August to September?", ["needs_planner","year_missing",null]],
-      ["How did sales change from August 2025 to September 2025?", ["needs_planner","entity_not_resolved",null]],
-      ["Which customers declined vs last month?", ["supported",null,"6e36d5c003d6"]],
-      ["How did sales change last month?", ["needs_planner","entity_not_resolved",null]],
+      // P1-4: "change" is comparison grammar now, no longer looked up as a customer name (was entity_not_resolved)
+      ["How did sales change from August 2025 to September 2025?", ["needs_planner","two_periods_without_comparison",null]],
+      // decision 2 re-pinned 5 hashes below: each plan differs ONLY by compare.mode like_for_like -> full_previous (checked)
+      ["Which customers declined vs last month?", ["supported",null,"91d778423219"]],
+      ["How did sales change last month?", ["supported",null,"2b6730e71d61"]],
       ["How many sales did we make?", ["needs_planner","entity_not_resolved",null]],
       ["Which products declined?", ["needs_planner","entity_ambiguous",null]],
       ["Which customers are growing?", ["needs_planner","period_missing",null]],
-      ["What was the change in revenue?", ["needs_planner","entity_not_resolved",null]],
+      ["What was the change in revenue?", ["needs_planner","period_missing",null]],
       ["How many invoices did we raise last month?", ["needs_planner","entity_not_resolved",null]],
       ["Which products declined vs last month?", ["needs_planner","entity_ambiguous",null]],
-      ["Customers whose sales are growing vs last month", ["supported",null,"a0c961c3d8e5"]],
+      ["Customers whose sales are growing vs last month", ["supported",null,"cb6421bf84dd"]],
       ["Top 5 products declining vs last month", ["needs_planner","entity_ambiguous",null]],
-      ["What is the growth in sales this month vs last month?", ["supported",null,"a8b2aefc1d2b"]],
+      ["What is the growth in sales this month vs last month?", ["supported",null,"6726b3f1f14f"]],
       ["How are sales doing this month?", ["needs_planner","entity_not_resolved",null]],
       ["What does sales look like last month?", ["needs_planner","entity_not_resolved",null]],
       ["Which customers should I focus on?", ["needs_planner","requires_reasoning",null]],
       ["explain the trend in purchases", ["needs_planner","requires_reasoning",null]],
       ["why is gst so high", ["unsupported","unsupported_capability",null]],
-      ["Revenue this month vs last month", ["supported",null,"28a1cae55165"]],
+      ["Revenue this month vs last month", ["supported",null,"34db615346e5"]],
       ["Sales last month", ["supported",null,"e0512a9ee190"]],
       ["Top 5 customers by revenue this month", ["supported",null,"b34c1929d7f9"]],
       ["What were sales from Business Solutions last month?", ["supported",null,"4330b74ea2ea"]],
@@ -977,7 +994,7 @@ async function expectStatus(label, q, status, code) {
       ["Sales of Decline Cream last month", ["supported",null,"ba8722e95942"]],
       ["Purchases from Focus Distributors last month", ["supported",null,"8e6baa93dd4b"]],
       ["Sales to Growth Traders last month", ["supported",null,"2cdca8b05908"]],
-      ["Which customers declined vs last month for Decline Cream", ["supported",null,"31329d59c27e"]],
+      ["Which customers declined vs last month for Decline Cream", ["supported",null,"52c804ab4784"]],
       ["Quantity of Problem Solver Kit sold this quarter", ["supported",null,"67a75741c873"]],
     ];
     let changed = 0;
@@ -994,6 +1011,156 @@ async function expectStatus(label, q, status, code) {
     for (const q of ["Sales of Focus Pen last month", "Sales of Decline Cream last month", "Quantity of Problem Solver Kit sold this quarter", "Sales to Growth Traders last month"]) {
       const r = await RQ(q);
       check(`K. "${q}" resolves its entity, not G7`, r.status === "supported" && r.plan.filters.length === 1 && !isG7(r));
+    }
+  }
+
+  section("P1-4. comparison / growth / period wording is grammar: never looked up as a name, never guessed");
+  {
+    // [question, status, code] - none of these may reach the name resolver (they name no customer/product)
+    const honest = [
+      // rolling windows longer than 90 days (or in weeks/quarters/years): "use a named period or dates"
+      ["Which customers grew over the last 6 months?", "needs_planner", "unsupported_window"],
+      ["Sales in the last 3 months", "needs_planner", "unsupported_window"],
+      ["Sales for the past six months", "needs_planner", "unsupported_window"],
+      ["Sales in the previous 12 months", "needs_planner", "unsupported_window"],
+      ["Sales over the last few months", "needs_planner", "unsupported_window"],
+      ["Sales in the last couple of months", "needs_planner", "unsupported_window"],
+      ["Sales in the last 2 weeks", "needs_planner", "unsupported_window"],
+      ["Sales in the last 2 quarters", "needs_planner", "unsupported_window"],
+      ["Sales in the last 2 years", "needs_planner", "unsupported_window"],
+      ["Sales TTM", "needs_planner", "unsupported_window"],
+      ["Sales L12M", "needs_planner", "unsupported_window"],
+      ["Trailing twelve months sales", "needs_planner", "unsupported_window"],
+      ["Rolling 12 months sales", "needs_planner", "unsupported_window"],
+      ["12 month sales trend", "needs_planner", "unsupported_window"],
+      ["6-month sales", "needs_planner", "unsupported_window"],
+      ["Customers who stopped buying in the last 3 months", "needs_planner", "unsupported_window"],
+      ["Sales this month vs average of last 3 months", "needs_planner", "unsupported_window"],
+      // counting back
+      ["Sales two months ago", "needs_planner", "relative_offset_unsupported"],
+      ["Sales 3 months ago", "needs_planner", "relative_offset_unsupported"],
+      ["Sales a year ago", "needs_planner", "relative_offset_unsupported"],
+      ["Sales 6 weeks back", "needs_planner", "relative_offset_unsupported"],
+      ["Sales the day before yesterday", "needs_planner", "relative_offset_unsupported"],
+      ["Which customers grew two months ago vs three months ago?", "needs_planner", "relative_offset_unsupported"],
+      // quarter / half labels (FY Q1 = Apr-Jun, calendar Q1 = Jan-Mar)
+      ["Sales in Q1 2025", "needs_planner", "period_label_unsupported"],
+      ["Sales Q3 FY 2025-26", "needs_planner", "period_label_unsupported"],
+      ["Which products grew from Q1 2025 to Q1 2026?", "needs_planner", "period_label_unsupported"],
+      ["Sales in the first quarter", "needs_planner", "period_label_unsupported"],
+      ["Sales in H1 2025", "needs_planner", "period_label_unsupported"],
+      ["Sales first half of the year", "needs_planner", "period_label_unsupported"],
+      ["Half yearly sales", "needs_planner", "period_label_unsupported"],
+      // one end missing / no period named
+      ["Sales since April 2025", "needs_planner", "open_ended_range"],
+      ["Sales since last month", "needs_planner", "open_ended_range"],
+      ["Sales from April 2025 onwards", "needs_planner", "open_ended_range"],
+      ["Sales recently", "needs_planner", "period_missing"],
+      ["Sales lately", "needs_planner", "period_missing"],
+      ["Which customers have grown in recent months?", "needs_planner", "period_missing"],
+      ["Sales till date", "needs_planner", "period_missing"],
+      ["What was the change in revenue?", "needs_planner", "period_missing"],
+      ["Which customers grew over the year?", "needs_planner", "ambiguous_period"],
+      ["Sales in the year 2025", "needs_planner", "ambiguous_period"],
+      // growth the DSL cannot express: a final answer, no Claude
+      ["Which customers are growing fastest?", "unsupported", "unsupported_growth_rate"],
+      ["Top 10 fastest-growing customers", "unsupported", "unsupported_growth_rate"],
+      ["Top 5 customers with the highest growth percentage this month vs last month", "unsupported", "unsupported_growth_rate"],
+      ["Customers with the highest growth rate this quarter vs last quarter", "unsupported", "unsupported_growth_rate"],
+      ["Customers ranked by % growth this month vs last month", "unsupported", "unsupported_growth_rate"],
+      ["Which products grew the fastest in percentage terms this month vs last month?", "unsupported", "unsupported_growth_rate"],
+      ["Which customers are consistently growing?", "unsupported", "unsupported_growth_pattern"],
+      ["Which customers have continuous growth?", "unsupported", "unsupported_growth_pattern"],
+      ["Customers whose sales increased 3 months in a row", "unsupported", "unsupported_growth_pattern"],
+      ["Which customers keep growing?", "unsupported", "unsupported_growth_pattern"],
+      ["Which customers increased their sales every month?", "unsupported", "unsupported_growth_pattern"],
+      ["Which customers grew every month this fy", "unsupported", "unsupported_growth_pattern"],
+      ["Monthly sales growth this fy", "unsupported", "unsupported_growth_pattern"],
+      ["Show customer growth trend", "unsupported", "unsupported_growth_pattern"],
+      ["First time customers this month", "unsupported", "unsupported_first_purchase"],
+      // targets/budgets and projections keep their existing refusal/reasoning routes
+      ["Sales vs target this month", "unsupported", "unsupported_capability"],
+      ["Sales run rate this month", "needs_planner", "requires_reasoning"],
+    ];
+    const { routeAndPlan, SKIP_ROUTER_CODES } = require("./src/services/query/planner");
+    let bad = 0;
+    for (const [q, status, code] of honest) {
+      resolverCalls.length = 0;
+      const x = await R(q);
+      const ok = x.status === status && x.code === code && !x.plan && resolverCalls.length === 0;
+      if (!ok) bad += 1;
+      check(`"${q}" -> ${status}/${code}, name resolver NOT called`, ok, `${x.status}/${x.code} resolver=${JSON.stringify(resolverCalls.map((c) => c.text))}`);
+    }
+    // P-SF: P1-4 refused every % word. A TOTAL % change is the comparison's own deltaPct and is answered; only
+    // RANKING by % stays refused (rows above). This row moved out of the refusal list on purpose.
+    {
+      const tot = await R("Sales growth percentage this month vs last month");
+      check("P-SF: \"Sales growth percentage this month vs last month\" = total sales, this month vs the complete last month (decision 2), no breakdown (P1-4 refused it)", tot.status === "supported" && tot.plan.entity === "sales" && !tot.plan.groupBy && !tot.plan.having && tot.plan.period.kind === "current_month" && tot.plan.compare.mode === "full_previous", JSON.stringify(tot.plan || tot.code));
+    }
+    let claude = 0;
+    for (const [q, status, code] of honest) {
+      if (code === "requires_reasoning") continue; // the one deliberate planner route (projections)
+      const rp = await routeAndPlan(q, { resolveEntity: resolver, claudeClient: async () => { claude += 1; throw new Error("no"); } });
+      if (rp.claudeCalled) bad += 1;
+    }
+    check(`all ${honest.length - 1} honest answers are Claude-free (clarification codes are in the planner's skip list)`, claude === 0 && ["period_label_unsupported", "relative_offset_unsupported", "open_ended_range", "unsupported_window", "period_missing", "ambiguous_period"].every((c) => SKIP_ROUTER_CODES.has(c)));
+
+    // the user-facing text: honest, specific, no internals - and every example it suggests is itself answerable
+    const { formatNonAnswer } = require("./src/services/query/answerFormatter");
+    const texts = {};
+    for (const [q, status, code] of honest) if (!texts[code]) texts[code] = formatNonAnswer((await R(q)));
+    check("every new answer text is specific (no generic 'could you clarify') and exposes no internal terms", Object.values(texts).every((t) => t.length > 40 && !/could you clarify|planner|router|claude|dsl|_unsupported|unsupported_/i.test(t)));
+    const examples = new Set();
+    for (const t of Object.values(texts)) for (const m of t.matchAll(/"([^"]+)"/g)) examples.add(m[1]);
+    const notAnswerable = [];
+    for (const ex of examples) {
+      if (/^(?:consistently|every month|in a row|Q1|H1|two months ago|the month before last|this year)$/i.test(ex)) continue; // quoted as the unsupported wording itself
+      const q = /\b(?:sales|revenue|customers|products|purchases)\b/i.test(ex) ? ex : `sales ${ex}`;
+      const x = await R(q);
+      if (x.status !== "supported") notAnswerable.push(`${q} -> ${x.status}/${x.code}`);
+    }
+    check(`every example suggested in those answers (${examples.size}) is itself answered by the router`, notAnswerable.length === 0, notAnswerable.join(" | "));
+
+    // wording that now maps to EXISTING capabilities (exact plans)
+    const cmp = (period, compare, more = {}) => P.agg("sales", period, S_AMT, { compare, ...more });
+    const LFL = { mode: "like_for_like" };
+    const FULL = { mode: "full_previous" }; // Decision 2 (2026-09-28): this month to date vs the COMPLETE previous month (was the same elapsed days)
+    await expectPlan("'growth OVER last month' = this month compared with last month", "Sales growth over last month", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("...while 'over THE last month' is still the last month itself", "Sales growth over the last month", cmp({ kind: "previous_month" }, LFL));
+    await expectPlan("MTD vs LMTD = this month to date vs the same days last month", "Sales MTD vs LMTD", cmp({ kind: "current_month" }, LFL));
+    await expectPlan("'relative to' is a comparison connector", "Sales this month relative to last month", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("'as against' is a comparison connector", "Sales this month as against last month", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("'as compared to' is a comparison connector", "Sales this month as compared to last month", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("'the corresponding month last year' = same period last year", "Sales this month vs the corresponding month last year", cmp({ kind: "current_month" }, { mode: "same_period_last_year" }));
+    await expectPlan("'go up' is the up movement", "Did sales go up this month vs last month?", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("'change'/'difference'/'variance' ask for the comparison itself", "Sales variance vs last month", cmp({ kind: "current_month" }, FULL));
+    await expectPlan("'how did sales change last month' = last month vs the month before", "How did sales change last month?", cmp({ kind: "previous_month" }, LFL));
+    const pctPlan = (dir, value) => P.agg("sales", { kind: "current_month" }, S_AMT, { groupBy: [{ dim: "customer" }], compare: FULL, having: [{ metric: "invoiceAmount.deltaPct", op: dir === "up" ? "gt" : "lt", value }], sort: [{ by: "invoiceAmount.deltaPct", dir: dir === "up" ? "desc" : "asc" }] });
+    await expectPlan("'20 percent' = '20%'", "Which customers grew by more than 20 percent this month vs last month?", pctPlan("up", 20));
+    await expectPlan("'10 per cent' = '10%'", "Which customers declined by over 10 per cent this month vs last month?", pctPlan("down", -10));
+    // decision 3: answered from the ledger master (created this month), never the comparison-period reading
+    {
+      const r = await R("Which customers are new this month vs last month?");
+      check("'customers who are new' -> new_in_period in this month, comparison dropped", r.status === "supported" && !r.plan.compare && !(r.plan.having || []).length && r.plan.filters.some((f) => f.op === "new_in_period"), `${r.status}/${r.code}`);
+    }
+    await expectPlan("'vs the month before last' is still the month-before comparison target (not an offset)", "Sales last month vs the month before last", cmp({ kind: "previous_month" }, LFL));
+    await expectStatus("'yesterday vs the day before' is a comparison (planner handles days), not a name", "Sales yesterday vs the day before", "needs_planner", "comparison_periods_not_aligned");
+
+    // tenant names that CONTAIN the new grammar words still resolve (P1-2 span matching protects them)
+    const gnames = { customer: ["Fastest Couriers", "Q1 Stationers", "Recent Traders", "Change Makers Co", "Target Mart", "Since 1985 Pickles"], supplier: ["Consistent Growth Supplies"], product: ["Last 6 Months Planner"], productGroup: [] };
+    const gr = createEntityResolver({ tenantId: "GRAMMAR-TENANT", sources: Object.fromEntries(Object.entries(gnames).map(([k, v]) => [k, async () => v])) });
+    for (const [q, dim, value] of [
+      ["sales to Fastest Couriers last month", "customer", "Fastest Couriers"],
+      ["sales to Q1 Stationers last month", "customer", "Q1 Stationers"],
+      ["sales to Recent Traders last month", "customer", "Recent Traders"],
+      ["sales to Change Makers Co last month", "customer", "Change Makers Co"],
+      ["sales to Target Mart last month", "customer", "Target Mart"],
+      ["sales to Since 1985 Pickles last month", "customer", "Since 1985 Pickles"],
+      ["purchases from Consistent Growth Supplies last month", "supplier", "Consistent Growth Supplies"],
+      ["sales of Last 6 Months Planner last month", "product", "Last 6 Months Planner"],
+    ]) {
+      const x = await routeQuestion(q, { resolveEntity: gr, entityIndex: gr.spanIndex });
+      check(`a tenant name containing grammar words still resolves: "${q}"`, x.status === "supported" && x.plan.filters.length === 1 && x.plan.filters[0].dim === dim && x.plan.filters[0].value === value && x.plan.period.kind === "previous_month", `${x.status}/${x.code}`);
     }
   }
 
