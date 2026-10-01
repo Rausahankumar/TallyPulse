@@ -204,7 +204,7 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
     };
     delete require.cache[require.resolve("./src/controllers/chatController")];
     const { sendChatMessage } = require("./src/controllers/chatController");
-    const mkRes = () => { const r = { code: 0, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
+    const mkRes = () => { const r = { code: 0, body: null, on() { return r; }, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
     const send = async (message) => {
       const res = mkRes();
       await sendChatMessage({ body: { message }, params: {}, user: { id: "u1" }, companyContext: { tenantId: "TEST-TENANT", companyGuid: "guid-1" } }, res);
@@ -290,6 +290,11 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
     check("free text in a code field is replaced by 'invalid_code'", hostile.path === "invalid_code" && hostile.routeCode === "invalid_code" && hostile.plannerCode === "invalid_code");
     check("unknown fields (question/plan/answer) are dropped; wrong types become null", !("question" in hostile) && !("plan" in hostile) && !("answer" in hostile) && hostile.claudeCalls === null && hostile.plannerLatencyMs === null && hostile.answerCacheHit === null && !/Dhingra|raw question|₹/.test(hs));
     check("a non-id tenantId is not echoed", telemetry.buildTurnEvent({ tenantId: "Dhingra General Store ₹", metrics: {} }).tenantId === null);
+    // P0 cost-forensics (Phase 8): requestId correlates a turn event to the X-Request-Id response header,
+    // so a specific network request can be matched to its exact Claude-cost decision.
+    check("requestId is echoed when it is a real id", telemetry.buildTurnEvent({ tenantId: "TEST-TENANT", requestId: "abc123-def-456", metrics: {} }).requestId === "abc123-def-456");
+    check("a hostile/free-text requestId is dropped to null, never echoed raw", telemetry.buildTurnEvent({ tenantId: "TEST-TENANT", requestId: "some raw user text ₹5\nsecret", metrics: {} }).requestId === null);
+    check("requestId is part of every event's allow-listed key set", "requestId" in hostile);
     check("no question hash / identifier field exists", !/question|hash|message|prompt|history/i.test(keys));
     const src = require("fs").readFileSync(require.resolve("./src/services/query/turnTelemetry"), "utf8");
     check("telemetry module has no DB / network / Claude access", !/require\(["'](?:mongoose|http|https|@anthropic-ai\/sdk)["']\)|\.aggregate\(|\.find\(/.test(src));

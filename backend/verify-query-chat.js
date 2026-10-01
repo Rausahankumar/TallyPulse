@@ -391,7 +391,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const { sendChatMessage } = require("./src/controllers/chatController");
     const Chat = require("./src/models/chat.model");
     const userId = new mongoose.Types.ObjectId();
-    const mkRes = () => { const r = { code: 0, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
+    const mkRes = () => { const r = { code: 0, body: null, on() { return r; }, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
     const made = [];
     const send = async (message, chatId) => {
       const res = mkRes();

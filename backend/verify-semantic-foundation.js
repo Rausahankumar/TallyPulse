@@ -832,7 +832,7 @@ async function syntheticTenant() {
     const { sendChatMessage } = require("./src/controllers/chatController");
     const userId = new mongoose.Types.ObjectId();
     const send = async (message, chatId) => {
-      const res = { code: 0, body: null, status(c) { res.code = c; return res; }, json(b) { res.body = b; return res; } };
+      const res = { code: 0, body: null, on() { return res; }, status(c) { res.code = c; return res; }, json(b) { res.body = b; return res; } };
       await sendChatMessage({ body: { message }, params: chatId ? { chatId } : {}, user: { id: String(userId) }, companyContext: { tenantId: T, companyGuid: "synthetic" } }, res);
       return res;
     };

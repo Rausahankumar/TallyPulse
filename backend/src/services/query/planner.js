@@ -231,16 +231,21 @@ async function planQuestion(question, options = {}) {
   let lastFailure = null;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
+    // Client disconnected (Stop): no first call and no repair call.
+    if (options.signal && options.signal.aborted) return failed("planner_call_failed", "The request was cancelled.", usage, { retryable: true });
     let response;
     usage.calls += 1;
     try {
-      response = await claudeClient({
-        system: prompt.system,
-        messages,
-        tools: [prompt.tool],
-        tool_choice: { type: "tool", name: PLANNER_TOOL_NAME },
-        max_tokens: PLANNER_MAX_TOKENS,
-      });
+      response = await claudeClient(
+        {
+          system: prompt.system,
+          messages,
+          tools: [prompt.tool],
+          tool_choice: { type: "tool", name: PLANNER_TOOL_NAME },
+          max_tokens: PLANNER_MAX_TOKENS,
+        },
+        { signal: options.signal || null }
+      );
     } catch (error) {
       const timedOut = !!error && (error.code === "PLANNER_DEADLINE_EXCEEDED" || /timeout|timed out|abort/i.test(`${error.name} ${error.message}`));
       return timedOut
@@ -390,7 +395,7 @@ async function routeAndPlan(question, { resolveEntity, claudeClient, referenceDa
  */
 function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEOUT_MS, maxRetries = PLANNER_MAX_RETRIES, deadlineMs = PLANNER_DEADLINE_MS, sdkOptions = {} } = {}) {
   let client = null;
-  return async function anthropicPlannerClient(request) {
+  return async function anthropicPlannerClient(request, { signal } = {}) {
     if (!client) {
       const Anthropic = require("@anthropic-ai/sdk");
       const apiKey = sdkOptions.apiKey || process.env.ANTHROPIC_API_KEY;
@@ -402,6 +407,12 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
       client = new Anthropic({ ...sdkOptions, apiKey, maxRetries, timeout: attemptTimeoutMs });
     }
     const controller = new AbortController();
+    // The caller's signal (client disconnected) aborts the same in-flight request as the deadline does.
+    const onClientAbort = () => controller.abort(signal.reason);
+    if (signal) {
+      if (signal.aborted) onClientAbort();
+      else signal.addEventListener("abort", onClientAbort, { once: true });
+    }
     let timer = null;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
@@ -421,6 +432,7 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
       ]);
     } finally {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onClientAbort);
     }
   };
 }

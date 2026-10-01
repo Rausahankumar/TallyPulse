@@ -250,7 +250,14 @@ function buildStructuredResponse({ finalText, toolResults, warnings }) {
 // what the user sees on reload, are completely unaffected.
 const HISTORY_WINDOW_MESSAGES = 8;
 
-async function handleChatTurn({ context, userMessage, conversationHistory = [], claudeClient, getDateContext = null }) {
+// Thrown when the client disconnected (Stop / navigation): the turn ends before any further Claude round.
+function clientAbortedError() {
+  const err = new Error("The client cancelled the request.");
+  err.code = "CLIENT_ABORTED";
+  return err;
+}
+
+async function handleChatTurn({ context, userMessage, conversationHistory = [], claudeClient, getDateContext = null, signal = null }) {
   if (!context || !context.tenantId) {
     throw new Error("handleChatTurn requires an authorized company context.");
   }
@@ -287,7 +294,9 @@ async function handleChatTurn({ context, userMessage, conversationHistory = [], 
   const systemPromptBlocks = buildSystemPromptBlocks(dates.referenceDate);
 
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
-    const response = await claudeClient(messages, CACHEABLE_TOOL_DEFINITIONS, systemPromptBlocks);
+    // A cancelled turn never starts another Claude round (including after a tool result came back).
+    if (signal && signal.aborted) throw clientAbortedError();
+    const response = await claudeClient(messages, CACHEABLE_TOOL_DEFINITIONS, systemPromptBlocks, { signal });
 
     const toolUseBlocks = (response.content || []).filter((b) => b.type === "tool_use");
     const textBlocks = (response.content || []).filter((b) => b.type === "text");
@@ -353,18 +362,24 @@ async function handleChatTurn({ context, userMessage, conversationHistory = [], 
 // Never logs `messages`/`systemPrompt` or the response body - both can
 // contain business figures and are not appropriate for general logs.
 // Only a minimal, non-sensitive failure signal is logged on error.
-async function callClaude(messages, tools, systemPrompt) {
+// `signal` (optional): aborts the in-flight HTTP request to Anthropic when the browser disconnects. The SDK
+// does not retry a user-aborted request. Work the provider already did before the abort may still be billed.
+async function callClaude(messages, tools, systemPrompt, { signal } = {}) {
   const client = getAnthropicClient();
 
   try {
-    return await client.messages.create({
-      model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
-      max_tokens: MAX_RESPONSE_TOKENS,
-      system: systemPrompt,
-      messages,
-      tools,
-    });
+    return await client.messages.create(
+      {
+        model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
+        max_tokens: MAX_RESPONSE_TOKENS,
+        system: systemPrompt,
+        messages,
+        tools,
+      },
+      signal ? { signal } : undefined
+    );
   } catch (error) {
+    if (signal && signal.aborted) throw error; // a client cancellation, not an API failure: not logged
     console.error(
       "Claude API call failed:",
       error?.status ? `HTTP ${error.status}` : error?.message || "unknown error"

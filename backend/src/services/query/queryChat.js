@@ -261,7 +261,7 @@ function finishTurnMetrics(tm, out) {
   else tm.path = "router_supported";
 }
 
-async function answerTurn({ context, userMessage, conversationHistory = [], previousQuery = null, getDateContext = null, deps = {} }, tm) {
+async function answerTurn({ context, userMessage, conversationHistory = [], previousQuery = null, getDateContext = null, deps = {}, signal = null }, tm) {
   try {
     if (disabled()) return { handled: false, reason: "disabled" };
     if (!context || typeof context.tenantId !== "string" || !context.tenantId) return { handled: false, reason: "no_tenant_context" };
@@ -361,6 +361,9 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       if (SKIP_ROUTER_CODES.has(route.code)) {
         return { handled: true, structured: baseResponse(formatNonAnswer({ status: "needs_clarification", code: route.code, reason: route.reason }), { meta: { route: "router", status: "needs_clarification", code: route.code, claudeCalls: 0 } }) };
       }
+      // The client already disconnected (Stop): never pay for a planner call nobody will receive. The
+      // controller sees the aborted signal and ends the turn - it never falls through to legacy chat.
+      if (signal && signal.aborted) return { handled: false, reason: "client_aborted" };
       // Freshness gate BEFORE paying for the planner. The planner decides sales vs purchase, so both are read;
       // if neither has ever synced, no plan could be answered and the planner is not called.
       const [salesFreshness, purchaseFreshness] = await Promise.all([getFreshness(tenantId, "Sales"), getFreshness(tenantId, "Purchase")]);
@@ -373,7 +376,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
 
       const tp = now();
       // Validated against the SAME tenant reference date (the date is never sent to Claude).
-      const planned = await planQuestion(userMessage, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, routerCode: route.code, referenceDate });
+      const planned = await planQuestion(userMessage, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, routerCode: route.code, referenceDate, signal });
       tm.plannerLatencyMs = now() - tp;
       plannerUsage = planned.usage;
       tm.plannerStatus = planned.status;

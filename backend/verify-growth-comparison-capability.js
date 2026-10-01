@@ -309,7 +309,7 @@ const SILENT_MISREADS = {
     const system = getPlannerPrompt().system.map((b) => b.text).join("\n");
     check("planner: its prompt carries no date / reference date (relative wording can only become SYMBOLIC periods; the date never reaches Claude)", !/reference date|today is|current date|20\d\d-\d\d-\d\d/i.test(system));
     const qc = fs.readFileSync(require.resolve("./src/services/query/queryChat.js"), "utf8");
-    check("P-SF: queryChat reads the turn's date context ONCE and hands the SAME referenceDate to the router, planner validation and executor", /const dc = await turnDates\(\);/.test(qc) && /routeQuestion\(userMessage, \{ resolveEntity, entityIndex, referenceDate \}\)/.test(qc) && /planQuestion\(userMessage, \{[^}]*routerCode: route\.code, referenceDate \}\)/.test(qc) && /exec\(plan, \{ tenantId, referenceDate \}, timing\)/.test(qc));
+    check("P-SF: queryChat reads the turn's date context ONCE and hands the SAME referenceDate to the router, planner validation and executor", /const dc = await turnDates\(\);/.test(qc) && /routeQuestion\(userMessage, \{ resolveEntity, entityIndex, referenceDate \}\)/.test(qc) && /planQuestion\(userMessage, \{[^}]*routerCode: route\.code, referenceDate(?:, signal)? \}\)/.test(qc) && /exec\(plan, \{ tenantId, referenceDate \}, timing\)/.test(qc));
     const { buildDateContext } = require("./src/services/analytics/referenceDate");
     const d = (y, m, dd) => new Date(Date.UTC(y, m - 1, dd));
     const dc = buildDateContext({ sales: { earliest: d(2025, 4, 1), latest: d(2025, 12, 8) }, purchase: { earliest: d(2025, 3, 15), latest: d(2025, 12, 10) } }, new Date(2026, 8, 28, 12));

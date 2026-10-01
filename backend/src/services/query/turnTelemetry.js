@@ -35,7 +35,7 @@ const FIELDS = {
   resolverCalled: bool, resolverCalls: int, resolverLatencyMs: ms, resolverStatus: code,
   freshnessStatus: code,
   referenceDateSource: code, futureVouchersPresent: bool, coverageStatus: code, followUp: code,
-  queryEngineMs: ms, totalLatencyMs: ms, httpStatus: int, ok: bool,
+  queryEngineMs: ms, totalLatencyMs: ms, httpStatus: int, ok: bool, clientAborted: bool,
 };
 
 /** Mutable per-turn metrics bag filled in by queryChat; plain numbers/codes only. */
@@ -112,8 +112,16 @@ function setTelemetrySink(fn) {
 }
 
 /** Build the allow-listed event. Pure; exported so tests can inspect exactly what would be logged. */
-function buildTurnEvent({ tenantId, metrics = {} }) {
-  const event = { event: EVENT_NAME, ts: new Date().toISOString(), tenantId: typeof tenantId === "string" && TENANT_RE.test(tenantId) ? tenantId : null };
+function buildTurnEvent({ tenantId, requestId, metrics = {} }) {
+  // P0 cost-forensics (Phase 8): the same id already returned on every response as X-Request-Id
+  // (middleware/requestId.js) - carried into this line so a specific network request can be matched
+  // to the exact Claude-cost decision that answered it, without adding a new telemetry system.
+  const event = {
+    event: EVENT_NAME,
+    ts: new Date().toISOString(),
+    tenantId: typeof tenantId === "string" && TENANT_RE.test(tenantId) ? tenantId : null,
+    requestId: typeof requestId === "string" && TENANT_RE.test(requestId) ? requestId : null,
+  };
   for (const [field, clean] of Object.entries(FIELDS)) {
     const v = clean(metrics[field]);
     event[field] = v === undefined ? null : v;
@@ -140,7 +148,7 @@ function emitTurnEvent(input) {
  */
 function emitChatTurn(input) {
   try {
-    const { tenantId, metrics, legacy, legacyMs, totalMs, httpStatus, dates } = input || {};
+    const { tenantId, requestId, metrics, legacy, legacyMs, totalMs, httpStatus, dates, clientAborted } = input || {};
     const m = { ...(metrics || {}) };
     // The turn's one tenant date context (shared by the engine and legacy chat), when it was read.
     if (dates && typeof dates === "object") {
@@ -158,9 +166,10 @@ function emitChatTurn(input) {
       if (legacy.calls > 0) m.claudeReason = m.claudeReason ? "planner_and_legacy_chat" : "legacy_chat";
     }
     m.totalLatencyMs = totalMs;
+    m.clientAborted = clientAborted === true;
     m.httpStatus = httpStatus;
     m.ok = httpStatus === 200;
-    emitTurnEvent({ tenantId, metrics: m });
+    emitTurnEvent({ tenantId, requestId, metrics: m });
   } catch (e) {
     /* telemetry must never affect the turn */
   }
