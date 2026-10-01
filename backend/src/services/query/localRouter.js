@@ -79,8 +79,64 @@ const UNSAFE_INPUT = [
 // ---------------------------------------------------------------- vocabulary
 
 const STOP = new Set(
-  ("a an the my our me i we us you your show give tell what whats which who whom whose how when where is are was were be been am do does did done can could would will shall please list get display report see view find of for in on at to from by with without and or vs versus per each every all any some this that these those has have had it its there their them then also just only about into over under between during within total summary numbers number data figures figure so far till now current currently me they hi hello hey thanks thank thankyou pls plz kindly want wanted know need needed perform performed performing").split(" ")
+  ("a an the my our me i we us you your show give tell what whats which who whom whose how when where is are was were be been am do does did done can could would will shall please list get display report see view find of for in on at to from by with without and or vs versus per each every all any some this that these those has have had it its there their them then also just only about into over under between during within total summary numbers number data figures figure so far till now current currently me they hi hello hey thanks thank thankyou pls plz kindly want wanted know need needed perform performed performing ki ka ke ko kya kitni kitna kitne hui hua hue thi tha hai hain ho mein bhi dikhao dikhaiye batao bataiye mujhe").split(" ")
 );
+// Demo fix (Hinglish): the words above in the last line are pure fillers/question words (like "what/how many"), so
+// they are dropped. These carry MEANING the grammar cannot map (less / goods / bought / sold / which / most / from),
+// so a run containing one is language for the planner - never a customer/product name to look up (which ended in
+// a false "check the spelling").
+const HINGLISH_CONTENT = new Set(
+  ("kam kum zyada jyada sabse maal kharida kharidi kharide kharid bika bike bikri becha bechi gaya gayi gaye kaunse kaunsa kaunsi kaun se ne par aur ya wala wali wale kab kyun kyu kaise liye pichle pichhle agle mahina mahine hafte saal").split(" ")
+);
+/** Unambiguous Hinglish period phrases -> the English the grammar already knows. */
+function normalizeHinglish(t) {
+  return t
+    .replace(/\bpich+l[ea]\s+mahin[eao]\b/g, "last month")
+    .replace(/\b(?:is|iss|isi)\s+mahin[eao]\b/g, "this month")
+    .replace(/\baaj\b/g, "today");
+}
+
+const RANGE_SEP = "(to|and|till|until|through|se)";
+const CHANGE_WORDS_RE = /\b(?:chang\w*|grow\w*|grew|increas\w*|decreas\w*|declin\w*|drop\w*|fell|fall\w*|rise|rose|risen|vs|versus|compar\w*|differenc\w*|varianc\w*|delta|improv\w*|higher|lower|badhi|badhe|ghati|ghate|zyada|kam)\b/;
+const monthEnd = (y, m) => `${y}-${pad2(m)}-${pad2(new Date(Date.UTC(y, m, 0)).getUTCDate())}`;
+/**
+ * A month range is ONE custom period: "Apr 2025 to Aug 2025" / "April 2025 se August 2025 tak" ->
+ * "2025-04-01 to 2025-08-31" (the ISO range the grammar already reads). "Apr-2025" is "Apr 2025". Inside an
+ * explicit FY, bare months take their year from it ("FY 2025-26 ... April se August tak" -> 2025-04-01..2025-08-31;
+ * Apr-Dec = start year, Jan-Mar = end year) and the FY label is consumed. "X and Y" is a range only after "between";
+ * a reversed range, a range outside the stated FY, or one following "compare" is left untouched.
+ */
+function normalizeMonthRanges(t) {
+  t = t.replace(new RegExp(`\\b${MONTH_RE}-(20\\d{2})\\b`, "g"), "$1 $2");
+  // "how did sales change from August 2025 to September 2025" names two periods to COMPARE, not one range.
+  if (CHANGE_WORDS_RE.test(t)) return t;
+  const fyRe = /(?:\b(?:in|for|during|of)\s+)?\b(?:fy|f y|financial year|fiscal year)\s*(\d{2,4})\s*-\s*(\d{2,4})\b/;
+  const fyM = fyRe.exec(t);
+  const fy = fyM ? fyFrom(fyM[1], fyM[2]) : null;
+  const fyStart = fy ? Number(fy.slice(0, 4)) : null;
+  let usedFy = false;
+  const guard = (m, sep, offset) => (sep === "and" && !/^between\b/.test(m)) || /compar\w*\s*$/.test(t.slice(0, offset));
+  // explicit years on both ends
+  t = t.replace(new RegExp(`(?:\\b(?:from|between)\\s+)?\\b${MONTH_RE}\\s+(20\\d{2})\\s+${RANGE_SEP}\\s+${MONTH_RE}\\s+(20\\d{2})\\b(?:\\s+tak\\b)?`, "g"), (m, m1, y1, sep, m2, y2, offset) => {
+    if (guard(m, sep, offset)) return m;
+    const a = `${y1}-${pad2(monthNum(m1))}-01`;
+    const b = monthEnd(Number(y2), monthNum(m2));
+    if (a > b) return m;
+    if (fyStart !== null && a >= `${fyStart}-04-01` && b <= `${fyStart + 1}-03-31`) usedFy = true;
+    return ` ${a} to ${b} `;
+  });
+  // bare months inside an explicit FY
+  if (fy) {
+    t = t.replace(new RegExp(`(?:\\b(?:from|between)\\s+)?\\b${MONTH_RE}\\s+${RANGE_SEP}\\s+${MONTH_RE}\\b(?!\\s*-?\\s*20\\d{2})(?:\\s+tak\\b)?`, "g"), (m, m1, sep, m2, offset) => {
+      if (guard(m, sep, offset)) return m;
+      const n1 = monthNum(m1), n2 = monthNum(m2);
+      if ((n1 + 8) % 12 > (n2 + 8) % 12) return m;
+      usedFy = true;
+      return ` ${fyStart + (n1 >= 4 ? 0 : 1)}-${pad2(n1)}-01 to ${monthEnd(fyStart + (n2 >= 4 ? 0 : 1), n2)} `;
+    });
+  }
+  return usedFy ? t.replace(fyRe, " ") : t;
+}
 
 const UNSUPPORTED_RULES = [
   ["tax_breakdown", /\b(?:gst|cgst|sgst|igst|utgst|vat|itc|tds|tcs|hsn|tax|taxes|taxable|taxed|pre-tax|pretax|post-tax|ex-tax)\b/],
@@ -802,7 +858,7 @@ async function routeCore(question, context, spanMode) {
   text = text.replace(/\b(?:average|avg) order (?:value|amount|size)\b/g, "average invoice value");
   text = text.replace(/\b(\d+(?:\.\d+)?) ?(?:percent|per cent|pct)\b/g, "$1%"); // "20 percent" = "20%"
   text = text.replace(/\bwhos\b/g, "who is"); // "who's" loses its apostrophe in normalizeText
-  text = normalizeDates(text).replace(/\s+/g, " ").trim();
+  text = normalizeDates(normalizeMonthRanges(normalizeHinglish(text))).replace(/\s+/g, " ").trim();
   const normalized = text;
   if (!text) return unsupported("empty_question", null, "The question is empty.");
 
@@ -940,6 +996,10 @@ async function routeCore(question, context, spanMode) {
     while (b > a && STOP.has(run[b - 1]) && !TRIGGERS.has(run[b - 1])) b -= 1;
     let core = run.slice(a, b);
     if (!core.length) continue;
+    if (core.some((w) => HINGLISH_CONTENT.has(w))) {
+      unrecognised = true;
+      continue;
+    }
 
     // leading trigger words give the name a dimension hint
     let hint = null;
@@ -981,6 +1041,7 @@ async function routeCore(question, context, spanMode) {
   // ---- 13. resolve the (single) name
   let filter = null;
   let nameEntityHint = null;
+  let partialNameNote = null;
   if (nameRun) {
     const surface = nameRun.join(" ");
     const q = /^xqx(\d+)xqx$/.exec(nameRun.length === 1 ? nameRun[0] : "");
@@ -1005,6 +1066,7 @@ async function routeCore(question, context, spanMode) {
       if (matches.length === 0) return needsPlanner("entity_not_resolved", `"${rawText || surface}" did not match a known customer, supplier, product or group.`, { normalized });
       if (matches.length > 1) return needsPlanner("entity_ambiguous", `"${rawText || surface}" matches more than one kind of entity.`, { normalized });
       filter = { dim: matches[0].dim, value: matches[0].value };
+      if (matches[0].partial) partialNameNote = { code: "name_matched_by_prefix", message: `"${rawText || surface}" was read as "${matches[0].value}" - the only ${matches[0].dim === "productGroup" ? "product group" : matches[0].dim} whose name starts with it.` };
     } else if (rawText && nameHint) {
       filter = { dim: nameHint, value: rawText };
     } else {
@@ -1020,6 +1082,7 @@ async function routeCore(question, context, spanMode) {
     if (d === "supplier") dimEntity.add("purchase");
   }
   const assumptions = [];
+  if (partialNameNote) assumptions.push(partialNameNote);
   let entityItems = ofType(items, "entity");
   // A customer's buying is our sale, a supplier's selling our purchase: when the party side is fixed (a customer/
   // supplier dimension or name, or a "who" frame) and the trade words only describe that party's side, they are
@@ -1356,7 +1419,7 @@ async function routeAndExecute(question, { tenantId, referenceDate, resolveEntit
 // and reported as slots - nothing is guessed here. followUp.js merges the slots into the previous plan.
 
 // conversational glue that carries no meaning of its own in a follow-up
-const FOLLOW_UP_GLUE_RE = /\b(?:how about|what about|and what about|same (?:for|but|thing)|instead|now|ok|okay|then|also|plus|but|so|again|rather|just|only|please|break (?:it|that|this|them) down|split (?:it|that|this|them)|broken down|breakdown|show|me|them|those|these|that|it|ones)\b/g;
+const FOLLOW_UP_GLUE_RE = /\b(?:how about|what about|and what about|same (?:for|but|thing)|same (?:month|period)(?! (?:of |in )?(?:last|previous|prior)\b)|instead|now|ok|okay|then|also|plus|but|so|again|rather|just|only|please|break (?:it|that|this|them) down|split (?:it|that|this|them)|broken down|breakdown|show|me|them|those|these|that|it|ones)\b/g;
 const CONTINUATION_CUE_RE = /^(?:and|also|plus|now|then|so|ok(?:ay)?|but|what about|how about|same|only|just|instead|break (?:it|that|this) down|split (?:it|that|this))\b|\b(?:instead|same period|same thing|the same|those|them|that one|these ones)\b/;
 
 /** True when the wording itself says "this continues the previous question". Normalized text only. */
@@ -1374,7 +1437,7 @@ function readFollowUpSlots(question) {
   const quoted = [];
   let text = normalizeText(question.replace(QUOTE_RE, (m, inner) => (quoted.push(inner.replace(/\s+/g, " ").trim()), ` xqx${quoted.length - 1}xqx `)));
   text = text.replace(/\b(\d+(?:\.\d+)?) ?(?:percent|per cent|pct)\b/g, "$1%").replace(/\bwhos\b/g, "who is");
-  text = normalizeDates(text).replace(/\s+/g, " ").trim();
+  text = normalizeDates(normalizeMonthRanges(normalizeHinglish(text))).replace(/\s+/g, " ").trim();
   if (!text) return null;
   if (REASONING_INTENTS.some((re) => re.test(text)) || UNSUPPORTED_RULES.some(([, re]) => re.test(text))) return null;
   let whoFrame = null;

@@ -8,8 +8,8 @@
 // stored spelling. The tenantId is fixed at construction by the server and
 // is never read from question text. Read-only; every query is filtered by
 // tenantId. Names are compared on the router's normalized form (case,
-// punctuation and spacing insensitive) but only EXACT normalized matches
-// count - there is no fuzzy matching, so nothing is guessed.
+// punctuation and spacing insensitive). An EXACT normalized match always wins. There is no fuzzy matching; the
+// one relaxation is a typed name that is the leading whole word(s) of exactly ONE stored name (see resolveEntity).
 // --------------------------------------------------
 
 const { normalizeText } = require("./localRouter");
@@ -18,6 +18,7 @@ const READ_TIMEOUT_MS = 5000;
 const ENTITY_RESOLVER_UNAVAILABLE = "ENTITY_RESOLVER_UNAVAILABLE";
 const DIMS = ["customer", "supplier", "product", "productGroup"];
 const MAX_SPAN_TOKENS = 20;
+const PREFIX_MIN_FIRST_WORD = 4; // a shorter first word ("a", "mr", "new") is too generic to stand for a stored name
 
 function defaultSources(tenantId) {
   const Sale = require("../../models/sales.model");
@@ -76,6 +77,23 @@ function createEntityResolver({ tenantId, sources } = {}) {
     for (const dim of dims) {
       const found = (await index(dim)).get(key);
       if (found) matches.push({ dim, value: found });
+    }
+    // Demo fix: people type the first word(s) of a stored name ("Dhingra" for "DHINGRA GENERAL STORE"). Only when
+    // NO exact match exists, a typed name that is the leading whole word(s) of EXACTLY ONE stored name (across the
+    // allowed kinds) resolves to it, flagged `partial` so the caller can say so. Two or more candidates -> no match.
+    if (!matches.length && key.split(" ")[0].length >= PREFIX_MIN_FIRST_WORD) {
+      const prefix = `${key} `;
+      const hits = [];
+      for (const dim of dims) {
+        for (const [k, v] of await index(dim)) {
+          if (k.startsWith(prefix)) {
+            hits.push({ dim, value: v });
+            if (hits.length > 1) break;
+          }
+        }
+        if (hits.length > 1) break;
+      }
+      if (hits.length === 1) matches.push({ ...hits[0], partial: true });
     }
     return { matches };
   }

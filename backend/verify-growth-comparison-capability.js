@@ -204,7 +204,7 @@ const CORPUS = [
   ["rolling","Last 7 days sales","SUPPORTED","","supported",null,"sales:invoiceAmount|total|-|none|last_7_days"],
   ["range","Which customers have grown from April to September?","CLARIFY","year missing","needs_planner","year_missing",null],
   ["range","Which customers grew from April 2025 to September 2025?","CLARIFY","growth ACROSS a range: first vs last month? range vs previous range? - undefined","needs_planner","two_periods_without_comparison",null],
-  ["range","Sales from April 2025 to September 2025","SUPPORTED","one explicit range: Apr 1 - Sep 30 2025","needs_planner","two_periods_without_comparison",null],
+  ["range","Sales from April 2025 to September 2025","SUPPORTED","one explicit range: Apr 1 - Sep 30 2025","supported",null,"sales:invoiceAmount|total|-|none|2025-04-01..2025-09-30"],
   ["range","Sales April 2025 vs April 2024","SUPPORTED","","supported",null,"sales:invoiceAmount|total|-|vs 2024-04-01..2024-04-30|2025-04-01..2025-04-30"],
   ["range","Which customers grew in August 2025 vs July 2025?","SUPPORTED","","supported",null,"sales:invoiceAmount|customer|up|vs 2025-07-01..2025-07-31|2025-08-01..2025-08-31"],
   ["range","Sales between 2025-04-01 and 2025-06-30","SUPPORTED","","supported",null,"sales:invoiceAmount|total|-|none|2025-04-01..2025-06-30"],

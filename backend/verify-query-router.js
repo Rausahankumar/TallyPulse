@@ -1184,6 +1184,87 @@ async function expectStatus(label, q, status, code) {
     check("resolver cannot be created without a server-supplied tenantId", threw);
   }
 
+  section("DEMO. partial names (unique leading word) and Hinglish fillers (synthetic fixtures, no DB)");
+  {
+    const names = { customer: ["Acme Trading Store", "Zenith Mart", "Zenith Stores", "Orbit Co", "Orbit Co Pvt"], supplier: ["Vendor Works Ltd"], product: ["Widget Pro 10"], productGroup: [] };
+    const r = createEntityResolver({ tenantId: "DEMO-T", sources: Object.fromEntries(Object.entries(names).map(([k, v]) => [k, async () => v])) });
+    const find = async (text, hintDim) => (await r({ entity: null, hintDim: hintDim || null, text })).matches;
+    const one = await find("acme");
+    check("unique leading word resolves to the stored name, flagged partial", one.length === 1 && one[0].value === "Acme Trading Store" && one[0].partial === true);
+    check("two names share the leading word -> no match (never guessed)", (await find("zenith")).length === 0);
+    check("an exact match always wins over a longer name (no partial flag)", (await find("orbit co")).length === 1 && (await find("orbit co"))[0].partial !== true);
+    check("a word that is not the START of a name does not resolve", (await find("trading")).length === 0 && (await find("store")).length === 0);
+    check("a short first word (<4 chars) never prefix-matches", (await find("orb")).length === 0 && (await find("wid")).length === 0);
+    check("the hint dimension still limits the prefix match", (await find("acme", "supplier")).length === 0 && (await find("vendor", "supplier")).length === 1);
+    check("prefix matching is per-tenant (a foreign tenant resolver cannot see it)", (await createEntityResolver({ tenantId: "DEMO-U", sources: { customer: async () => ["Other Co"], supplier: async () => [], product: async () => [], productGroup: async () => [] } })({ entity: null, hintDim: null, text: "acme" })).matches.length === 0);
+
+    const rt = (q) => routeQuestion(q, { resolveEntity: r });
+    const partial = await rt("sales of acme in August 2025");
+    check("router: 'sales of acme in August 2025' -> customer filter with the canonical name and a disclosure note", partial.status === "supported" && partial.plan.filters[0].value === "Acme Trading Store" && (partial.assumptions || []).some((a) => a.code === "name_matched_by_prefix"));
+    const exact = await rt("sales of Acme Trading Store in August 2025");
+    check("router: an exact name carries no prefix note", exact.status === "supported" && !(exact.assumptions || []).some((a) => a.code === "name_matched_by_prefix"));
+    const amb = await rt("sales of zenith in August 2025");
+    check("router: an ambiguous leading word is still entity_not_resolved (dead-end clarification)", amb.status === "needs_planner" && amb.code === "entity_not_resolved");
+
+    // Hinglish: fillers are dropped; period phrases map to the existing grammar
+    const h1 = await rt("Aug 2025 ki sales kitni hui?");
+    const e1 = await rt("sales in Aug 2025");
+    check("Hinglish fillers: 'Aug 2025 ki sales kitni hui?' = 'sales in Aug 2025'", h1.status === "supported" && eq(h1.plan, e1.plan));
+    const h2 = await rt("Pichle mahine sales kitni hui?");
+    const e2 = await rt("sales last month");
+    check("'pichle mahine' = last month", h2.status === "supported" && eq(h2.plan, e2.plan));
+    const h3 = await rt("Sales is mahine kitni hui?");
+    check("'is mahine' = this month", h3.status === "supported" && h3.plan.period.kind === "current_month");
+    const h4 = await rt("acme ki sales Aug 2025 mein kitni hui?");
+    check("Hinglish + partial name resolves deterministically", h4.status === "supported" && h4.plan.filters[0].value === "Acme Trading Store");
+    // Hinglish content words are language for the planner - never looked up as a name ("check the spelling")
+    for (const q of ["Pichle mahine acme se kitna kam maal gaya?", "Kaunse products sabse zyada bike?", "acme se kitna maal kharida?"]) {
+      const x = await rt(q);
+      check(`Hinglish content words go to the planner, not a name lookup: "${q}"`, x.status === "needs_planner" && x.code === "unrecognized_words", `${x.status}:${x.code}`);
+    }
+    check("the planner handoff is not a dead end (unrecognized_words is not a skip code)", !require("./src/services/query/planner").SKIP_ROUTER_CODES.has("unrecognized_words"));
+    const ng = await rt("sales of Nonexistent Corp in August 2025");
+    check("a genuinely unknown English name stays a dead-end clarification", ng.status === "needs_planner" && ng.code === "entity_not_resolved");
+
+    // follow-up: "Same month purchase bhi dikhao" keeps the previous period and switches to purchases
+    const followUp = require("./src/services/query/followUp");
+    const prevPlan = (await rt("sales in August 2025")).plan;
+    const state = followUp.readQueryState(followUp.buildQueryState(prevPlan));
+    const m1 = await followUp.mergeFollowUp(state, "Same month purchase bhi dikhao", { resolveEntity: r });
+    check("follow-up 'Same month purchase bhi dikhao' -> purchases, same period", m1.status === "merged" && m1.plan.entity === "purchase" && eq(m1.plan.period, prevPlan.period));
+    const m2 = await followUp.mergeFollowUp(state, "only acme", { resolveEntity: r });
+    check("follow-up 'only acme' -> same period, customer filter by the unique leading word", m2.status === "merged" && m2.plan.filters[0].value === "Acme Trading Store" && eq(m2.plan.period, prevPlan.period));
+    // ---- month ranges: ONE custom period; bare months inside an explicit FY take the FY's years
+    const trendOf = (x) => x.status === "supported" && x.plan.period.kind === "custom" && x.plan.groupBy && x.plan.groupBy[0].dim === "date";
+    const AprAug = { from: "2025-04-01", to: "2025-08-31" };
+    for (const q of ["sales trend from April 2025 to August 2025", "FY 2025-26 mein sales April se August tak ka trend dikhao.", "FY 2025-26 me sales Apr-2025 se Aug-2025 tak ka trend dikhao", "sales trend between April 2025 and August 2025", "sales trend Apr 2025 se Aug 2025 tak"]) {
+      const x = await rt(q);
+      check(`month range is one custom period 2025-04-01..2025-08-31: "${q}"`, trendOf(x) && x.plan.period.from === AprAug.from && x.plan.period.to === AprAug.to, `${x.status}:${x.code}`);
+    }
+    const jm = await rt("FY 2025-26 sales trend January to March");
+    check("inside FY 2025-26, Jan-Mar are 2026", trendOf(jm) && jm.plan.period.from === "2026-01-01" && jm.plan.period.to === "2026-03-31");
+    const noMeasure = await rt("FY 2025-26 me Apr-2025 se Aug-2025 tak ka trend dikhao");
+    check("no sales/purchase word -> asks which (entity_ambiguous), never a year question", noMeasure.status === "needs_planner" && noMeasure.code === "entity_ambiguous", `${noMeasure.status}:${noMeasure.code}`);
+    const slots = require("./src/services/query/localRouter").readFollowUpSlots("FY 2025-26 me Apr-2025 se Aug-2025 tak ka trend dikhao");
+    check("...and its period is the explicit range", slots.periods.length === 1 && slots.periods[0].from === "2025-04-01" && slots.periods[0].to === "2025-08-31");
+    // unchanged policy
+    check("a bare month with no year still asks for the year", (await rt("August mein sales kitni hui?")).code === "year_missing");
+    check("bare months with no FY still ask for the year", (await rt("April se August tak sales trend")).code === "year_missing");
+    const fyOnly = await rt("FY 2025-26 mein sales kitni hui?");
+    check("FY 2025-26 alone is still the specific FY", fyOnly.status === "supported" && fyOnly.plan.period.kind === "specific_fy" && fyOnly.plan.period.fy === "2025-26");
+    const fyTop = await rt("top 5 customers in FY 2025-26");
+    check("FY 2025-26 ranking is still the specific FY", fyTop.status === "supported" && fyTop.plan.period.kind === "specific_fy" && fyTop.plan.period.fy === "2025-26");
+    // never over-reach
+    check("a reversed range is left alone (two periods, no comparison word)", (await rt("sales from Aug 2025 to Apr 2025")).code === "two_periods_without_comparison");
+    check("'X and Y' without 'between' is still two periods", (await rt("sales in Aug 2025 and Sep 2025")).code === "two_periods_without_comparison");
+    const cmpTo = await rt("sales in Sep 2025 compared to Aug 2025");
+    check("a comparison is still a comparison", cmpTo.status === "supported" && cmpTo.plan.compare && cmpTo.plan.compare.mode === "custom");
+    const fyMismatch = await rt("FY 2024-25 sales trend from Apr 2025 to Aug 2025");
+    check("a range outside the stated FY is not silently re-based (FY label kept -> two periods)", fyMismatch.status !== "supported");
+    const m3 = await followUp.mergeFollowUp(state, "same month last year", { resolveEntity: r });
+    check("'same month last year' is still a year comparison, not stripped as glue", m3.status !== "merged" || (m3.plan.compare && m3.plan.compare.mode === "same_period_last_year"));
+  }
+
   // ================================================================ N. real resolver + engine (read-only, needs MongoDB)
   section("N. real tenant-scoped resolver + route -> Query Engine (read-only)");
   const mongoose = require("mongoose");

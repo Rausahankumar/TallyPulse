@@ -119,6 +119,10 @@ queryChat.tryAnswerWithQueryEngine
   - No master → `ledger_master_missing`.
   - The role comes from the transaction side (sales = customer, purchase = supplier), not from the ledger group.
 - **New products:** still "sold now, not in the comparison period".
+- **Names:** an exact normalized match wins. Otherwise a typed name that is the leading whole word(s) (first word 4+ chars) of EXACTLY ONE stored name resolves to it (`entityResolver`, flagged `partial`; the router adds the `name_matched_by_prefix` note). Two or more candidates → not resolved.
+- **Month ranges:** "Apr 2025 to Aug 2025" / "April 2025 se August 2025 tak" is ONE custom period (`normalizeMonthRanges`); inside an explicit FY, bare months take its years ("FY 2025-26 … April se August tak" = 2025-04-01..2025-08-31, FY label consumed). Not applied when the question has a change/compare word (that is a comparison of two periods), after "compare", for a reversed range, or for "X and Y" without "between". Bare months with no FY still ask for the year.
+- **Legacy chat names:** `get_customer_sales` resolves the typed name with the same tenant resolver (exact or unique leading word) before the exact-match lookup; anything else keeps the name as typed.
+- **Hinglish:** only pure fillers (ki, kitni, hui, thi, mein, bhi, dikhao…) and `pichle/is mahine`, `aaj` are mapped (`localRouter` `STOP`, `normalizeHinglish`). A run containing a meaning word (kam, maal, kharida, bike, sabse, se…: `HINGLISH_CONTENT`) is `unrecognized_words` → planner (fresh chat) or legacy (with history), never a name lookup.
 - **Refused:** first-ever purchase, reactivated/returning customers, % growth ranking, rolling windows, "N months ago".
 - **Follow-ups:** answered by `followUp.js` from the stored `queryContext`. "Which of them are new?" is refused (ask it directly with a period).
 - **Unchanged (open decision):** REST dashboard/reports anchor to the latest voucher; REST `vs_previous_month` cards keep the old comparison.

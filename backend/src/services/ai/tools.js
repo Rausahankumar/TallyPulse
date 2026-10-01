@@ -134,6 +134,18 @@ const customerSalesSchema = z
   })
   .strict();
 
+// getCustomerSales matches the name EXACTLY, so a typed "Dhingra" never reached "DHINGRA GENERAL STORE" here while the
+// query engine found it. Same tenant-bound resolver and rule as the engine (exact name, or a unique leading word);
+// anything else - no match, several matches, the lookup failing - keeps the name as given (the previous behaviour).
+async function canonicalCustomerName(tenantId, name) {
+  try {
+    const { matches } = await require("../query/queryChat").getTenantResolver(tenantId)({ entity: "sales", hintDim: "customer", text: name });
+    return matches.length === 1 ? matches[0].value : name;
+  } catch (error) {
+    return name;
+  }
+}
+
 function resolveCustomerPeriod({ period, from, to }, referenceDate) {
   if (period === "all_time") {
     // No from/to at all - buildVoucherMatchStage() already treats a
@@ -343,8 +355,8 @@ const TOOLS = [
       return wrapAnalyticsResult({
         tenantId: context.tenantId,
         voucherType: "Sales",
-        run: refusal ? refused(refusal) : () =>
-          salesAnalytics.getCustomerSales(context.tenantId, args.customerName, period),
+        run: refusal ? refused(refusal) : async () =>
+          salesAnalytics.getCustomerSales(context.tenantId, await canonicalCustomerName(context.tenantId, args.customerName), period),
       });
     },
   },
