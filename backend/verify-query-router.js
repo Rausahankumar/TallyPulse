@@ -963,7 +963,9 @@ async function expectStatus(label, q, status, code) {
     const BEFORE = [
       ["How much did we sell in August?", ["needs_planner","year_missing",null]],
       ["How much did we sell in August 2025?", ["supported",null,"a823ee6c0a37"]],
-      ["How many customers bought last month?", ["needs_planner","entity_not_resolved",null]],
+      // P0 cost-leak fix: "many" is now a STOP word (localRouter.js STOP set), so "how many" no longer
+      // leaves a dangling "many" name-run candidate - this now resolves deterministically (was entity_not_resolved).
+      ["How many customers bought last month?", ["supported",null,"9e07567ca3a6"]],
       ["How did sales change from August to September?", ["needs_planner","year_missing",null]],
       // P1-4: "change" is comparison grammar now, no longer looked up as a customer name (was entity_not_resolved)
       ["How did sales change from August 2025 to September 2025?", ["needs_planner","two_periods_without_comparison",null]],

@@ -167,6 +167,8 @@ const CLARIFY = {
   who_ambiguous: 'Who do you mean - customers or suppliers? For example "which customers bought less this month than last month" or "which suppliers did we buy less from this month".',
   threshold_direction_missing: 'Should that be a rise or a fall? For example "customers whose sales grew by more than 20% this month vs last month" or "customers whose sales fell by more than 20% this month vs last month".',
   vague_performance: '"Doing better" can mean more sales, more invoices or a bigger share, so I won’t guess. Try for example "which customers bought more this month than last month" or "top 10 customers by growth this month vs last month".',
+  too_many_periods: 'That names more than two time periods. I answer one period at a time, or compare two, for example "sales this month" or "sales this month vs last month". Please ask them as separate questions.',
+  two_periods_without_comparison: 'That names two time periods without saying how to compare them. To compare, write for example "sales this month vs last month"; otherwise ask one period at a time.',
   entity_not_resolved: "I couldn’t find that customer, supplier, product or group in your data. Please check the spelling.",
   planner_needs_clarification: null, // uses the planner's own message
 };

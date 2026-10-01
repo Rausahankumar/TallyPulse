@@ -30,6 +30,15 @@ const { assessCoverage, rangeText, fmtDay } = require("../analytics/coverage");
 const followUp = require("./followUp");
 const { CATALOG } = require("./semanticCatalog");
 const { planQuestion, SKIP_ROUTER_CODES, createAnthropicPlannerClient } = require("./planner");
+// P0 cost-leak fix (widened after a second live incident): a single-code allowlist here was whack-a-mole -
+// period_label_unsupported was fixed, then the SAME bug shape recurred live for entity_not_resolved. Every
+// SKIP_ROUTER_CODES entry is, by definition, a "dead-end" the router already can't resolve on its own (see
+// the architecture comment at the top of this file: "dead-end code -> clarification message (NO Claude)") -
+// and by the time this branch runs, the earlier structured follow-up merge (above, using previousQuery) has
+// already had its chance to use prior context. What's left for legacy-chat-with-history to add for any of
+// these codes is Claude silently guessing past a refusal the router deliberately gave - the same problem
+// entity_ambiguous was added to SKIP_ROUTER_CODES to prevent at the planner. So ALL of them skip the history
+// detour here too, not a hand-picked subset - closing this whole class of leak instead of one code at a time.
 const { createEntityResolver } = require("./entityResolver");
 const { formatQueryAnswer, formatNonAnswer, SCOPE_HINT } = require("./answerFormatter");
 const turnTelemetry = require("./turnTelemetry");
@@ -339,9 +348,14 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       revenueBasis = routerAssumptions.some((a) => a.code === REVENUE_ASSUMPTION.code);
     } else {
       // needs_planner
-      if (conversationHistory.length > 0) {
-        // Legacy chat's totals are tax-inclusive invoice amounts, so it cannot answer revenue on its defined basis.
-        if (mentionsRevenue(userMessage)) return revenueNoLegacy(REVENUE_FOLLOW_UP_MESSAGE, "revenue_follow_up");
+      // Legacy chat's totals are tax-inclusive invoice amounts, so it cannot answer revenue on its defined
+      // basis - checked before the dead-end/legacy split below, same as before the P0 widening, so a revenue
+      // follow-up never reaches legacy chat regardless of which router code it hit.
+      if (conversationHistory.length > 0 && mentionsRevenue(userMessage)) return revenueNoLegacy(REVENUE_FOLLOW_UP_MESSAGE, "revenue_follow_up");
+      // An unresolved name with a follow-up cue ("compare the two") points at earlier turns - it is not a
+      // misspelling - so it keeps the history-aware legacy path. A genuine unknown name has no such cue and stays free.
+      const namesEarlierTurn = route.code === "entity_not_resolved" && hasContinuationCue(userMessage);
+      if (conversationHistory.length > 0 && (!SKIP_ROUTER_CODES.has(route.code) || namesEarlierTurn)) {
         return { handled: false, reason: "follow_up_uses_legacy_chat" };
       }
       if (SKIP_ROUTER_CODES.has(route.code)) {

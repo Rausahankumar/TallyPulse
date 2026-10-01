@@ -70,6 +70,15 @@ const SKIP_ROUTER_CODES = new Set([
   "who_ambiguous",
   "threshold_direction_missing",
   "vague_performance",
+  // P0 fix: the router has already deliberately refused to guess sales vs. purchase (e.g. "product
+  // growth") - handing that same refusal to Claude just lets it silently pick one, defeating the
+  // router's own "don't guess" decision and paying for a Claude call to do it. The missing fact
+  // (which side of the business) is the user's to state, same as who_ambiguous.
+  "entity_ambiguous",
+  // A question naming several time periods with no comparison word ("last month / this month / today"). The
+  // fix is the user rephrasing, and paying Claude to say so is exactly the leak this set exists to prevent.
+  "too_many_periods",
+  "two_periods_without_comparison",
 ]);
 
 // ---------------------------------------------------------------- prompt + tool (built once from the catalog)

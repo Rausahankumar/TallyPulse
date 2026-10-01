@@ -79,7 +79,7 @@ const UNSAFE_INPUT = [
 // ---------------------------------------------------------------- vocabulary
 
 const STOP = new Set(
-  ("a an the my our me i we us you your show give tell what whats which who whom whose how when where is are was were be been am do does did done can could would will shall please list get display report see view find of for in on at to from by with without and or vs versus per each every all any some this that these those has have had it its there their them then also just only about into over under between during within total summary numbers number data figures figure so far till now current currently me they hi hello hey thanks thank thankyou pls plz kindly want wanted know need needed perform performed performing ki ka ke ko kya kitni kitna kitne hui hua hue thi tha hai hain ho mein bhi dikhao dikhaiye batao bataiye mujhe").split(" ")
+  ("a an the my our me i we us you your show give tell what whats which who whom whose how many when where is are was were be been am do does did done can could would will shall please list get display report see view find of for in on at to from by with without and or vs versus per each every all any some this that these those has have had it its there their them then also just only about into over under between during within total summary numbers number data figures figure so far till now current currently me they hi hello hey thanks thank thankyou pls plz kindly want wanted know need needed perform performed performing ki ka ke ko kya kitni kitna kitne hui hua hue thi tha hai hain ho mein bhi dikhao dikhaiye batao bataiye mujhe").split(" ")
 );
 // Demo fix (Hinglish): the words above in the last line are pure fillers/question words (like "what/how many"), so
 // they are dropped. These carry MEANING the grammar cannot map (less / goods / bought / sold / which / most / from),
@@ -149,7 +149,20 @@ const UNSUPPORTED_RULES = [
   ["other_accounting_domains", /\b(?:orders?|deliver(?:y|ies)|dispatch(?:es)?|stock valuation|closing stock|opening stock|inventory valuation|stock on hand|stock in hand|payroll|salary|salaries|wages|e ?way|fixed assets?|depreciation|budgets?|targets?|quotas?|expenses?|expenditure|income|assets?|liabilit(?:y|ies)|equity|capital)\b/],
 ];
 
-const COMPLEX_RE = /\b(?:why|explain|explanation|reasons?|because|insights?|analy[sz]e|analysis|analytics?|recommend\w*|suggest\w*|should|contribut\w*|impact|drivers?|caus(?:e|es|ed)|correlat\w*|seasonal\w*|predict\w*|forecast\w*|projection\w*|projected|run rate|pace|anomal\w*|unusual|overview|performance|health|opportunit\w*|risks?|risky|trends? analysis)\b/;
+const COMPLEX_RE = /\b(?:why|explain|explanation|reasons?|because|insights?|analy[sz]e|analysis|analytics?|recommend\w*|suggest\w*|should|contribut\w*|impact|drivers?|caus(?:e|es|ed)|correlat\w*|seasonal\w*|predict\w*|forecast\w*|projection\w*|projected|run rate|pace|anomal\w*|unusual|overview|health|opportunit\w*|risks?|risky|trends? analysis)\b/;
+// "performance" alone does not inherently mean reasoning ("sales performance this month" is just "sales this
+// month") - handled separately, context-aware, right below: try the question with the word removed first, and
+// only fall back to the reasoning gate when the rest of the sentence does not reduce to a clean deterministic
+// answer (a plan, or one of the router's own deterministic clarifications/refusals).
+const PERFORMANCE_RE = /\bperformance\b/;
+// Mirrors planner.js's SKIP_ROUTER_CODES (a router->planner import would be circular - planner.js already
+// requires this file). Keep in sync: these are the needs_planner codes that are themselves a final,
+// deterministic clarification and must never reach Claude.
+const DETERMINISTIC_CLARIFICATION_CODES = new Set([
+  "entity_not_resolved", "question_too_long", "year_missing", "ambiguous_period", "invalid_fy",
+  "unsupported_window", "period_missing", "period_label_unsupported", "relative_offset_unsupported",
+  "open_ended_range", "who_ambiguous", "threshold_direction_missing", "vague_performance", "entity_ambiguous", "too_many_periods", "two_periods_without_comparison",
+]);
 const AMBIGUOUS_METRIC_RE = /\b(?:turnover|spend|spending|spent|cost|costs|business|earnings?|volume|worth)\b/;
 
 // Period / comparison / growth vocabulary the Query DSL cannot express. Each is consumed as grammar and answered
@@ -688,7 +701,11 @@ function consumeGrammar(text) {
   // ---- 10. metrics and entity words
   take(st, /\bwhat (?:did|do|have) (?:i|we) (?:sell|sold|buy|bought|purchase|purchased)\b/g, (g, m) => ({ type: "whatDid", entity: /sell|sold/.test(m) ? "sales" : "purchase" }));
   take(st, /\b(?:average|avg)\s+(?:(sales?|purchases?)\s+)?(?:(?:invoices?|bills?|orders?|vouchers?)(?:\s+(?:value|amount|size))?|(?:value|amount|size))\b/g, (g) => ({ type: "metric", metric: "avg", entity: g[0] ? (/^purchase/.test(g[0]) ? "purchase" : "sales") : null }));
-  take(st, /\b(?:how many|number of|count of|total number of)\s+(?:invoices?|bills?|sales|purchases?|vouchers?)\b|\b(?:invoice|bill|voucher) count\b/g, (g, m) => ({ type: "metric", metric: "count", entity: /purchase/.test(m) ? "purchase" : /sales/.test(m) ? "sales" : null }));
+  take(st, /\b(?:how many|number of|count of|total number of)\s+(?:invoices?|bills?|sales|purchases?|vouchers?)\b|\b(?:invoice|bill|voucher|sales?|purchases?) count\b/g, (g, m) => ({ type: "metric", metric: "count", entity: /purchase/.test(m) ? "purchase" : /sales/.test(m) ? "sales" : null }));
+  // "customer count"/"supplier count": a distinct-party count is genuinely not represented by any metric
+  // (invoiceCount/purchaseInvoiceCount are VOUCHER counts, not distinct-party counts) - refused explicitly
+  // rather than silently answered with the wrong number or sent to the planner to guess.
+  take(st, /\b(?:customer|supplier)s?\s+count\b|\bcount\s+of\s+(?:customer|supplier)s?\b/g, () => ({ type: "unsupportedPartyCount" }));
   take(st, /\bline (?:item )?amounts?\b/g, () => ({ type: "metric", metric: "line" }));
   take(st, /\b(?:quantity|quantities|qty|units|pieces|pcs)\b/g, () => ({ type: "metric", metric: "qty" }));
   take(st, /\b(?:invoices?|bills?|vouchers?)\b/g, () => ({ type: "invoiceNoun" }));
@@ -903,6 +920,27 @@ async function routeCore(question, context, spanMode) {
 
   // ---- 3. reasoning / ambiguity gates
   if (COMPLEX_RE.test(text)) return needsPlanner("requires_reasoning", "The question asks for analysis or explanation rather than a direct figure.", { normalized });
+  if (PERFORMANCE_RE.test(text)) {
+    // Try the question with "performance" removed: if the rest cleanly resolves to a plan, or to one of the
+    // router's own deterministic clarifications/refusals, that reading wins - "performance" was just emphasis.
+    // Otherwise (still needs_planner for an open-ended reason, or genuinely unsupported) this was a real
+    // reasoning question, and the original behavior (send to the planner) stands.
+    const withoutPerformance = question.replace(/\bperformance\b/gi, " ").replace(/\s+/g, " ").trim();
+    let probe;
+    try {
+      probe = await routeCore(withoutPerformance, context, spanMode);
+    } catch (error) {
+      probe = null;
+    }
+    // "empty_question" from the probe would be misleading here (the ORIGINAL question wasn't empty - only the
+    // performance-stripped copy is, e.g. a bare "performance"): that case falls back to requires_reasoning below.
+    const clean =
+      probe &&
+      probe.code !== "empty_question" &&
+      (probe.status === "supported" || probe.status === "unsupported" || (probe.status === "needs_planner" && DETERMINISTIC_CLARIFICATION_CODES.has(probe.code)));
+    if (clean) return { ...probe, normalized };
+    return needsPlanner("requires_reasoning", "The question asks for analysis or explanation rather than a direct figure.", { normalized });
+  }
   if (AMBIGUOUS_METRIC_RE.test(text)) return needsPlanner("ambiguous_metric", "The measure is ambiguous (e.g. turnover/spend/cost could mean different amounts).", { normalized });
 
   const grammar = consumeGrammar(text);
@@ -911,6 +949,14 @@ async function routeCore(question, context, spanMode) {
 
   // ---- 11. read the markers
   const items = markersInOrder(st);
+  if (ofType(items, "unsupportedPartyCount").length) {
+    return unsupported(
+      "unsupported_party_count",
+      null,
+      "A count of distinct customers/suppliers is not available - invoice/voucher counts and new-customer/supplier breakdowns are (for example \"top customers by sales\" or \"new customers this month\").",
+      { normalized }
+    );
+  }
   // ---- 11-growth. growth the DSL cannot express - a rate ranking, growth across every sub-period (pattern words,
   // or a change word on a date series), a first-ever purchase: a final honest answer, whatever the period says.
   // A % change is the comparison's own deltaPct: a total or a breakdown shows it; RANKING by it is refused.
@@ -1420,7 +1466,7 @@ async function routeAndExecute(question, { tenantId, referenceDate, resolveEntit
 
 // conversational glue that carries no meaning of its own in a follow-up
 const FOLLOW_UP_GLUE_RE = /\b(?:how about|what about|and what about|same (?:for|but|thing)|same (?:month|period)(?! (?:of |in )?(?:last|previous|prior)\b)|instead|now|ok|okay|then|also|plus|but|so|again|rather|just|only|please|break (?:it|that|this|them) down|split (?:it|that|this|them)|broken down|breakdown|show|me|them|those|these|that|it|ones)\b/g;
-const CONTINUATION_CUE_RE = /^(?:and|also|plus|now|then|so|ok(?:ay)?|but|what about|how about|same|only|just|instead|break (?:it|that|this) down|split (?:it|that|this))\b|\b(?:instead|same period|same thing|the same|those|them|that one|these ones)\b/;
+const CONTINUATION_CUE_RE = /^(?:and|also|plus|now|then|so|ok(?:ay)?|but|what about|how about|same|only|just|instead|break (?:it|that|this) down|split (?:it|that|this))\b|\b(?:instead|same period|same thing|the same|those|them|that one|these ones|the two|both of them)\b/;
 
 /** True when the wording itself says "this continues the previous question". Normalized text only. */
 function hasContinuationCue(question) {
