@@ -2,16 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { CalendarRange, RotateCcw } from "lucide-react";
 import Button from "./Button";
 import DateInput from "./DateInput";
-import { formatRangeLabel } from "../../lib/mockDateRange";
+import { formatRangeLabel } from "../../lib/dateRange";
 
-// A real, controlled date-range filter. It only has sample data to
-// filter (see MockDataBanner on every page that uses this — no
-// analytics API exists yet), but the control itself is fully
-// functional: changing the dates updates state, which the page
-// re-derives its displayed figures from, and Reset restores the
-// default range. (There used to be an FY dropdown here too, but it
-// never actually filtered anything - removed rather than wired up,
-// since the date-range picker already covers that job.)
+// A controlled date-range filter: changing the dates updates state, which
+// the page re-derives its displayed figures from, and Reset restores the
+// default range.
 export default function FilterBar({ range, onRangeChange, onReset }) {
   const [open, setOpen] = useState(false);
   const [draftFrom, setDraftFrom] = useState(range.from);

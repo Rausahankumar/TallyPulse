@@ -11,6 +11,7 @@ import AnalyticsNotice from "../components/ui/AnalyticsNotice";
 import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { formatCompactCurrency, formatCurrency, formatNumber, formatRelativeTime } from "../lib/format";
+import { buildReportsLink, calendarDatesOf, formatIsoRange } from "../lib/period";
 import {
   getSalesSummary,
   getPurchaseSummary,
@@ -111,6 +112,14 @@ function kpiHint(envelope, seeScreenLabel) {
   return envelope.message || null;
 }
 
+// {to, label} for a KPI's report link, or undefined when the envelope carries no usable period (the card then
+// stays a plain, non-clickable card).
+function reportLink(tab, reportName, envelope) {
+  const dates = calendarDatesOf(envelope?.data?.period);
+  if (!dates) return undefined;
+  return { to: buildReportsLink(tab, dates), label: `Open ${reportName} for ${formatIsoRange(dates.from, dates.to)}` };
+}
+
 export default function Dashboard() {
   const { activeCompany } = useCompany();
   const { data, loading, error } = useAsync(loadDashboard, [activeCompany?.tenantId]);
@@ -122,6 +131,11 @@ export default function Dashboard() {
   const customerCountsReal = data && REAL_STATES.has(data.customerCounts.state);
   const comparisonReal =
     data && REAL_STATES.has(data.salesComparison.state) && REAL_STATES.has(data.purchaseComparison.state);
+
+  // The KPI's own period, exactly as the backend resolved it for the figure shown (summary.data.period) - the
+  // one source of truth. Clicking a KPI opens that report for the SAME days; nothing is recalculated here.
+  const salesLink = reportLink("sales", "Sales Report", data?.salesSummary);
+  const purchaseLink = reportLink("purchase", "Purchase Report", data?.purchaseSummary);
 
   return (
     <div>
@@ -147,6 +161,8 @@ export default function Dashboard() {
               hint={salesReal ? null : kpiHint(data.salesSummary, "Sales Analytics")}
               icon={DollarSign}
               tone="brand"
+              to={salesLink?.to}
+              linkLabel={salesLink?.label}
             />
             <KpiCard
               label="Total Purchases"
@@ -155,6 +171,8 @@ export default function Dashboard() {
               hint={purchaseReal ? null : kpiHint(data.purchaseSummary, "Purchase Analytics")}
               icon={ShoppingBag}
               tone="violet"
+              to={purchaseLink?.to}
+              linkLabel={purchaseLink?.label}
             />
             <KpiCard
               label="Avg Invoice Value"

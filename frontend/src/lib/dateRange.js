@@ -1,23 +1,17 @@
-// --------------------------------------------------
-// Makes the date-range filter actually do something against the mock
-// data architecture (no analytics API exists yet — see MockDataBanner
-// — so there's nothing real to query). The monthly mock series (Apr
-// through Sep) are anchored to a fixed reference year so a selected
-// {from, to} range can genuinely include/exclude points and the
-// screen visibly changes — this is a real, working filter over
-// sample data, not a decorative one.
-// --------------------------------------------------
-export const MOCK_SERIES_YEAR = 2026;
-const MONTH_INDEX = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+// Date helpers for the date-range filter used by the analytics, reports and sync screens.
+// All dates are LOCAL calendar dates; nothing here talks to the backend.
 
-export function monthLabelToDate(label) {
-  return new Date(MOCK_SERIES_YEAR, MONTH_INDEX[label] ?? 0, 1);
+// The default range of every screen with a date filter: the current Indian financial year to date
+// (1 April of the running FY through today).
+function currentFinancialYearToDate(now = new Date()) {
+  const startYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    from: new Date(startYear, 3, 1),
+    to: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+  };
 }
 
-export const DEFAULT_RANGE = {
-  from: new Date(MOCK_SERIES_YEAR, 3, 1), // 01 Apr
-  to: new Date(MOCK_SERIES_YEAR, 8, 17), // 17 Sep — matches "today" used elsewhere in the mock data
-};
+export const DEFAULT_RANGE = currentFinancialYearToDate();
 
 // Builds the yyyy-mm-dd string from LOCAL date parts. `toISOString()`
 // converts to UTC first, which silently shifts the displayed date back
@@ -71,22 +65,4 @@ export function parseTypedDate(text) {
   const date = new Date(year, monthIndex, day);
   if (date.getMonth() !== monthIndex || date.getDate() !== day) return null; // rejects overflow, e.g. 31-Feb
   return date;
-}
-
-// Keeps only the monthly points whose month overlaps [from, to].
-export function filterMonthlySeries(series, range, labelKey = "label") {
-  if (!range) return series;
-  const { from, to } = range;
-  return series.filter((point) => {
-    const monthStart = monthLabelToDate(point[labelKey]);
-    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
-    return monthEnd >= from && monthStart <= to;
-  });
-}
-
-// Recomputes a simple sum-based KPI total from a filtered series so
-// the headline numbers move together with the chart instead of
-// staying frozen while the chart below them changes.
-export function sumBy(series, key) {
-  return series.reduce((total, point) => total + (Number(point[key]) || 0), 0);
 }

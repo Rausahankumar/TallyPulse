@@ -9,7 +9,7 @@ import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { usePersistedRange } from "../lib/usePersistedRange";
 import { formatCurrency, formatNumber } from "../lib/format";
-import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";
+import { DEFAULT_RANGE, toDateInputValue } from "../lib/dateRange";
 import { getTopCustomers, getCustomerCounts } from "../api/analytics";
 
 const REAL_STATES = new Set(["valid_data", "stale_data"]);

@@ -4,7 +4,7 @@ import remarkBreaks from "remark-breaks";
 import { separateListTrailers } from "../../lib/markdownText";
 
 // Pure, local, deterministic Markdown -> React rendering for AI answer text (both the plain-text
-// deterministic query-engine answers and Claude's own Markdown-formatted legacy-chat answers share this
+// deterministic query-engine answers (line-oriented text, clarifications, refusals) share this
 // one renderer). No network call, no AI call, no external service - this is a presentation-only transform
 // of text the backend already returned; it never changes, re-requests or re-derives that text.
 //

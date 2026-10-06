@@ -26,18 +26,17 @@ export async function deleteChat(chatId) {
 }
 
 // POST /api/chat/message (new chat) or /api/chat/:chatId/message
-// (continue). The backend calls the real Anthropic API and the
-// deterministic Analytics Engine tools. If ANTHROPIC_API_KEY isn't
-// configured on the server, this comes back as HTTP 503 — callers
-// should treat that as an expected, distinct "AI not available" state,
-// not a generic error.
+// (continue). The backend has Claude turn the question into a structured
+// query plan, then computes the answer with the deterministic query engine.
+// A failure to plan is answered with an honest message (HTTP 200), so the
+// caller only sees an ApiError for transport and server errors.
 //
 // Chat requests get their own, longer timeout (per-call override, not a
-// change to `client`'s shared default): a turn needing 2-3 sequential
-// Claude tool calls can legitimately take longer than the 20s default
-// that exists for Tally/network protection on every other endpoint. See
-// client.js's own comment for why that default exists and stays
-// untouched for every other call.
+// change to `client`'s shared default): planning plus a large aggregation
+// can legitimately take longer than the 20s default that exists for
+// Tally/network protection on every other endpoint. See client.js's own
+// comment for why that default exists and stays untouched for every other
+// call.
 const CHAT_TIMEOUT_MS = 60000;
 
 // `signal` (AbortController): aborting it cancels the HTTP request; the backend sees the disconnect and

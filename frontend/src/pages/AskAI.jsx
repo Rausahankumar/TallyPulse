@@ -5,19 +5,17 @@ import ChatSidebarList from "../components/chat/ChatSidebarList";
 import ChatBubble from "../components/chat/ChatBubble";
 import ChatInput from "../components/chat/ChatInput";
 import SuggestedQuestions from "../components/chat/SuggestedQuestions";
-import AiNotConnectedNotice from "../components/chat/AiNotConnectedNotice";
-import DemoInsightCard from "../components/chat/DemoInsightCard";
 import Button from "../components/ui/Button";
 import { useCompany } from "../context/useCompany";
 import { listChats, getChat, sendChatMessage, deleteChat, renameChat } from "../api/chat";
 import { ApiError } from "../api/client";
-import { MOCK_AI_DEMO_TURN, MOCK_SUGGESTED_QUESTIONS } from "../mock/mockData";
 
-// Every piece of local turn state below is one of three real kinds:
-// a persisted {role, text, ...} message straight from the backend's
-// Chat model, a "system" notice (AI not connected — 501), or a "demo"
-// turn the user explicitly asked to preview. Nothing is presented as
-// a real AI answer unless it actually came back from the backend.
+// Prompt chips shown under the conversation; each one is a question the query engine can answer.
+const SUGGESTED_QUESTIONS = ["Top customers", "Purchase summary", "Sales this month", "Product growth"];
+
+// Local turn state is one of: a message ({role, text, ...} as stored in the
+// backend's Chat model), a "stopped" note after the user pressed Stop, or an
+// "error" with a Retry. Answers only ever come back from the backend.
 export default function AskAI() {
   const { activeCompany } = useCompany();
   const [chats, setChats] = useState([]);
@@ -120,18 +118,14 @@ export default function AskAI() {
         }
         return;
       }
-      if (err instanceof ApiError && (err.status === 503 || err.status === 501)) {
-        setTurns((t) => [...t, { kind: "not-connected", message: err.message }]);
-      } else {
-        // retryText carries the original message forward so "Retry"
-        // resends the exact same question as a new, explicit send — it
-        // never auto-retries and never re-fires the request that just
-        // failed, so one timeout can't silently turn into two requests.
-        setTurns((t) => [
-          ...t,
-          { kind: "error", text: err instanceof ApiError ? err.message : "Something went wrong.", retryText: text },
-        ]);
-      }
+      // retryText carries the original message forward so "Retry"
+      // resends the exact same question as a new, explicit send — it
+      // never auto-retries and never re-fires the request that just
+      // failed, so one timeout can't silently turn into two requests.
+      setTurns((t) => [
+        ...t,
+        { kind: "error", text: err instanceof ApiError ? err.message : "Something went wrong.", retryText: text },
+      ]);
     } finally {
       if (inflight.current === req) {
         inflight.current = null;
@@ -141,10 +135,6 @@ export default function AskAI() {
   }
 
   const activeTitle = (activeChatId && chats.find((c) => c._id === activeChatId)?.title) || "New chat";
-
-  function handleShowDemo() {
-    setTurns((t) => [...t, { kind: "demo", turn: MOCK_AI_DEMO_TURN }]);
-  }
 
   return (
     <div className="flex h-[calc(100vh-8.5rem)] flex-col lg:h-[calc(100vh-7rem)]">
@@ -199,9 +189,6 @@ export default function AskAI() {
 
             {turns.map((turn, i) => {
               if (turn.kind === "message") return <ChatBubble key={i} message={turn.message} />;
-              if (turn.kind === "not-connected")
-                return <AiNotConnectedNotice key={i} message={turn.message} onShowDemo={handleShowDemo} />;
-              if (turn.kind === "demo") return <DemoInsightCard key={i} turn={turn.turn} onFollowUp={handleSend} />;
               if (turn.kind === "stopped")
                 return (
                   <p key={i} role="status" className="text-center text-[12.5px] text-ink-500">
@@ -246,7 +233,7 @@ export default function AskAI() {
             <div ref={bottomRef} />
           </div>
 
-          <SuggestedQuestions questions={MOCK_SUGGESTED_QUESTIONS} onPick={handleSend} />
+          <SuggestedQuestions questions={SUGGESTED_QUESTIONS} onPick={handleSend} />
           <ChatInput onSend={handleSend} onStop={() => cancelInflight("user")} sending={sending} />
         </div>
       </div>

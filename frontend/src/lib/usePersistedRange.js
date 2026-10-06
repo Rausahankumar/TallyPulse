@@ -34,8 +34,16 @@ function writeStored(storageKey, range) {
 
 // Returns {range, setRange, reset} - same shape as a useState call for
 // `range`, so call sites barely change, but the setter also persists.
-export function usePersistedRange(storageKey, defaultRange) {
-  const [range, setRangeState] = useState(() => readStored(storageKey) || defaultRange);
+// `override` (optional, e.g. a Dashboard deep link) wins over the stored range and is stored itself, so a refresh
+// keeps what is on screen exactly like a range the user picked. Writing here is idempotent.
+export function usePersistedRange(storageKey, defaultRange, override = null) {
+  const [range, setRangeState] = useState(() => {
+    if (override) {
+      writeStored(storageKey, override);
+      return override;
+    }
+    return readStored(storageKey) || defaultRange;
+  });
 
   function setRange(next) {
     setRangeState((current) => {

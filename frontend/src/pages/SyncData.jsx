@@ -16,7 +16,7 @@ import { usePolling } from "../lib/usePolling";
 import { useTallyConnectionTest } from "../lib/useTallyConnectionTest";
 import { useCompany } from "../context/useCompany";
 import { formatCurrency } from "../lib/format";
-import { toDateInputValue, parseDateInputValue, formatRangeLabel } from "../lib/mockDateRange";
+import { toDateInputValue, parseDateInputValue, formatRangeLabel } from "../lib/dateRange";
 
 // Three real backend calls power this page now:
 //   - GET /api/odbc/company  -> "Test Tally Connection"

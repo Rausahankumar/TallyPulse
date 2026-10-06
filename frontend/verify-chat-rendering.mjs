@@ -113,7 +113,7 @@ try {
   check("...and an indented continuation of a list item is still a continuation", separateListTrailers("- a\n  more") === "- a\n  more");
   check("no raw Markdown syntax visible", !RAW_MD.test(visible(h)), visible(h));
 
-  section("2. Markdown/table answer (Claude-style legacy answer)");
+  section("2. Markdown/table answer");
   h = md(CLAUDE_TABLE);
   check("a real <table> with header and body", /<table/.test(h) && /<thead/.test(h) && /<tbody/.test(h) && (h.match(/<tr/g) || []).length === 3, h);
   check("wrapped in a horizontal-scroll container (small screens)", /overflow-x-auto[^>]*><table/.test(h), h);

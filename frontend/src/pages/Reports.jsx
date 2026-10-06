@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Download, PlayCircle, PackageSearch } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import FilterBar from "../components/ui/FilterBar";
@@ -14,7 +15,8 @@ import { useCompany } from "../context/useCompany";
 import { usePersistedRange } from "../lib/usePersistedRange";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { formatCompactCurrency, formatCurrency, formatNumber } from "../lib/format";
-import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";
+import { DEFAULT_RANGE, parseDateInputValue, toDateInputValue } from "../lib/dateRange";
+import { formatIsoRange, readReportsDeepLink } from "../lib/period";
 import { getSalesSummary, getPurchaseSummary } from "../api/analytics";
 import { listSalesVouchers, listPurchaseVouchers } from "../api/vouchers";
 import {
@@ -57,14 +59,35 @@ const REAL_STATES = new Set(["valid_data", "stale_data"]);
 // not-available state rather than a fabricated number.
 export default function Reports() {
   const { activeCompany } = useCompany();
-  const [reportType, setReportType] = useState("sales");
-  const { range, setRange, reset: resetRange } = usePersistedRange("tp:range:reports", DEFAULT_RANGE);
+  // Dashboard KPI deep link (/reports?tab=sales|purchase&from=YYYY-MM-DD&to=YYYY-MM-DD): read ONCE, strictly
+  // validated (anything unexpected -> null = the normal screen). Only tab and dates travel in the URL; the
+  // company/tenant always comes from the authenticated session on the server, never from here.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [link] = useState(() => readReportsDeepLink(searchParams));
+  const [reportType, setReportType] = useState(link ? link.tab : "sales");
+  const { range, setRange, reset: resetRange } = usePersistedRange(
+    "tp:range:reports",
+    DEFAULT_RANGE,
+    link ? { from: parseDateInputValue(link.from), to: parseDateInputValue(link.to) } : null
+  );
 
   // The exact filters last used to GENERATE the currently-shown report —
   // deliberately separate from `range`/`reportType` so changing the date
   // picker or switching tabs doesn't silently regenerate anything; only
   // clicking Generate does (see Phase 4's required flow).
-  const [generated, setGenerated] = useState(null);
+  const [generated, setGenerated] = useState(link ? { type: link.tab, from: link.from, to: link.to } : null);
+
+  // The link has been consumed: drop it from the address bar so later manual changes and a refresh follow the
+  // normal Reports behaviour (the range is stored like any picked range).
+  const linkConsumed = useRef(false);
+  useEffect(() => {
+    if (link && !linkConsumed.current) {
+      linkConsumed.current = true;
+      setSearchParams({}, { replace: true });
+    }
+  }, [link, setSearchParams]);
+  const fromDashboard =
+    link && link.source === "dashboard" && generated && generated.type === link.tab && generated.from === link.from && generated.to === link.to;
 
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(25);
@@ -177,6 +200,13 @@ export default function Reports() {
       <PageHeader title="Reports" subtitle="Generate real reports from your company's synced Tally data." />
       <Tabs tabs={TABS} active={reportType} onChange={handleTabChange} />
 
+      {fromDashboard && (
+        <p role="status" className="mt-3 rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-[13px] text-ink-700">
+          Opened from the Dashboard's <strong className="font-semibold text-ink-900">{link.tab === "sales" ? "Total Sales" : "Total Purchases"}</strong>: the
+          same period, <strong className="font-semibold text-ink-900">{formatIsoRange(link.from, link.to)}</strong>.
+        </p>
+      )}
+
       {reportType === "stock" ? (
         <Card className="mt-4">
           <EmptyState
@@ -265,7 +295,7 @@ export default function Reports() {
                   <Card>
                     <CardHeader
                       title={generated.type === "sales" ? "Sales Vouchers" : "Purchase Vouchers"}
-                      subtitle={`Real data, scoped to ${new Date(generated.from).toLocaleDateString("en-GB")} – ${new Date(generated.to).toLocaleDateString("en-GB")}`}
+                      subtitle={`Real data, scoped to ${formatIsoRange(generated.from, generated.to)}`}
                       action={
                         <Button variant="secondary" size="sm" icon={Download} loading={exporting} onClick={handleExport}>
                           Export CSV
@@ -291,7 +321,7 @@ export default function Reports() {
                 <Card>
                   <CardHeader
                     title={generated.type === "product" ? "Product Report" : "Customer Report"}
-                    subtitle={`Real data, scoped to ${new Date(generated.from).toLocaleDateString("en-GB")} – ${new Date(generated.to).toLocaleDateString("en-GB")}`}
+                    subtitle={`Real data, scoped to ${formatIsoRange(generated.from, generated.to)}`}
                     action={
                       <Button variant="secondary" size="sm" icon={Download} loading={exporting} onClick={handleExport}>
                         Export CSV
