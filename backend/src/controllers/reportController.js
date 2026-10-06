@@ -4,7 +4,7 @@ const reportAnalytics = require("../services/analytics/reportAnalytics");
 const { buildVoucherMatchStage } = require("../services/analytics/analyticsScope");
 const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
-const { resolvePeriod } = require("../services/ai/tools");
+const dateRanges = require("../services/analytics/dateRanges");
 
 // --------------------------------------------------
 // Reports module. Every JSON endpoint below returns the same trust
@@ -36,7 +36,7 @@ function parsePeriodFromQuery(query, referenceDate) {
     throw err;
   }
   try {
-    return resolvePeriod({ period, from: query.from, to: query.to }, referenceDate);
+    return dateRanges.resolveRequestPeriod({ period, from: query.from, to: query.to }, referenceDate);
   } catch (error) {
     error.status = error.status || 400;
     throw error;

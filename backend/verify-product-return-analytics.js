@@ -17,7 +17,7 @@
  * across lines.
  *
  * Sections: SEMANTICS (sign/aggregation on synthetic data matching the real
- * shape), ROUTER, ENGINE (independent oracle, never the implementation's
+ * shape), ENGINE (independent oracle, never the implementation's
  * own aggregation), SECURITY, CACHE, and a real WE FOUR/Nirmal read-only
  * validation.
  *
@@ -29,8 +29,6 @@ const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
-const { routeQuestion } = require("./src/services/query/localRouter");
-const { createEntityResolver } = require("./src/services/query/entityResolver");
 const { executeQuery } = require("./src/services/query/execute");
 const { createAnswerCache } = require("./src/services/query/answerCache");
 
@@ -49,10 +47,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const T1 = "TEST-TENANT-product-return";
 const T2 = "TEST-TENANT-product-return-other";
 const REF = new Date(2026, 8, 20, 12, 0, 0); // 20 Sep 2026
-const PRODUCT_NAMES = ["Widget A", "Widget B", "Gadget C"];
-const resolver = createEntityResolver({ tenantId: "TEST-TENANT", sources: { customer: async () => [], supplier: async () => [], product: async () => PRODUCT_NAMES, productGroup: async () => [] } });
-const route = (q) => routeQuestion(q, { resolveEntity: resolver, referenceDate: REF });
-
 const utc = (s) => new Date(`${s}T00:00:00.000Z`);
 let seq = 0;
 // Mirrors the real, confirmed shape: sales_return line amounts are <=0, purchase_return line
@@ -112,41 +106,6 @@ async function cleanup() {
     check("cancelled exclusion: Alpha's cancelled 888-unit line never appears", res.ok && !res.rows.some((r) => r.values.returnQuantity >= 888));
     check("value_adjustment exclusion: the 999-unit value_adjustment line never appears", res.ok && !res.rows.some((r) => r.values.returnQuantity >= 999));
     check("product aggregation: exactly Widget A (20/1000) and Widget B (4/200), grouped correctly", res.ok && same(res.rows.map((r) => [r.key.product, r.values.returnQuantity, r.values.returnLineAmount]), [["Widget A", 20, 1000], ["Widget B", 4, 200]]), JSON.stringify(res.rows || res.errors));
-
-    // ============================================================ B. ROUTER
-    section("B. ROUTER");
-    const plan = async (q) => {
-      const r = await route(q);
-      return r.status === "supported" ? r.plan : `${r.status}/${r.code}`;
-    };
-    check("sales product return ranking (passive voice)", same(await plan("Which products had the highest sales returns?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }] }));
-    check("purchase product return ranking (explicit 'purchase return')", same(await plan("Top 10 products by purchase return"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }], limit: 10 }));
-    check("top N respected (5)", (await plan("Top 5 products by sales returns")).limit === 5);
-    {
-      const p = await plan("Which products had the highest sales returns?");
-      check("no-N default -> plan.limit unset (validator applies the existing default)", p.limit === undefined);
-    }
-    check("named product + quantity wording -> returnQuantity, filtered, no groupBy", same(await plan("How many units of Widget A were returned?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnQuantity"], filters: [{ dim: "product", op: "eq_ci", value: "Widget A" }] }));
-    check("named product + value wording -> returnLineAmount", same(await plan("How much value of Widget A was returned?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnLineAmount"], filters: [{ dim: "product", op: "eq_ci", value: "Widget A" }] }));
-    check("active voice ('did we return ... to suppliers') -> purchase_return, named product", same(await plan("How many units of Gadget C did we return to suppliers?"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnQuantity"], filters: [{ dim: "product", op: "eq_ci", value: "Gadget C" }] }));
-    check("date filtering: explicit period used, not defaulted", same((await plan("Top 5 products by sales returns this month")).period, { kind: "current_month" }));
-    {
-      const r = await route("How many units of Unknown Widget were returned?");
-      check("unresolved product name -> entity_not_resolved, never guessed", r.status === "needs_planner" && r.code === "entity_not_resolved", `${r.status}/${r.code}`);
-    }
-    {
-      const r = await route("Which products with returns");
-      check("genuinely ambiguous direction (no sales/purchase/customer/supplier/passive/active signal) -> refused, not guessed", r.status === "unsupported", `${r.status}/${r.code}`);
-    }
-    for (const [q, wantCombo] of [
-      ["How many times was Widget A returned this month?", null], // "how many" + no unit word -> product count refused
-      ["Top 5 products by sales returns this month vs last month", "unsupported_combination"], // ranking + comparison
-      ["Show sales product returns month by month", "unsupported_combination"], // product + trend
-      ["Top 5 products by sales returns by customer this month", "unsupported_combination"], // product + party breakdown
-    ]) {
-      const r = await route(q);
-      check(`unsupported combination: "${q}"`, r.status === "unsupported", `${r.status}/${r.code}`);
-    }
 
     // ============================================================ C. ENGINE
     section("C. ENGINE");

@@ -40,10 +40,9 @@ function parseDateBound(value, label) {
   return parsed;
 }
 
-// Same regex-escaping discipline already established for party-name
-// matching in the AI customer-lookup tool (get_customer_sales) - real
-// voucher/party text, never a pattern, so it must never be interpreted
-// as one.
+// Same regex-escaping discipline as the query engine's name matching
+// (query/compile.js) - real voucher/party text, never a pattern, so it
+// must never be interpreted as one.
 function escapeRegex(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -161,21 +161,6 @@ function sameMonthLastYearToDate(referenceDate = new Date()) {
 }
 
 /**
- * The full calendar month, same month, one year earlier. Used when the
- * comparison should be "the whole of that month" rather than MTD (e.g.
- * comparing two already-complete months).
- */
-function sameFullMonthLastYear(referenceDate = new Date()) {
-  const anchor = shiftYears(referenceDate, -1);
-  return {
-    from: startOfMonth(anchor),
-    to: endOfMonth(anchor),
-    label: "Same month last year (complete)",
-    isPartial: false,
-  };
-}
-
-/**
  * The last N complete calendar months ending in referenceDate's month
  * (inclusive) - e.g. n=6 with referenceDate in December returns
  * [1 Jul, 31 Dec]. Used as the default window for trend charts when the
@@ -206,6 +191,29 @@ function customRange(fromInput, toInput) {
   return { from, to, label: "Custom range", isPartial: false };
 }
 
+// ---------------------------------------------------------------- REST request periods
+// What `period=current_month|previous_month|custom` and `comparisonType=vs_previous_month|vs_same_month_last_year`
+// mean for the REST analytics and report endpoints (analyticsController, reportController). Relative periods are
+// anchored to the tenant's reference date: there is no wall-clock default.
+const hasDate = (d) => d instanceof Date && !Number.isNaN(d.getTime());
+
+function resolveRequestPeriod({ period, from, to }, referenceDate) {
+  if (period === "custom") {
+    if (!from || !to) throw new Error('period "custom" requires both from and to.');
+    return customRange(from, to);
+  }
+  if (!hasDate(referenceDate)) throw new Error("A relative period needs the tenant reference date.");
+  return period === "previous_month" ? previousFullMonth(referenceDate) : currentMonthToDate(referenceDate);
+}
+
+function resolveRequestComparison(comparisonType, referenceDate) {
+  if (!hasDate(referenceDate)) throw new Error("A comparison needs the tenant reference date.");
+  if (comparisonType === "vs_same_month_last_year") {
+    return { current: currentMonthToDate(referenceDate), previous: sameMonthLastYearToDate(referenceDate) };
+  }
+  return { current: currentMonthToDate(referenceDate), previous: previousMonthSameRange(referenceDate) };
+}
+
 module.exports = {
   startOfDay,
   endOfDay,
@@ -219,7 +227,8 @@ module.exports = {
   previousFullMonth,
   previousMonthSameRange,
   sameMonthLastYearToDate,
-  sameFullMonthLastYear,
   lastNMonthsEnding,
   customRange,
+  resolveRequestPeriod,
+  resolveRequestComparison,
 };

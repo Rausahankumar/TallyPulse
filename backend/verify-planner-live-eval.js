@@ -3,7 +3,7 @@
 /**
  * Phase 1G - CONTROLLED LIVE PLANNER EVALUATION (manual; makes real Anthropic calls).
  *
- * For each representative Sales/Purchase question the deterministic router DEFERS to the planner,
+ * For each representative Sales/Purchase question (the planner interprets every question; there is no router),
  * this script:
  *   1. asks the real Claude planner (exactly one call per question, no repair),
  *   2. compares Claude's plan SEMANTICALLY against an independently written expectation,
@@ -32,9 +32,7 @@ const connectDB = require("./src/config/db");
 const Company = require("./src/models/company");
 const Sale = require("./src/models/sales.model");
 const Purchase = require("./src/models/purchase.model");
-const { routeAndPlan } = require("./src/services/query/planner");
-const { routeQuestion } = require("./src/services/query/localRouter");
-const { createAnthropicPlannerClient, SKIP_ROUTER_CODES } = require("./src/services/query/planner");
+const { planQuestion, createAnthropicPlannerClient } = require("./src/services/query/planner");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
 const { createAnswerCache } = require("./src/services/query/answerCache");
 const { getTenantVersion } = require("./src/services/query/dataVersion");
@@ -150,7 +148,7 @@ function comparePlan(plan, e) {
 }
 
 // =========================================================================================
-// The questions: every one is deferred by the deterministic router (verified before any call).
+// The questions: each is sent to the planner exactly once.
 // =========================================================================================
 
 const S = { AUG: { kind: "custom", from: "2025-08-01", to: "2025-08-31" }, JUL: { kind: "custom", from: "2025-07-01", to: "2025-07-31" }, SEP: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, AUG_: null };
@@ -336,7 +334,7 @@ function cmpChange(res, cur, prev, metric, key, pred) {
     const t = we.tenantId;
     const resolver = createEntityResolver({ tenantId: t });
 
-    // A customer with a name that passes the router's safety gate and is unique after normalisation.
+    // A customer with a name that passes the planner's safety gate and is unique after normalisation.
     const parties = await Sale.aggregate([{ $match: { tenantId: t, voucherStatus: "active" } }, { $group: { _id: "$header.partyName", n: { $sum: 1 } } }, { $sort: { n: -1 } }, { $limit: 40 }]);
     const topCustomer = parties.map((p) => p._id).find((n) => typeof n === "string" && /^[A-Za-z0-9][A-Za-z0-9 &.-]*$/.test(n) && n.length >= 5 && !/\b(gst|tax|cash|bank|ledger|order|return|region|state)\b/i.test(n));
     if (!topCustomer) throw new Error("no suitable customer name");
@@ -345,14 +343,10 @@ function cmpChange(res, cur, prev, metric, key, pred) {
     const run = (plan) => cache.run(plan, { tenantId: t }, { execute: executeQuery, getVersion: getTenantVersion });
     console.log(`Tenant: WE FOUR | timezone: ${TZ} | customer for Q12: "${topCustomer}" | mode: ${DRY ? "DRY (no Anthropic calls)" : "LIVE"}`);
 
-    // ---------- harness self-check (no credits): router defers each question; golden plans pass comparator and oracle
+    // ---------- harness self-check (no credits): golden plans pass comparator and oracle
     console.log("\n--- harness self-check ---");
     let harnessBad = 0;
     for (const c of cases) {
-      const route = await routeQuestion(c.q, { resolveEntity: resolver });
-      const deferred = route.status === "needs_planner" && !SKIP_ROUTER_CODES.has(route.code);
-      c.routerCode = route.code || route.status;
-      if (!deferred) { harnessBad += 1; console.log(`  HARNESS  ${c.id} router did not defer to planner: ${route.status}/${route.code}`); continue; }
       if (c.expectDecline) continue;
       const cmp = comparePlan(c.golden, c.expect);
       if (cmp.length) { harnessBad += 1; console.log(`  HARNESS  ${c.id} golden plan fails its own expectation: ${JSON.stringify(cmp)}`); continue; }
@@ -362,7 +356,7 @@ function cmpChange(res, cur, prev, metric, key, pred) {
         const probs = await c.oracle(res);
         if (probs.length) { harnessBad += 1; console.log(`  HARNESS  ${c.id} golden answer != oracle: ${probs.slice(0, 3).join(" | ")}`); continue; }
       }
-      console.log(`  ok       ${c.id} router=${route.code} golden plan matches expectation${c.oracle ? " and oracle" : " (no oracle: relative period)"}`);
+      console.log(`  ok       ${c.id} golden plan matches expectation${c.oracle ? " and oracle" : " (no oracle: relative period)"}`);
     }
     report.harnessProblems = harnessBad;
     if (harnessBad) { console.log(`\nHarness self-check found ${harnessBad} problem(s); refusing to spend credits.`); process.exitCode = 2; return; }
@@ -375,11 +369,11 @@ function cmpChange(res, cur, prev, metric, key, pred) {
     const failures = [];
 
     for (const c of cases) {
-      const rec = { id: c.id, question: c.q, area: c.area, routerCode: c.routerCode, outcome: null, plannerStatus: null, failures: [], usage: null, ms: 0 };
+      const rec = { id: c.id, question: c.q, area: c.area, outcome: null, plannerStatus: null, failures: [], usage: null, ms: 0 };
       const t0 = Date.now();
       let out;
       try {
-        out = await routeAndPlan(c.q, { resolveEntity: resolver, claudeClient: client });
+        out = await planQuestion(c.q, { resolveEntity: resolver, claudeClient: client });
       } catch (e) {
         rec.outcome = "exception";
         rec.failures.push({ category: "harness", detail: `${e.name}: ${e.message}` });
@@ -387,7 +381,7 @@ function cmpChange(res, cur, prev, metric, key, pred) {
         continue;
       }
       rec.ms = Date.now() - t0;
-      const f = out.final;
+      const f = out;
       rec.plannerStatus = `${f.status}${f.code ? "/" + f.code : ""}`;
       rec.usage = f.usage || null;
       if (f.usage) for (const k of ["calls", "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]) tot[k] += f.usage[k] || 0;

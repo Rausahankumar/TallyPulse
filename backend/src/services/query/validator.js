@@ -3,7 +3,7 @@
 // --------------------------------------------------
 // Sales/Purchase Query DSL - LAYER 2: semantic validator (Phase 1B).
 //
-// Input: a candidate plan (from Claude, the router, or a test). Output: a
+// Input: a candidate plan (from Claude or a test). Output: a
 // VALIDATED, NORMALIZED plan with periods already resolved to concrete
 // dates - or a structured refusal. Nothing reaches the compiler/MongoDB
 // without passing through here: the compiler refuses any object that was
@@ -34,7 +34,6 @@ function isValidatedPlan(value) {
   return value !== null && typeof value === "object" && VALIDATED.has(value);
 }
 
-const METRIC_SUFFIXES = Object.keys(CATALOG.compare.derivedSuffixes);
 
 const NEW_PARTY_NOTE = {
   code: "new_party_by_ledger_created_date",

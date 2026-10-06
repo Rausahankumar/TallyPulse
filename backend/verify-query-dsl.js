@@ -496,29 +496,38 @@ section("9. Planner-facing JSON Schema");
 }
 
 // ------------------------------------------------------------------
-section("10. Phase 1A guarantee: nothing in production imports the new modules");
+section("10. Phase 1A guarantee: nothing outside services/query depends on the query catalog/schema");
 // ------------------------------------------------------------------
 {
+  // Judged on real require() targets (resolved paths), never on comment text.
   const root = path.join(__dirname, "src");
+  const queryDir = path.join(root, "services", "query");
+  // The only entry points other layers may use: the cache-invalidation plugin (models) and the chat entry point (controller).
+  const allowed = new Set(["dataVersion.js", "queryChat.js"].map((n) => path.join(queryDir, n)));
   const offenders = [];
+  const check1 = (full) => {
+    const text = fs.readFileSync(full, "utf8");
+    for (const m of text.matchAll(/require(s*["'](.[^"']+)["']s*)/g)) {
+      const target = path.resolve(path.dirname(full), m[1]);
+      const file = target.endsWith(".js") ? target : target + ".js";
+      const insideQuery = file.startsWith(queryDir + path.sep);
+      if (insideQuery && !allowed.has(file)) offenders.push(`${path.relative(__dirname, full)} -> ${path.relative(root, file)}`);
+    }
+  };
   (function walk(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (full === path.join(root, "services", "query")) continue;
+        if (full === queryDir) continue;
         walk(full);
-      } else if (entry.name.endsWith(".js")) {
-        const text = fs.readFileSync(full, "utf8");
-        // Phase 1E: the data models may reference ONLY services/query/dataVersion (the cache-invalidation plugin); Phase 1G: the chat controller may reference ONLY services/query/queryChat (the chat entry point).
-        if (/services\/query|semanticCatalog|queryPlan\.schema/.test(text.replace(/\\/g, "/").replace(/services\/query\/(?:dataVersion|queryChat)/g, ""))) offenders.push(path.relative(__dirname, full));
-      }
+      } else if (entry.name.endsWith(".js")) check1(full);
     }
   })(root);
   for (const entry of ["server.js", "app.js", "index.js"]) {
     const f = path.join(__dirname, entry);
-    if (fs.existsSync(f) && /services\/query|semanticCatalog|queryPlan\.schema/.test(fs.readFileSync(f, "utf8"))) offenders.push(entry);
+    if (fs.existsSync(f)) check1(f);
   }
-  check("no production file requires the query catalog/schema (zero behavior change)", offenders.length === 0, offenders.join(","));
+  check("no production file outside services/query requires anything in it except dataVersion and queryChat", offenders.length === 0, offenders.join(","));
 }
 
 // ------------------------------------------------------------------

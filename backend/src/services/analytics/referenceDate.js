@@ -14,10 +14,9 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 // "today" and are never inside a relative period; they are disclosed, and
 // an explicit date range that names those dates still returns them.
 //
-// ONE rule, ONE place: every AI layer (router validation, planner
-// validation, coverage, query engine, legacy chat prompt and tools,
-// formatter notes, telemetry) takes the reference date from
-// getTenantDateContext(), computed once per chat turn.
+// ONE rule, ONE place: every AI layer (planner validation,
+// coverage, query engine, formatter notes, telemetry) takes the
+// reference date from getTenantDateContext(), computed once per chat turn.
 //
 // A tenant whose data lags the clock is no longer hidden by moving "today"
 // back to its last voucher: the coverage window says honestly that the

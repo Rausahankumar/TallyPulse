@@ -1,17 +1,17 @@
 /**
  * Ask AI chat management + Stop (cancellation), at the real controller level.
  *
- * - STOP: a client disconnect (the browser's AbortController) during the engine, during a legacy Claude call,
- *   or right after a legacy tool round ends the turn: no planner call, no legacy fallback, no further Claude
- *   round, no save, telemetry clientAborted=true / httpStatus 499. The in-flight Claude request receives the
- *   abort signal. A real SDK planner client pointed at a local stub (never api.anthropic.com) is aborted
- *   mid-request and makes exactly one request (no retry).
+ * - STOP: a client disconnect (the browser's AbortController) before the planner, during the in-flight planner call,
+ *   or right after the planner answered ends the turn: no further planner call, no save, telemetry
+ *   clientAborted=true / httpStatus 499. The in-flight planner request receives the abort signal. A real SDK
+ *   planner client pointed at a local stub (never api.anthropic.com) is aborted mid-request and makes exactly
+ *   one request (no retry).
  * - RENAME / DELETE / LIST / GET: ownership filter (tenant + user), validation, no side effects on messages.
  *   Chat model reads/writes are faked in memory: no Mongo writes.
  * - COST: global fetch / http / https are poisoned and counted for the whole run (only the local stub is let
  *   through, counted separately), so any real Anthropic call would fail the run.
  *
- * Reads real WE FOUR data read-only for the router/date context (same as verify-cost-forensic.js).
+ * A synthetic tenant: freshness is stubbed, the engine reads nothing real, Chat reads/writes are faked.
  * Run: node verify-chat-management.js
  */
 require("dotenv").config();
@@ -53,42 +53,49 @@ https.request = (...a) => {
   throw new Error("NETWORK BLOCKED (https)");
 };
 
-// ---------------------------------------------------------------- fake Claude for the legacy path
-// Installed BEFORE the controller is required (it destructures callClaude at require time).
-const orchestrator = require("./src/services/ai/chatOrchestrator");
-const fakeClaude = { mode: "answer", calls: 0, signals: [], onCall: null };
-orchestrator.callClaude = async (messages, tools, system, opts = {}) => {
-  fakeClaude.calls += 1;
-  fakeClaude.signals.push(opts.signal || null);
-  if (fakeClaude.onCall) fakeClaude.onCall(fakeClaude.calls);
-  if (fakeClaude.mode === "answer") return { content: [{ type: "text", text: "A legacy answer." }], usage: { input_tokens: 10, output_tokens: 5 } };
-  if (fakeClaude.mode === "tool_round") return { content: [{ type: "tool_use", id: "t1", name: "no_such_tool", input: {} }], usage: { input_tokens: 10, output_tokens: 5 } };
+// ---------------------------------------------------------------- fake planner client for the controller turns
+// Installed BEFORE the controller (queryChat) is required: queryChat creates its planner client lazily from this factory.
+const plannerModule = require("./src/services/query/planner");
+const realCreatePlannerClient = plannerModule.createAnthropicPlannerClient;
+const fakePlanner = { mode: "plan", calls: 0, signals: [], onCall: null };
+const FAKE_PLAN = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [] };
+plannerModule.createAnthropicPlannerClient = () => async (request, opts = {}) => {
+  fakePlanner.calls += 1;
+  fakePlanner.signals.push(opts.signal || null);
+  if (fakePlanner.onCall) fakePlanner.onCall(fakePlanner.calls);
+  if (fakePlanner.mode === "plan") return { content: [{ type: "tool_use", id: "p", name: "submit_query_plan", input: { plan: FAKE_PLAN } }], usage: { input_tokens: 10, output_tokens: 5 } };
+  if (fakePlanner.mode === "unavailable") throw Object.assign(new Error("no API key"), { code: "AI_NOT_CONFIGURED" });
   // "hang": like the SDK, only settles when the request's signal aborts
   return new Promise((_, reject) => {
-    const s = opts.signal;
-    if (!s) return;
+    const sig = opts.signal;
+    if (!sig) return;
     const fire = () => {
       const e = new Error("Request was aborted.");
       e.name = "APIUserAbortError";
       reject(e);
     };
-    if (s.aborted) fire();
-    else s.addEventListener("abort", fire, { once: true });
+    if (sig.aborted) fire();
+    else sig.addEventListener("abort", fire, { once: true });
   });
 };
+
+// Freshness is not what this suite tests: every entity is "fresh" (the freshness gate has its own suites).
+const freshPath = require.resolve("./src/services/analytics/freshness");
+require.cache[freshPath] = { id: freshPath, filename: freshPath, loaded: true, exports: { ...require(freshPath), getFreshness: async () => ({ state: "fresh", dataAsOf: new Date(), message: "Data is current." }) } };
 
 const Chat = require("./src/models/chat.model");
 const connectDB = require("./src/config/db");
 const controller = require("./src/controllers/chatController");
 const { sendChatMessage, renameChat, deleteChat, listChats, getChat, MAX_CHAT_TITLE_CHARS } = controller;
 const telemetry = require("./src/services/query/turnTelemetry");
-const { planQuestion, createAnthropicPlannerClient } = require("./src/services/query/planner");
+const { planQuestion } = plannerModule;
+const createAnthropicPlannerClient = realCreatePlannerClient; // the REAL SDK client factory (STOP 7)
 
 const events = [];
 telemetry.setTelemetrySink((line) => events.push(JSON.parse(line)));
 
-const TENANT = "6ab21418959e173f9b3f367f"; // WE FOUR, read-only
-const GUID = "d46f1002-00d9-4559-b3e1-afcf8674c7b1";
+const TENANT = "TEST-TENANT-chat-management";
+const GUID = "test-guid-chat-management";
 const USER = new mongoose.Types.ObjectId().toString();
 const OTHER_USER = new mongoose.Types.ObjectId().toString();
 const OTHER_TENANT = "OTHER-TENANT-ID";
@@ -170,7 +177,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     section("STOP 0. Stop that lands during auth middleware (connection already closed before the controller runs)");
     // Found live: the browser aborted ~40ms in, while auth/company middleware were still reading Mongo; the
     // controller's "close" listener was registered after the event and never fired, so the turn completed.
-    Object.assign(fakeClaude, { mode: "answer", calls: 0, signals: [], onCall: null });
+    Object.assign(fakePlanner, { mode: "plan", calls: 0, signals: [], onCall: null });
     let res = mkRes();
     res.destroyed = true;
     res.closed = true; // what Node reports once the socket is gone; "close" will not be emitted again
@@ -178,45 +185,45 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     events.length = 0;
     await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
     let ev = events[events.length - 1];
-    check("no legacy Claude call", fakeClaude.calls === 0, fakeClaude.calls);
+    check("no planner call", fakePlanner.calls === 0, fakePlanner.calls);
     check("not saved, nothing written", saves === 0 && res.body === null, `${saves} ${JSON.stringify(res.body)}`);
     check("telemetry: clientAborted=true, httpStatus 499", ev && ev.clientAborted === true && ev.httpStatus === 499, JSON.stringify(ev));
 
-    section("STOP 1. Stop during the legacy Claude call: aborted in flight, no second round, no save");
-    Object.assign(fakeClaude, { mode: "hang", calls: 0, signals: [], onCall: null });
+    section("STOP 1. Stop during the planner call: aborted in flight, no second call, no save");
+    Object.assign(fakePlanner, { mode: "hang", calls: 0, signals: [], onCall: null });
     res = mkRes();
     saves = 0;
     events.length = 0;
     let done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
-    for (let i = 0; i < 200 && fakeClaude.calls === 0; i += 1) await tick(10);
-    check("the question reached the legacy Claude call (precondition)", fakeClaude.calls === 1, fakeClaude.calls);
-    check("the in-flight Claude request was given an abort signal", !!fakeClaude.signals[0] && fakeClaude.signals[0].aborted === false);
+    for (let i = 0; i < 200 && fakePlanner.calls === 0; i += 1) await tick(10);
+    check("the question reached the planner call (precondition)", fakePlanner.calls === 1, fakePlanner.calls);
+    check("the in-flight planner request was given an abort signal", !!fakePlanner.signals[0] && fakePlanner.signals[0].aborted === false);
     clientStops(res);
     await done;
-    check("Stop aborted that same in-flight Claude request", fakeClaude.signals[0].aborted === true);
-    check("exactly one Claude call - no retry, no second round", fakeClaude.calls === 1, fakeClaude.calls);
+    check("Stop aborted that same in-flight planner request", fakePlanner.signals[0].aborted === true);
+    check("exactly one planner call - no retry", fakePlanner.calls === 1, fakePlanner.calls);
     check("nothing written to the closed connection", res.body === null);
     check("the stopped turn was NOT saved", saves === 0, saves);
     ev = events[events.length - 1];
-    check("telemetry: clientAborted=true, httpStatus 499, legacyClaudeCalls 1", ev && ev.clientAborted === true && ev.httpStatus === 499 && ev.legacyClaudeCalls === 1 && ev.ok === false, JSON.stringify(ev));
+    check("telemetry: clientAborted=true, httpStatus 499, claudeCalls 1", ev && ev.clientAborted === true && ev.httpStatus === 499 && ev.claudeCalls === 1 && ev.ok === false, JSON.stringify(ev));
 
-    section("STOP 2. Stop right after a legacy tool round: the loop never starts another Claude round");
-    Object.assign(fakeClaude, { mode: "tool_round", calls: 0, signals: [] });
+    section("STOP 2. Stop right after the planner answered: the answer is never saved or written");
+    Object.assign(fakePlanner, { mode: "plan", calls: 0, signals: [] });
     res = mkRes();
     saves = 0;
     events.length = 0;
-    fakeClaude.onCall = (n) => {
+    fakePlanner.onCall = (n) => {
       if (n === 1) clientStops(res);
     };
     await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
-    fakeClaude.onCall = null;
-    check("only the one Claude call that was already running - the next round was never started", fakeClaude.calls === 1, fakeClaude.calls);
+    fakePlanner.onCall = null;
+    check("only the one planner call that was already running", fakePlanner.calls === 1, fakePlanner.calls);
     check("not saved, nothing written", saves === 0 && res.body === null);
     ev = events[events.length - 1];
-    check("telemetry: clientAborted=true, legacyClaudeCalls 1", ev && ev.clientAborted === true && ev.legacyClaudeCalls === 1, JSON.stringify(ev));
+    check("telemetry: clientAborted=true, httpStatus 499", ev && ev.clientAborted === true && ev.httpStatus === 499, JSON.stringify(ev));
 
-    section("STOP 3. Stop before the engine finishes: never becomes a legacy or planner call");
-    Object.assign(fakeClaude, { mode: "answer", calls: 0, signals: [] });
+    section("STOP 3. Stop before the engine finishes: never becomes a planner call");
+    Object.assign(fakePlanner, { mode: "plan", calls: 0, signals: [] });
     res = mkRes();
     saves = 0;
     events.length = 0;
@@ -224,8 +231,8 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
     clientStops(res);
     await done;
-    check("legacy Claude never called after Stop", fakeClaude.calls === 0, fakeClaude.calls);
-    check("no network call at all (no planner)", netCalls === before, netCalls - before);
+    check("the planner was never called after Stop", fakePlanner.calls === 0, fakePlanner.calls);
+    check("no network call at all", netCalls === before, netCalls - before);
     check("not saved", saves === 0);
     ev = events[events.length - 1];
     check("telemetry: clientAborted=true, httpStatus 499, claudeCalls 0", ev && ev.clientAborted === true && ev.httpStatus === 499 && !ev.claudeCalls, JSON.stringify(ev));
@@ -237,22 +244,23 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     done = sendChatMessage(mkReq({ body: { message: "show turnover last month" } }), res);
     clientStops(res);
     await done;
-    check("planner never called (the real planner client would have hit the blocked network)", netCalls === b4, netCalls - b4);
+    check("planner never called", fakePlanner.calls === 0 && netCalls === b4, `${fakePlanner.calls} ${netCalls - b4}`);
     check("no chat created", saves === 0);
 
     section("STOP 5. A normal (not stopped) turn is unchanged");
-    Object.assign(fakeClaude, { mode: "answer", calls: 0, signals: [] });
+    Object.assign(fakePlanner, { mode: "plan", calls: 0, signals: [] });
     res = mkRes();
     saves = 0;
     events.length = 0;
     await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
     ev = events[events.length - 1];
-    check("answered 200, saved once, one Claude call, clientAborted=false", res.statusCode === 200 && res.body.data.answer === "A legacy answer." && saves === 1 && fakeClaude.calls === 1 && ev.clientAborted === false && ev.httpStatus === 200, JSON.stringify(ev));
+    check("answered 200, saved once, one planner call, clientAborted=false", res.statusCode === 200 && res.body.success === true && typeof res.body.data.answer === "string" && res.body.data.answer.length > 0 && saves === 1 && fakePlanner.calls === 1 && ev.clientAborted === false && ev.httpStatus === 200, JSON.stringify(ev));
+    Object.assign(fakePlanner, { mode: "unavailable", calls: 0, signals: [] });
     res = mkRes();
     events.length = 0;
     await sendChatMessage(mkReq({ body: { message: "Sales performance by product group/category of aug 2025" } }), res);
     ev = events[events.length - 1];
-    check("deterministic question still 0 Claude and 200", res.statusCode === 200 && ev.claudeCalls === 0 && ev.clientAborted === false, JSON.stringify(ev));
+    check("planner unavailable: 200 with an honest planner-unavailable answer, path planner_failed", res.statusCode === 200 && ev.path === "planner_failed" && ev.clientAborted === false && /planner is unavailable/i.test(res.body.data.answer), JSON.stringify(ev));
     historyChat = null;
 
     section("STOP 6. planQuestion: an already-cancelled request never calls Claude");
@@ -297,6 +305,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
       throw new Error("NETWORK BLOCKED (http)");
     };
 
+    const plannerCallsBeforeManagement = fakePlanner.calls;
     // ============================================================ RENAME
     section("RENAME. Ownership, validation, only the title changes");
     const mine = seed();
@@ -375,7 +384,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     // ============================================================ COST
     section("COST. Rename / delete / list / open never touch AI");
     check("zero external network calls across the whole run (no Claude/Anthropic call anywhere)", netCalls === 0, netCalls);
-    check("the chat-management handlers never reached the legacy Claude client", fakeClaude.calls === 1 /* only STOP 5's deliberate legacy turn */, fakeClaude.calls);
+    check("the chat-management handlers never reached the planner", fakePlanner.calls === plannerCallsBeforeManagement, `${fakePlanner.calls} vs ${plannerCallsBeforeManagement}`);
   } catch (error) {
     fail += 1;
     console.log("  FAIL - unexpected error:", error && error.stack);

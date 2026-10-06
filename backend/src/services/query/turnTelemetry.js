@@ -25,11 +25,10 @@ const bool = (v) => (typeof v === "boolean" ? v : null);
 
 // Field -> sanitiser. Anything not listed here is never emitted.
 const FIELDS = {
-  path: code, route: code, routeStatus: code, routeCode: code, outcome: code, answerSource: code,
-  claudeCalls: int, claudeReason: code, legacyReason: code,
+  path: code, route: code, outcome: code, answerSource: code,
+  claudeCalls: int, claudeReason: code,
   plannerStatus: code, plannerCode: code, plannerLatencyMs: ms, plannerAttempts: int,
   plannerInputTokens: int, plannerOutputTokens: int, plannerCacheReadTokens: int, plannerCacheCreationTokens: int,
-  legacyClaudeCalls: int, legacyLatencyMs: ms, legacyInputTokens: int, legacyOutputTokens: int, legacyCacheReadTokens: int, legacyCacheCreationTokens: int,
   answerCache: code, answerCacheHit: bool, answerCacheLookupMs: ms, answerCacheStored: bool,
   executeMs: ms, engineRan: bool, engineLatencyMs: ms, engineStatus: code, engineErrorCode: code,
   resolverCalled: bool, resolverCalls: int, resolverLatencyMs: ms, resolverStatus: code,
@@ -63,13 +62,6 @@ function timeResolver(resolveEntity, tm) {
   };
 }
 
-/** The tenant name index (P1-2 span matching) counted in the same resolver fields; results/errors pass through. */
-function timeEntityIndex(entityIndex, tm) {
-  if (!entityIndex || typeof entityIndex !== "object") return entityIndex;
-  const wrap = (fn) => (typeof fn === "function" ? (...args) => timeResolver((arg) => fn(...arg), tm)(args) : fn);
-  return { findSpans: wrap(entityIndex.findSpans), findLiterals: wrap(entityIndex.findLiterals) };
-}
-
 /** Answer-cache deps with the engine call timed (same functions, arguments and results). */
 function timeEngineDeps(deps, timing) {
   if (!timing || typeof timing !== "object") return deps;
@@ -84,23 +76,6 @@ function timeEngineDeps(deps, timing) {
       }
     },
   };
-}
-
-/** Accumulating wrapper around the legacy chat's Claude client: counts calls and reads usage already returned. */
-function meterClaudeClient(client) {
-  const meter = { calls: 0, input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-  meter.client = async (...args) => {
-    meter.calls += 1;
-    const response = await client(...args);
-    try {
-      const u = response && response.usage;
-      if (u && typeof u === "object") for (const k of ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) if (Number.isFinite(u[k])) meter[k] += u[k];
-    } catch (e) {
-      /* metering never affects the response */
-    }
-    return response;
-  };
-  return meter;
 }
 
 let sink = (line) => console.log(line);
@@ -132,7 +107,10 @@ function buildTurnEvent({ tenantId, requestId, metrics = {} }) {
 /** Emit one event. Never throws: telemetry failure must not affect the chat turn. */
 function emitTurnEvent(input) {
   try {
-    sink(JSON.stringify(buildTurnEvent(input)));
+    const event = buildTurnEvent(input);
+    sink(JSON.stringify(event));
+    // Durable copy of the same allow-listed event (fire-and-forget; never throws, never awaited).
+    require("./usageStore").persistTurnUsage(event);
   } catch (error) {
     try {
       console.error("TELEMETRY ERROR:", error && error.name);
@@ -143,27 +121,17 @@ function emitTurnEvent(input) {
 }
 
 /**
- * Controller hook: merges the query-engine metrics with the legacy chat's (if it ran) and emits once.
+ * Controller hook: adds the turn-level facts (latency, status, date context) to the query-engine metrics and emits once.
  * Never throws.
  */
 function emitChatTurn(input) {
   try {
-    const { tenantId, requestId, metrics, legacy, legacyMs, totalMs, httpStatus, dates, clientAborted } = input || {};
+    const { tenantId, requestId, metrics, totalMs, httpStatus, dates, clientAborted } = input || {};
     const m = { ...(metrics || {}) };
-    // The turn's one tenant date context (shared by the engine and legacy chat), when it was read.
+    // The turn's one tenant date context, when it was read.
     if (dates && typeof dates === "object") {
       m.referenceDateSource = dates.source;
       m.futureVouchersPresent = dates.futureVouchers;
-    }
-    if (legacy) {
-      m.legacyClaudeCalls = legacy.calls;
-      m.legacyInputTokens = legacy.input_tokens;
-      m.legacyOutputTokens = legacy.output_tokens;
-      m.legacyCacheReadTokens = legacy.cache_read_input_tokens;
-      m.legacyCacheCreationTokens = legacy.cache_creation_input_tokens;
-      m.legacyLatencyMs = legacyMs;
-      m.claudeCalls = (m.plannerAttempts || 0) + legacy.calls;
-      if (legacy.calls > 0) m.claudeReason = m.claudeReason ? "planner_and_legacy_chat" : "legacy_chat";
     }
     m.totalLatencyMs = totalMs;
     m.clientAborted = clientAborted === true;
@@ -175,4 +143,4 @@ function emitChatTurn(input) {
   }
 }
 
-module.exports = { EVENT_NAME, now, newTurnMetrics, timeResolver, timeEntityIndex, timeEngineDeps, meterClaudeClient, buildTurnEvent, emitTurnEvent, emitChatTurn, setTelemetrySink };
+module.exports = { EVENT_NAME, now, newTurnMetrics, timeResolver, timeEngineDeps, buildTurnEvent, emitTurnEvent, emitChatTurn, setTelemetrySink };

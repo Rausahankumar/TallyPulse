@@ -12,7 +12,7 @@
 // GST/tax, credit/debit notes, receipts/payments, ledgers, profit/COGS.
 // Anything Sales/Purchase-related that cannot be answered honestly today
 // is listed under UNSUPPORTED_CAPABILITIES with the reason, so a later
-// router/validator can refuse deterministically (0 LLM calls).
+// validator can refuse deterministically (0 LLM calls).
 //
 // Every measure below was derived from the EXISTING analytics
 // implementations (salesAnalytics / purchaseAnalytics /
@@ -370,8 +370,8 @@ const COMPARE = {
 // ---------- periods ----------
 // The DSL never carries computed dates. Kinds come from periodEngine
 // (single source) plus one DSL-level kind:
-//   all_time: no date filter at all - the existing get_customer_sales
-//   default ("what did I sell to X?"). Cannot be compared.
+//   all_time: no date filter at all - the default for "what did I sell to
+//   X?". Cannot be compared.
 //
 // comparisonSupport describes, per kind, what each compare mode resolves to.
 //   likeForLike: true  -> periodEngine.resolveComparisonPeriod is non-null

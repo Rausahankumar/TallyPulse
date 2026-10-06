@@ -1,25 +1,23 @@
 const mongoose = require("mongoose");
 const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
 const Chat = require("../models/chat.model");
-const { handleChatTurn, callClaude } = require("../services/ai/chatOrchestrator");
 const { tryAnswerWithQueryEngine, createTurnDates, chatTelemetry } = require("../services/query/queryChat");
 
-const { now, meterClaudeClient, emitChatTurn } = chatTelemetry;
+const { now, emitChatTurn } = chatTelemetry;
 
 // --------------------------------------------------
 // POST /api/chat/:chatId?/message
 //
 // Flow: auth middleware (JWT) -> activeCompanyContext middleware
-// (authorization-verified tenant) -> this controller persists/loads chat
-// history scoped to {tenantId, userId} -> handleChatTurn (tool layer) ->
-// persist the assistant's structured response.
+// (authorization-verified tenant) -> this controller loads/creates the chat
+// scoped to {tenantId, userId} -> queryChat (planner -> validated Query Plan ->
+// deterministic engine -> answer + presentation) -> persist the assistant's
+// structured response.
 //
-// If ANTHROPIC_API_KEY isn't configured on the backend, callClaude()
-// throws an AI_NOT_CONFIGURED error caught below and returned as a 503 -
-// a distinct, honest "AI isn't available right now" state, never a
-// fabricated answer and never a raw stack trace to the client.
+// The planner is the only place Claude is called. If it cannot be reached (including a missing
+// ANTHROPIC_API_KEY) the turn is answered with an honest fixed message - never a fabricated answer
+// and never a raw stack trace.
 // --------------------------------------------------
-
 // Status recorded (telemetry only - nothing is sent) when the client closed the connection first.
 const CLIENT_CLOSED_REQUEST = 499;
 
@@ -27,7 +25,7 @@ const sendChatMessage = async (req, res) => {
   const turnStart = now();
   let turn = null; // per-turn telemetry (P1-1); set once the AI part of the turn starts
   // Stop / navigation in the browser aborts the HTTP request, which closes this response before it is
-  // written. From then on: no planner call, no legacy Claude call, no further Claude round, no save.
+  // written. From then on: no planner call, no save.
   // (`res` "close", not `req` "close": the latter also fires once the request body has been read.)
   // A Stop that lands while auth/company middleware is still running closes the connection BEFORE this
   // listener exists, and "close" is never re-emitted - so an already-closed response is checked directly.
@@ -99,37 +97,19 @@ const sendChatMessage = async (req, res) => {
 
     const chatContext = { tenantId, companyGuid: req.companyContext.companyGuid };
 
-    // Sales/Purchase questions go router -> planner -> validator -> cache -> engine first. Anything that
-    // path cannot answer (or a disabled/failed engine) falls through to the existing tool chat unchanged.
-    // ONE tenant reference date per turn (read at most once, only if needed), shared by the engine and legacy chat.
+    // Every question goes planner -> validator -> cache -> engine; whatever cannot be answered gets an honest
+    // clarification, refusal or failure message from the same path.
+    // ONE tenant reference date per turn (read at most once, only if needed), shared by planner validation, coverage and the engine.
     const turnDates = createTurnDates(tenantId);
     // req.id: the same id already returned as the X-Request-Id response header (middleware/requestId.js) -
     // carried into the cost telemetry line so a specific request can be matched to its exact Claude-cost
     // decision (P0 cost-forensics, Phase 8: "which exact code path called Claude").
-    turn = { tenantId, requestId: req.id, metrics: null, legacy: null, legacyMs: null, httpStatus: null, turnDates, clientAborted: false };
+    turn = { tenantId, requestId: req.id, metrics: null, httpStatus: null, turnDates, clientAborted: false };
     const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory, previousQuery, getDateContext: turnDates, signal });
     turn.metrics = engine.telemetry || null;
-    // Checked BEFORE the legacy branch: a cancelled turn never becomes a legacy Claude call.
-    if (endIfAborted()) return;
-
-    // Legacy path: the same Claude client, only counted (calls + the usage Claude already returns) for the turn event.
-    if (!engine.handled) turn.legacy = meterClaudeClient(callClaude);
-    const legacyStart = now();
-
-    const structured = engine.handled
-      ? engine.structured
-      : await handleChatTurn({
-          context: chatContext,
-          userMessage: message,
-          conversationHistory,
-          claudeClient: turn.legacy.client,
-          getDateContext: turnDates,
-          signal,
-        }).finally(() => {
-          turn.legacyMs = now() - legacyStart;
-        });
     // Nobody is waiting for this answer any more: don't persist a turn the user stopped.
     if (endIfAborted()) return;
+    const structured = engine.structured;
 
     chat.messages.push({
       role: "assistant",
@@ -139,7 +119,7 @@ const sendChatMessage = async (req, res) => {
       dataAsOf: structured.dataAsOf,
       freshness: structured.freshness,
       warnings: structured.warnings,
-      queryContext: engine.handled && engine.queryContext ? engine.queryContext : undefined,
+      queryContext: engine.queryContext || undefined,
     });
 
     await chat.save();
@@ -153,32 +133,10 @@ const sendChatMessage = async (req, res) => {
   } catch (error) {
     // The client is gone (its abort also rejects the in-flight Claude request): nothing to answer, nothing to log.
     if (endIfAborted()) return;
-    if (turn) turn.httpStatus = error && error.code === "AI_NOT_CONFIGURED" ? 503 : error && typeof error.status === "number" ? error.status : 500;
-    // Missing/misconfigured API key -> a distinct, honest "not
-    // available" response, never a generic 500 or a fabricated answer.
-    if (error.code === "AI_NOT_CONFIGURED") {
-      return res.status(503).json({
-        success: false,
-        message: error.message,
-      });
-    }
-
-    // The Anthropic SDK attaches `status` to HTTP-level failures (rate
-    // limit, auth, overloaded, etc.) - surface that status rather than
-    // always answering 500, without leaking the raw error body.
-    const upstreamStatus = typeof error.status === "number" ? error.status : null;
-
-    if (!upstreamStatus) {
-      // Name and message only: never the request, the prompt or a response body.
-      console.error("CHAT ERROR:", error && error.name, error && error.message);
-    }
-
-    return res.status(upstreamStatus || 500).json({
-      success: false,
-      message: upstreamStatus
-        ? "The AI service is temporarily unavailable. Please try again shortly."
-        : GENERIC_SERVER_ERROR,
-    });
+    if (turn) turn.httpStatus = 500;
+    // Name and message only: never the request, the prompt or a response body.
+    console.error("CHAT ERROR:", error && error.name, error && error.message);
+    return res.status(500).json({ success: false, message: GENERIC_SERVER_ERROR });
   } finally {
     // One structured event per AI turn; emitChatTurn never throws.
     if (turn) emitChatTurn({ ...turn, dates: turn.turnDates.peek(), totalMs: now() - turnStart });

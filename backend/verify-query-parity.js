@@ -39,7 +39,6 @@ const stockGroupAnalytics = require("./src/services/analytics/stockGroupAnalytic
 const periodEngine = require("./src/services/analytics/periodEngine");
 const dateRanges = require("./src/services/analytics/dateRanges");
 const { getTenantReferenceDate } = require("./src/services/analytics/referenceDate");
-const tools = require("./src/services/ai/tools");
 const { executeQuery } = require("./src/services/query/execute");
 const catalog = require("./src/services/query/semanticCatalog");
 
@@ -554,14 +553,14 @@ async function runTenant(tenant, { extended }) {
       }
     );
   }
-  // The AI tool layer's own comparison periods == the engine's like_for_like / same-period-last-year
+  // The REST analytics comparison periods == the engine's like_for_like / same-period-last-year
   {
-    const t1 = tools.resolveComparisonPeriods("vs_previous_month", ref);
+    const t1 = dateRanges.resolveRequestComparison("vs_previous_month", ref);
     const lfl = periodEngine.resolveComparisonPeriod("current_month", ref);
-    assertCase("sales_period_comparison", "AI tool 'vs_previous_month' periods == engine current_month like_for_like (same ranges)", t1.current.from.getTime() === P.current_month.oracle.from.getTime() && t1.previous.from.getTime() === lfl.from.getTime() && t1.previous.to.getTime() === lfl.to.getTime());
-    const t2 = tools.resolveComparisonPeriods("vs_same_month_last_year", ref);
+    assertCase("sales_period_comparison", "REST 'vs_previous_month' periods == engine current_month like_for_like (same ranges)", t1.current.from.getTime() === P.current_month.oracle.from.getTime() && t1.previous.from.getTime() === lfl.from.getTime() && t1.previous.to.getTime() === lfl.to.getTime());
+    const t2 = dateRanges.resolveRequestComparison("vs_same_month_last_year", ref);
     const sply = periodEngine.resolveSamePeriodLastYear("current_month", ref);
-    assertCase("sales_period_comparison", "AI tool 'vs_same_month_last_year' periods == engine same_period_last_year", t2.previous.from.getTime() === sply.from.getTime() && t2.previous.to.getTime() === sply.to.getTime());
+    assertCase("sales_period_comparison", "REST 'vs_same_month_last_year' periods == engine same_period_last_year", t2.previous.from.getTime() === sply.from.getTime() && t2.previous.to.getTime() === sply.to.getTime());
   }
 
   // ---------------------------------------------------------- 7. product growth / decline
@@ -873,7 +872,11 @@ async function runTenant(tenant, { extended }) {
     const companies = await Company.find({ isActive: true }).lean();
     const we = companies.find((c) => c.companyName === "WE FOUR");
     const other = companies.find((c) => c.companyName !== "WE FOUR" && c.tenantId !== (we && we.tenantId));
-    if (!we) throw new Error("WE FOUR not found");
+    if (!we) {
+      console.log("  SKIPPED - the parity suite compares the engine with the existing analytics on the real WE FOUR tenant, which is not present in this database.");
+      await mongoose.disconnect();
+      process.exit(0);
+    }
 
     await runTenant({ tenantId: we.tenantId, name: "WE FOUR" }, { extended: true });
     if (other) {

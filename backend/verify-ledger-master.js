@@ -6,7 +6,6 @@
  *   B. refreshLedgerMasters: ownership rejection, persistence, unchanged skip,
  *      rename, removal, mass-removal guard, tenant isolation (Mongo)
  *   C. schema / validator rules for the new_in_period filter (pure)
- *   D. local router: new customers/suppliers become a new_in_period plan (pure)
  *   E. executor end-to-end on synthetic Mongo data (engine vs hand-computed oracle),
  *      disclosures, missing master, tenant isolation, no N+1
  *
@@ -26,8 +25,6 @@ const { parseGroupMasterList, parseLedgerMasterList, derivePartyRole, refreshLed
 const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
 const { validateQueryPlan } = require("./src/services/query/validator");
 const { executeQuery } = require("./src/services/query/execute");
-const { routeQuestion } = require("./src/services/query/localRouter");
-const { createEntityResolver } = require("./src/services/query/entityResolver");
 
 let pass = 0;
 let fail = 0;
@@ -195,24 +192,6 @@ const lm = (tenantId, name, created, extra = {}) => ({
     check("validator: all_time refused", !v.ok && v.errors.some((e) => e.code === "new_party_needs_period"));
     v = validateQueryPlan(plan({ period: { kind: "current_month" }, compare: { mode: "full_previous" } }), { referenceDate: new Date(2025, 9, 20, 12) });
     check("validator: a comparison is refused", !v.ok && v.errors.some((e) => e.code === "new_party_comparison_unsupported"));
-
-    // ============================================================ D
-    section("D. router");
-    const resolver = createEntityResolver({ tenantId: "TEST-TENANT", sources: { customer: async () => ["Test Party One"], supplier: async () => ["Test Supplier One"], product: async () => ["Test Item"], productGroup: async () => ["Test Group"] } });
-    const R = (q) => routeQuestion(q, { resolveEntity: resolver, referenceDate: new Date(2025, 9, 20, 12) });
-    const isNewPlan = (x, dim) => x.status === "supported" && x.plan && !x.plan.compare && x.plan.filters.some((f) => f.dim === dim && f.op === "new_in_period") && (!x.plan.having || x.plan.having.length === 0);
-    for (const q of ["new customers this month", "Which customers are new this month vs last month?", "Who became a new customer this month?", "new customers this quarter"]) {
-      const x = await R(q);
-      check(`"${q}" -> new_in_period plan, no comparison`, isNewPlan(x, "customer"), `${x.status}/${x.code}`);
-    }
-    let x = await R("new suppliers last month");
-    check('"new suppliers last month" -> purchase new_in_period plan', isNewPlan(x, "supplier") && x.plan.entity === "purchase" && x.plan.period.kind === "previous_month", `${x.status}/${x.code}`);
-    x = await R("new customers");
-    check('"new customers" (no period) -> needs_planner/period_missing', x.status === "needs_planner" && x.code === "period_missing", `${x.status}/${x.code}`);
-    x = await R("new products sold this month vs last month");
-    check("new PRODUCTS keep the comparison reading (decision covers parties only)", x.status === "supported" && !!x.plan.compare && x.plan.having.some((h) => /\.previous$/.test(h.metric)), `${x.status}/${x.code}`);
-    x = await R("first time customers this month");
-    check("'first time customers' stays refused (first purchase ever is not ledger creation)", x.status === "unsupported", `${x.status}/${x.code}`);
 
     // ============================================================ E
     section("E. executor end-to-end (synthetic Mongo)");
