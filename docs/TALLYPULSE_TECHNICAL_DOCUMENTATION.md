@@ -1,6 +1,6 @@
-# TallyPulse — Backend Technical Documentation
+# TallyPulse — Technical Documentation
 
-> **Status:** living document, generated from a direct inspection of the repository at `D:\TallyPulse` on 2026-09-17. Every claim below is either verified against the current source code (marked **IMPLEMENTED**), confirmed against a live TallyPrime instance during testing (marked **REAL**), verified only through synthetic/mocked tests (marked **SYNTHETIC**), or explicitly called out as **NOT IMPLEMENTED** / **UNVERIFIED** / **PLANNED**. Nothing here documents a feature that does not exist in the code.
+> **Status:** maintained with the code; describes the repository as it is at `HEAD`. Claims about TallyPrime's behaviour are labelled **REAL** (confirmed against a live TallyPrime instance), **SYNTHETIC** (verified only with constructed data) or **UNVERIFIED**. For a shorter, task-oriented map of the codebase read [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md); this document is the long form.
 
 ---
 
@@ -8,34 +8,32 @@
 
 ### 1.1 Purpose and current scope
 
-TallyPulse synchronizes accounting data (Sales and Purchase vouchers) out of a locally-running **TallyPrime** installation into **MongoDB**, and exposes that data through a deterministic analytics layer. The long-term goal is a BI/AI business assistant where Claude answers natural-language questions using only pre-computed, verified analytics — Claude is designed to be an *explanation layer*, never the source of numbers.
+TallyPulse synchronizes accounting data out of a locally running **TallyPrime** installation into **MongoDB** and serves it through a deterministic analytics layer, dashboards, reports and an **Ask AI** chat. The central design rule: **every number shown to a user is computed by deterministic code from the user's own synced data; the language model only turns a question into a structured query.**
 
-**Currently implemented and working end-to-end:**
-- Automatic, incremental Sales + Purchase sync from TallyPrime into MongoDB.
-- A separate reconciliation safety-net that detects vouchers deleted in Tally (which the incremental sync structurally cannot see).
-- Deterministic analytics (sales/purchase summaries, comparisons, top products/customers, growth/decline).
-- User/company registration, JWT authentication, and a single-company-per-user authorization model.
-- A chat data model, chat REST routes, and a fully-built Claude tool-calling pipeline — **with the actual network call to the Claude API stubbed out** (see §11).
-
-**Not yet built:** a frontend of any kind, live Claude API integration, category-level analytics, true multi-company-per-user access.
+**Implemented and working end to end:**
+- Automatic incremental sync of Sales, Purchase, Credit Note and Debit Note vouchers, plus on-demand master refreshes (stock items → stock groups, ledgers and groups).
+- A separate reconciliation safety net (detects vouchers deleted in Tally, which incremental sync structurally cannot see), self-heal and checkpoint-independent recovery.
+- Deterministic REST analytics, vouchers list/search, reports with CSV export, and a React frontend (dashboard, analytics, reports, sync status, Ask AI).
+- Registration, JWT authentication, "Connect Tally" company onboarding (the company is detected from TallyPrime, never typed), multi-company access per account, tenant isolation everywhere.
+- Ask AI: a Claude **planner** produces a validated Query Plan; a deterministic engine executes it (§11, §12).
 
 ### 1.2 Technology stack
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Runtime | Node.js (CommonJS) | `"type": "commonjs"` in `package.json` |
+| Runtime | Node.js (CommonJS) | `backend/` |
 | Web framework | Express 5 | `backend/server.js` |
-| Database | MongoDB via Mongoose 9 | Atlas-hosted per `MONGODB_URI` |
-| Scheduling | `node-cron` | drives both sync workers |
-| Validation | `zod` | AI tool argument schemas only |
-| Auth | `jsonwebtoken` + `bcryptjs` | see §4 |
-| Tally integration | `axios` over Tally's HTTP/JSONEx gateway | see §6 |
-| File upload | `multer` | disk storage, `backend/uploads/`; the uploaded file is deleted as soon as it has been processed or refused |
+| Database | MongoDB via Mongoose 9 | `MONGODB_URI` |
+| Scheduling | `node-cron` | drives the sync and reconciliation workers |
+| Validation | `zod` | the Query Plan schema (`src/services/query/queryPlan.schema.js`) |
+| AI | `@anthropic-ai/sdk` | used only by the query planner |
+| Auth | `jsonwebtoken` + `bcryptjs` | §4, §7 |
+| Tally integration | `axios` over TallyPrime's HTTP/JSONEx gateway | §6 |
+| File upload | `multer` | disk storage in `backend/uploads/`, deleted as soon as the file has been processed or refused |
 | HTTP hardening | `helmet` + `cors` | security headers and a CORS allow-list (`CORS_ORIGINS`, default: the local Vite origins) — `src/middleware/httpSecurity.js` |
 | Error responses | `src/middleware/errorHandler.js` | clients only see messages the code chose; library/database error text stays in the server log |
-| Env config | `dotenv` | `backend/.env` |
-
-**Formerly declared but unused dependencies (removed 2026-09-21, audit F-17):** `odbc`, `joi`, `winston`, `bcrypt` (the app uses `bcryptjs`, a different package, for actual hashing). They were leftovers from an earlier design (a real ODBC driver connection to Tally was tried and abandoned — see the commented-out block at the top of `src/services/odbc/odbcService.js` — in favor of the HTTP/JSONEx integration actually in use today).
+| Frontend | React 19, Vite, Tailwind CSS 4, Recharts, react-markdown | `frontend/` — talks to the backend over REST only |
+| Env config | `dotenv` | `backend/.env` (template: `backend/.env.example`) |
 
 ### 1.3 High-level architecture
 
@@ -47,15 +45,14 @@ flowchart LR
         SyncWorker["Incremental Sync Worker\n(AlterID-based, every 60s)"]
         ReconWorker["Reconciliation Worker\n(GUID diff, every 20min)"]
         ImportAPI["Manual Import API\n(/api/import/*)"]
-        Analytics["Deterministic Analytics Engine"]
-        ToolLayer["AI Tool Layer\n(zod-validated, read-only)"]
-        ChatAPI["Chat REST API\n(/api/chat/*)"]
+        Analytics["Deterministic analytics\n(REST: /api/analytics, /api/reports, /api/vouchers)"]
+        ChatAPI["Chat API\n(/api/chat/*)"]
+        Query["Query pipeline\nplanner → plan → validate → execute → format"]
     end
 
-    Mongo[("MongoDB\nSale / Purchase / Checkpoints / Chat")]
-
-    Claude["Claude API\n(NOT WIRED — stub throws)"]
-    Frontend["Frontend\n(NOT BUILT)"]
+    Mongo[("MongoDB\nvouchers / masters / checkpoints / chats")]
+    Claude["Anthropic API\n(planner only)"]
+    Frontend["Frontend (React)"]
 
     Tally -- "AlterID delta" --> SyncWorker
     Tally -- "full GUID snapshot" --> ReconWorker
@@ -64,25 +61,28 @@ flowchart LR
     ReconWorker --> Mongo
     ImportAPI --> Mongo
     Mongo --> Analytics
-    Analytics --> ToolLayer
-    ToolLayer --> ChatAPI
-    ChatAPI -. "callClaude() stub\nthrows 'not implemented'" .-> Claude
-    ChatAPI -. "not built yet" .-> Frontend
+    Mongo --> Query
+    ChatAPI --> Query
+    Query -- "question → Query Plan" --> Claude
+    Frontend --> Analytics
+    Frontend --> ChatAPI
 ```
 
 ---
 
 ## 2. System Architecture
 
-| Component | Role | File(s) | Status |
-|---|---|---|---|
-| **TallyPrime** | Source of truth for all accounting data. Reached over HTTP/JSONEx on `localhost:9000` (configurable). | external | Running locally during development |
-| **Incremental Sync Worker** | Polls Tally for vouchers changed since the last `$AlterID`, upserts them into MongoDB. Runs per {company, voucher type}. | `src/services/sync/tallySyncWorker.js` | **IMPLEMENTED** |
-| **Reconciliation Worker** | Separate, slower job. Fetches *all* current voucher GUIDs from Tally and marks any MongoDB-active voucher missing from that set as `deleted`. The only mechanism that can detect real deletions. | `src/services/sync/reconciliationWorker.js`, `src/services/sync/reconciliation.js` | **IMPLEMENTED**, real-tested |
-| **MongoDB** | Synchronized analytical store — `Sale`, `Purchase`, `SyncCheckpoint`, `ReconciliationCheckpoint`, `Company`, `User`, `Chat`. | `src/models/*.js` | **IMPLEMENTED** |
-| **Analytics Engine** | Deterministic MongoDB aggregations, always tenant + active-voucher scoped. | `src/services/analytics/*.js` | **IMPLEMENTED** (except category analytics) |
-| **AI / Claude layer** | Tool schemas + router + orchestration loop are built and tested against a mock Claude client. The actual `callClaude()` network call is a stub that throws. | `src/services/ai/*.js` | **PARTIALLY IMPLEMENTED** — see §11 |
-| **Future Frontend** | No frontend code exists anywhere in this repository. | — | **NOT IMPLEMENTED** |
+| Component | Role | File(s) |
+|---|---|---|
+| **TallyPrime** | Source of truth for all accounting data, reached over HTTP/JSONEx on `localhost:9000` (configurable per company). | external |
+| **Incremental Sync Worker** | Polls Tally for vouchers changed since the last `$AlterID` and upserts them into MongoDB, per {company, voucher type}: Sales, Purchase, Credit Note, Debit Note. | `src/services/sync/tallySyncWorker.js`, `batchWindow.js`, `voucherPersistence.js` |
+| **Reconciliation Worker** | Separate, slower job: fetches *all* current voucher GUIDs from Tally and marks MongoDB-active vouchers missing from that set as `deleted`. The only mechanism that can detect real deletions. Self-heal and recovery repair data/checkpoint mismatches. | `src/services/sync/reconciliation*.js`, `selfHeal.js`, `voucherRecovery.js` |
+| **Master refreshes** | On-demand reads of stock items → groups and ledger/group masters (`refresh-stock-item-master.js`, `refresh-ledger-master.js`). | `src/services/tally/stockItemMaster.js`, `ledgerMaster.js` |
+| **MongoDB** | Synchronized analytical store (§5). | `src/models/*.js` |
+| **Analytics (REST)** | Deterministic aggregations behind the dashboards, reports and analytics pages. Always tenant + active-voucher scoped. | `src/services/analytics/*.js`, `src/controllers/{analytics,report,voucher}Controller.js` |
+| **Query pipeline (Ask AI)** | Planner → Query Plan → validation → execution → deterministic answer and presentation. | `src/services/query/*.js` (§11) |
+| **Chat API** | Persists conversations per {tenant, user} and calls the query pipeline for every question. | `src/controllers/chatController.js`, `src/routes/chatRoutes.js` (§12) |
+| **Frontend** | React single-page app. | `frontend/` (§17) |
 
 ---
 
@@ -165,7 +165,7 @@ Both workers follow the same pattern: the Mongo checkpoint's lock is only releas
 | `companyGuid` | TallyPrime's own company GUID — the authoritative company identity, but **never typed by a user**: "Connect Tally" reads it from the company currently open in TallyPrime. Used to look up the `Company` record and to resolve which Tally connection to use; a company's data-access identity is always re-derived from it via `tenantId`, never trusted directly for data access. The company display name is never used as an identity. |
 | Current company model | `src/models/company.js` — one document per company: `companyName`, `sourceType` (`"tally"`), `companyGuid` (unique), `tenantId` (unique), `isActive`, optional `tallyConnection.baseUrl` (a per-company Tally endpoint override; falls back to `TALLY_URL`/`localhost:9000` when unset). |
 | Authorization/isolation | `src/services/auth/companyContext.js` → `resolveAuthorizedCompany(authUser, requestedCompanyGuid)`. Re-fetches the live `Company` record and re-checks `isActive` on every call — a stale JWT claim is never trusted for data access on its own. |
-| Active company context | The `activeCompanyContext` Express middleware attaches `req.companyContext = {tenantId, companyGuid, companyId, companyName}` after authorization. Currently used only by the chat routes (`src/routes/chatRoutes.js`); the import routes instead resolve tenant context directly from the JWT's `companyGuId` inside `tallySalesImport.resolveTenantContext()`. |
+| Active company context | The `activeCompanyContext` Express middleware attaches `req.companyContext = {tenantId, companyGuid, companyId, companyName}` after authorization; `liveCompanyContext` additionally re-checks the account's access against the database on every request (sync, voucher, import and rename routes). See §7. |
 
 **Account → company flow.** An account (`User`) is created with just name, email and password and has no company. "Connect Tally" (`POST /api/auth/companies`, §7.3) then detects the company open in TallyPrime and connects it; the first one becomes the account's default (`User.companyName/companyGuId/companyId/tenantId`, all optional until then). Every company an account can use is also listed in `UserCompanyAccess` (`{userId, companyId, companyGuid, tenantId}`), and `companyContext.js` authorizes a non-default company through that join collection.
 
@@ -184,12 +184,17 @@ Every tenant-scoped write path (`voucherPersistence.js`) and every analytics rea
 | Collection (Model) | Key fields | Purpose |
 |---|---|---|
 | `Company` (`company.js`) | `companyName`, `sourceType`, `companyGuid` (unique), `tenantId` (unique), `isActive`, `tallyConnection.baseUrl` | One document per tenant/company. |
-| `User` (`user.model.js`) | `name`, `email` (unique), `password` (bcrypt hash), `role` (default `"user"`), and the account's *default* company `companyName`, `companyGuId`, `companyId` (ref `Company`), `tenantId` — all optional, empty until the first company is connected | Login identity (email + password). Companies are attached with "Connect Tally" (see §4). |
-| `Sale` (`sales.model.js`) | `tenantId`, `header{voucherNo, voucherDate, voucherType, voucherTotalAmount, narration, partyName}`, `inventory[]`, `ledgers[]`, `tallyGuid`, `tallyAlterId`, `voucherStatus` (`active`\|`cancelled`\|`deleted`) | Sales voucher store. |
-| `Purchase` (`purchase.model.js`) | Identical shape to `Sale` | Purchase voucher store — a **separate collection**, not shared with `Sale` (voucher numbers are only unique within their own voucher-type numbering series in Tally). |
-| `SyncCheckpoint` (`syncCheckpoint.model.js`) | `tenantId`, `companyGuid`, `voucherType`, `lastAlterId`, `lastSyncedAt`, `lastRunStatus` (`never_run`\|`success`\|`failed`), `lastError`, `isRunning`, `lockedAt` | One document per {tenant, company, voucherType}; drives incremental sync. |
-| `ReconciliationCheckpoint` (`reconciliationCheckpoint.model.js`) | Same lock shape as above, plus `lastRunStatus` (`never_run`\|`success`\|`failed`\|`aborted_unsafe`), `lastTallyGuidCount`, `lastMongoActiveCount`, `lastMarkedDeletedCount` | Deliberately separate from `SyncCheckpoint`. |
-| `Chat` (`chat.model.js`) | `tenantId`, `userId` (ref `User`), `title`, `messages[]` (each: `role`, `text`, `toolCalls[]{toolName, state}`, `visualization`, `dataAsOf`, `warnings[]`) | Chat history — stores **only** the assistant's structured answer and minimal tool-call metadata, not raw analytics payloads or Mongo documents. |
+| `User` (`user.model.js`) | `name`, `email` (unique), `password` (bcrypt hash), `role`, `tokenVersion`, and the account's *default* company `companyName`, `companyGuId`, `companyId`, `tenantId` — all optional, empty until the first company is connected | Login identity. |
+| `UserCompanyAccess` (`userCompanyAccess.model.js`) | `userId`, `companyId`, `companyGuid`, `tenantId` | Every company an account may use (§4). |
+| `Sale`, `Purchase` (`sales.model.js`, `purchase.model.js`) | `tenantId`, `header{voucherNo, voucherDate, voucherType, voucherTotalAmount, narration, partyName}`, `inventory[]`, `ledgers[]`, `tallyGuid`, `tallyAlterId`, `voucherStatus` (`active`\|`cancelled`\|`deleted`) | Voucher stores — **separate collections** (voucher numbers are only unique within their own numbering series in Tally). |
+| `AdjustmentNote` (`adjustmentNote.model.js`) | `tenantId`, `companyGuid`, `header{…}`, `noteType` (credit/debit), `classification` (sales_return / purchase_return / value_adjustment / unclassified), richer `inventory[]`/`ledgers[]` | Credit and Debit Notes, one normalized model; `classification` decides whether a note is a return. |
+| `LedgerMaster` (`ledgerMaster.model.js`) | `tenantId`, `companyGuid`, `ledgerGuid`, `name`, `parentGroup`, `partyRole`, `accountRole`, `createdDate`, `removedAt` | Ledger masters: who is a customer/supplier, and when a party ledger was created ("new customer"). |
+| `StockItemMaster` (`stockItemMaster.model.js`) | `tenantId`, `itemName`, `stockGroupName`, `tallyGuid` | Item → stock group, for product-group analytics. |
+| `SyncCheckpoint` (`syncCheckpoint.model.js`) | `tenantId`, `companyGuid`, `voucherType`, `lastAlterId`, `lastSyncedAt`, `lastRunStatus`, `lastError`, `isRunning`, `lockedAt` | One document per {tenant, company, voucherType}; drives incremental sync. |
+| `ReconciliationCheckpoint` (`reconciliationCheckpoint.model.js`) | Same lock shape, plus `lastRunStatus` (`never_run`\|`success`\|`failed`\|`aborted_unsafe`), counters and self-heal fields | Deliberately separate from `SyncCheckpoint`. |
+| `TenantDataVersion` (`tenantDataVersion.model.js`) | `tenantId`, `version` | Per-tenant counter bumped by `dataVersion.tenantDataVersionPlugin` on every write to a model that feeds answers; invalidates the answer cache. |
+| `Chat` (`chat.model.js`) | `tenantId`, `userId`, `title`, `messages[]` (each: `role`, `text`, `toolCalls[]`, `visualization`, `dataAsOf`, `freshness`, `warnings[]`, `queryContext`) | Chat history. Assistant messages carry the deterministic answer, its presentation model and the **structured plan** (`queryContext`) used for follow-ups — never raw Mongo documents or prompts. |
+| `AiTurnUsage` (`aiTurnUsage.model.js`) | `ts`, `tenantId`, `requestId` (unique when present), `aiPath`, `plannerModel`, token counters, latencies, `ok`, `failureCategory` | One usage record per AI turn, written fire-and-forget (`AI_USAGE_PERSIST=off` disables). Counters only; no prompts, names or figures. |
 
 ### 5.2 Voucher identity: `{tenantId, tallyGuid}`
 
@@ -213,7 +218,7 @@ The unique identity of a voucher master is `{tenantId, tallyGuid}` — **not** `
 
 ### 6.1 Connection / configuration
 
-TallyPrime exposes an HTTP/JSONEx gateway (its "ODBC port," here used for HTTP, not the actual ODBC protocol — see §1.2 on the abandoned `odbc` package). Default: `http://localhost:9000`, overridable via `TALLY_URL`, or per-company via `Company.tallyConnection.baseUrl`. Whichever address is used must be `http://` or `https://`, without credentials, and not a link-local / cloud-metadata address (`src/services/odbc/tallyUrl.js`, checked when a company is saved and again where each request is built; localhost and LAN addresses are allowed — audit F-10). All requests are `axios.post(baseUrl, tdlRequestBody, {headers})` with a 30-second timeout (`src/services/odbc/odbcService.js`).
+TallyPrime exposes an HTTP/JSONEx gateway (its "ODBC port"; the backend speaks HTTP to it, not the ODBC protocol). Default: `http://localhost:9000`, overridable via `TALLY_URL`, or per-company via `Company.tallyConnection.baseUrl`. Whichever address is used must be `http://` or `https://`, without credentials, and not a link-local / cloud-metadata address (`src/services/odbc/tallyUrl.js`, checked when a company is saved and again where each request is built; localhost and LAN addresses are allowed — audit F-10). All requests are `axios.post(baseUrl, tdlRequestBody, {headers})` with a 30-second timeout (`src/services/odbc/odbcService.js`).
 
 ### 6.2 Required Tally-side setup
 
@@ -238,34 +243,41 @@ Every voucher in Tally carries a monotonically increasing `$AlterID`, bumped on 
 
 ## 7. API Documentation
 
-All routes are mounted in `server.js`. There are exactly **11 routes** in the whole application (verified by a full grep of every `router.get/post/put/delete` call) — no others exist.
+All routes are mounted in `backend/server.js`. "Company context" below means the request carries a company-scoped JWT: `activeCompanyContext` resolves it to `req.companyContext = {tenantId, companyGuid, companyId, companyName}` from the live `Company` record; `liveCompanyContext` additionally re-checks the account's access against the database on every request. No route ever reads a tenant or company from the request body or query string.
 
 ### 7.0 Route inventory
 
 | Method | Path | Auth | Controller |
 |---|---|---|---|
 | GET | `/` | none | inline in `server.js` (health check) |
-| POST | `/api/auth/register` | none (rate-limited: 20 per hour per client) | `authController.register` |
+| POST | `/api/auth/register` | none (rate-limited) | `authController.register` |
 | POST | `/api/auth/login` | none (rate-limited: 10 failed attempts per client + e-mail and 100 per client, per 15 minutes) | `authController.login` |
-| POST | `/api/auth/companies` | **JWT required** (no company needed) | `authController.addCompany` ("Connect Tally") |
-| GET | `/api/auth/companies` | **JWT required** | `authController.listCompanies` |
-| POST | `/api/auth/switch-company` | **JWT required** | `authController.switchCompany` |
-| PATCH | `/api/auth/company` | **JWT + a connected company** (access re-checked live) | `authController.updateCompanyName` |
-| POST | `/api/import/tally-json` | **JWT + a connected company** (access re-checked live, before the upload is stored) | `importController.importTallyJson` |
-| POST | `/api/import/tally-live` | **JWT + a connected company** (access re-checked live) | `importController.importTallyLive` |
-| GET | `/api/odbc/company` | **JWT required** (no company needed — used during onboarding) | `odbcController.testTallyConnection` |
-| GET | `/api/odbc/sales` | **JWT + a connected company**, and it must be the company Tally has selected | `odbcController.getSales` |
-| GET | `/api/chat/` | **JWT + activeCompanyContext** | `chatController.listChats` |
-| POST | `/api/chat/message` | **JWT + activeCompanyContext** | `chatController.sendChatMessage` |
-| POST | `/api/chat/:chatId/message` | **JWT + activeCompanyContext** | `chatController.sendChatMessage` |
-| GET | `/api/chat/:chatId` | **JWT + activeCompanyContext** | `chatController.getChat` |
-| DELETE | `/api/chat/:chatId` | **JWT + activeCompanyContext** | `chatController.deleteChat` |
+| POST | `/api/auth/companies` | JWT (no company needed; rate-limited) | `authController.addCompany` ("Connect Tally") |
+| GET | `/api/auth/companies` | JWT | `authController.listCompanies` |
+| POST | `/api/auth/switch-company` | JWT | `authController.switchCompany` |
+| PATCH | `/api/auth/company` | JWT + live company context | `authController.updateCompanyName` |
+| POST | `/api/import/tally-json` | JWT + live company context (checked before the upload is stored) | `importController.importTallyJson` |
+| POST | `/api/import/tally-live` | JWT + live company context | `importController.importTallyLive` |
+| GET | `/api/odbc/company` | JWT (no company needed — used during onboarding) | `odbcController.testTallyConnection` |
+| GET | `/api/odbc/sales` | JWT + live company context; must be the company Tally has selected | `odbcController.getSales` |
+| GET | `/api/sync/status` | JWT + live company context | `syncStatusController.getSyncStatus` |
+| POST | `/api/sync/recovery` | JWT + live company context | `syncRecoveryController.runVoucherRecovery` (dry run by default) |
+| GET | `/api/vouchers/sales`, `/api/vouchers/purchases` | JWT + live company context | `voucherController` (paginated, searchable lists) |
+| GET | `/api/analytics/sales/{summary,comparison,top-products,growing-products,declining-products,top-customers,trend,customer-counts,stock-groups}` | JWT + company context | `analyticsController` |
+| GET | `/api/analytics/purchases/{summary,comparison,top-suppliers,trend}` | JWT + company context | `analyticsController` |
+| GET | `/api/reports/{products,customers}` | JWT + company context | `reportController` |
+| GET | `/api/reports/{sales,purchases,products,customers}/export` | JWT + company context | `reportController` (CSV stream) |
+| GET | `/api/chat/` | JWT + company context | `chatController.listChats` |
+| POST | `/api/chat/message`, `/api/chat/:chatId/message` | JWT + company context | `chatController.sendChatMessage` |
+| GET | `/api/chat/:chatId` | JWT + company context | `chatController.getChat` |
+| PATCH | `/api/chat/:chatId` | JWT + company context | `chatController.renameChat` |
+| DELETE | `/api/chat/:chatId` | JWT + company context | `chatController.deleteChat` |
 
-> **Security note (updated 2026-09-21, audit finding F-03):** `src/routes/odbcRoutes.js` used to mount `/company` and `/sales` with no `auth` middleware. Both now require a signed-in user; `/sales` additionally requires a live, authorized company and answers only when that company is the one Tally has selected (otherwise `403`). Company access for the sync, import and rename routes is also re-checked against the live account on every request (finding F-06). See `TallyPulse-Security-Audit.md`, Section 0.
+> **Security note (audit F-03 / F-06):** `/api/odbc/*` requires a signed-in user; `/sales` additionally requires a live, authorized company and answers only when that company is the one Tally has selected (otherwise `403`). Company access for the sync, voucher, import and rename routes is re-checked against the live account on every request. See `TallyPulse-Security-Audit.md`, Section 0.
 
-**Request ids and logs (audit F-19).** Every response carries an `X-Request-Id` header (a client-sent id is reused only if it is short and plain); a server-error body also repeats it as `requestId`, and the matching server-log line starts with `request=<id>`. Failed logins and rate-limit hits are logged with the id and the client address — never the e-mail or password. **Git:** real `.env` files (any `.env.*`) are ignored at the repository root and in `backend/` and `frontend/`; `.env.example` stays committable.
+**Request ids and logs (audit F-19).** Every response carries an `X-Request-Id` header (a client-sent id is reused only if it is short and plain); a server-error body also repeats it as `requestId`, and the matching server-log line starts with `request=<id>`. Failed logins and rate-limit hits are logged with the id and the client address — never the e-mail or password. **Git:** real `.env` files (any `.env.*`) are ignored at the repository root, in `backend/` and in `frontend/`; `backend/.env.example` is the committed template.
 
-**Sessions and error responses (updated 2026-09-21, audit F-08 / F-12).** Every authenticated request loads the account once: a deleted user, or a token whose session version (`tv` claim) differs from `User.tokenVersion`, gets `401`. Raising `tokenVersion` signs an account out everywhere. Error bodies are always `{ success:false, message }` with a message chosen by the code — malformed JSON is `400 The request body is not valid JSON.`, an oversized body or upload is `413`, and anything unexpected is `500 Something went wrong on the server. Please try again.` (details in the server log only).
+**Sessions and error responses (audit F-08 / F-12).** Every authenticated request loads the account once: a deleted user, or a token whose session version (`tv` claim) differs from `User.tokenVersion`, gets `401`. Raising `tokenVersion` signs an account out everywhere. Error bodies are always `{ success:false, message }` with a message chosen by the code — malformed JSON is `400 The request body is not valid JSON.`, an oversized body or upload is `413`, and anything unexpected is `500 Something went wrong on the server. Please try again.` (details in the server log only).
 
 ### 7.1 `GET /`
 
@@ -400,7 +412,7 @@ Authorization: Bearer <token>
 
 **Errors:** 503 if `"Tally is unavailable: ..."` (connection failure), 400 for invalid or too-wide date ranges / no voucher data in range / bad company context, 401 if JWT lacks `companyGuId`, 500 otherwise (with a generic message — the details are in the server log).
 
-> There is **no equivalent live-import endpoint for Purchase vouchers** — Purchase data only enters MongoDB via the automatic incremental sync worker (§8.2), not through any manual HTTP endpoint.
+> There is **no equivalent live-import endpoint for Purchase vouchers** — Purchase data only enters MongoDB via the automatic incremental sync worker (§8), not through any manual HTTP endpoint.
 
 ### 7.6 `GET /api/odbc/company`
 
@@ -427,32 +439,44 @@ Fetches raw Sales vouchers for "today" (no date-range params are wired to this r
 **Response 200:** `{ "success": true, "data": { /* raw Tally response */ } }`
 **Errors:** 500 on Tally connection failure.
 
-### 7.8 `GET /api/chat/`
 
-List the authenticated user's own chats for their active company. **Requires JWT + resolved company context.**
+### 7.8 Analytics, vouchers, reports and sync status (summary)
 
-**Response 200:**
-```json
-{ "success": true, "data": [ { "_id": "...", "title": "How were sales last month?", "createdAt": "...", "updatedAt": "..." } ] }
-```
+These read-only endpoints serve the dashboards, analytics pages and reports. They take `period` (`current_month`, `previous_month`, `custom` with `from`/`to`) or the period kinds of `periodEngine` where noted, resolve relative periods from the tenant's reference date (`dateRanges.resolveRequestPeriod` / `resolveRequestComparison`, `periodEngine`), and return the trust envelope (`{state, data, freshness, message}`, §10). CSV exports stream the exact rows of the report they export. `GET /api/sync/status` reports each voucher type's checkpoint; `POST /api/sync/recovery` re-reads vouchers missing from MongoDB (a dry run unless confirmed).
 
 ### 7.9 `POST /api/chat/message` and `POST /api/chat/:chatId/message`
 
-Send a message; omit `:chatId` to start a new chat, include it to continue an existing one (must belong to the same tenant + user).
+Ask a question. Omit `:chatId` to start a new chat; include it to continue one that belongs to the same tenant and user.
 
-**Body:** `{ "message": "How did sales grow this month?" }`
+**Body:** `{ "message": "Top 5 customers by sales this month" }`
 
-**Response today: `501 Not Implemented`** — see §11/§12. The route, auth, company-context resolution, chat persistence-on-success, and the entire tool-calling loop up to (and including) tool execution are real and tested; only the final network call to Claude (`callClaude()`) is a stub that always throws `"callClaude is not implemented..."`, which this controller maps to HTTP 501.
+**Response 200:**
+```json
+{
+  "success": true,
+  "chatId": "<chat id>",
+  "data": {
+    "answer": "…deterministic text (Markdown-ish lines)…",
+    "insights": [],
+    "visualization": { "v": 1, "kind": "ranking", "…": "presentation model, or null" },
+    "details": { "toolCalls": [{ "toolName": "query_engine", "state": "valid_data" }], "queryEngine": { "route": "planner", "status": "answered", "claudeCalls": 1, "cache": "miss" } },
+    "dataAsOf": "ISO date or null",
+    "freshness": { "state": "fresh", "message": "…" },
+    "warnings": []
+  }
+}
+```
 
-**Errors:** 400 empty/missing `message`, 404 `chatId` not found/not owned, 501 (Claude not implemented — current default outcome), 500 other errors.
+Every turn ends with an honest answer in this shape: a figure computed by the engine, a clarification question, a refusal ("not available", "not synced for that period"), or a fixed failure message (planner unavailable, query too slow). There is no other chat path. The stored plan for follow-ups travels on the saved message, not in this response.
 
-### 7.10 `GET /api/chat/:chatId`
+**Errors:** `400` empty or non-string `message`, `404` `chatId` not found or not owned, `500` unexpected failure (generic body). A client that disconnects (the Stop button) ends the turn: nothing is saved and nothing is written to the closed connection.
 
-Fetch one chat's full message history (scoped to `{tenantId, userId}`). 404 if not found/not owned.
+### 7.10 `GET /api/chat/`, `GET /api/chat/:chatId`, `PATCH /api/chat/:chatId`, `DELETE /api/chat/:chatId`
 
-### 7.11 `DELETE /api/chat/:chatId`
-
-Delete one chat (scoped to `{tenantId, userId}`). 404 if not found/not owned; 200 `{success:true, message:"Chat deleted."}` otherwise.
+- `GET /` — the caller's chats for the active company (`_id`, `title`, timestamps), newest first.
+- `GET /:chatId` — one chat with its messages. `404` if not found or not owned.
+- `PATCH /:chatId` — rename: `{ "title": "…" }`, trimmed, 1–100 characters, no control characters; only the title changes and the list order is unaffected.
+- `DELETE /:chatId` — delete one chat. Every lookup filters by both `tenantId` and `userId`; another user's or company's chat id is a `404`.
 
 ---
 
@@ -466,6 +490,7 @@ Delete one chat (scoped to `{tenantId, userId}`). 404 if not found/not owned; 20
 | Manual import endpoint | `/api/import/tally-json`, `/api/import/tally-live` | **none** |
 | Checkpoint | `SyncCheckpoint{voucherType:"Sales"}` | `SyncCheckpoint{voucherType:"Purchase"}` — fully independent document |
 
+- **Credit and Debit Notes** sync through their own pipeline (`adjustmentNotePersistence.js`, the `AdjustmentNote` model, one `SyncCheckpoint` each for `voucherType` "Credit Note" and "Debit Note") so the proven Sales/Purchase path is untouched. Reconciliation and recovery do not cover them yet (§16).
 - **Idempotency:** `voucherPersistence.js`'s `createVoucherPersistence()` is the single shared upsert core for both. Identity is `{tenantId, tallyGuid}`; if a matching document exists and its stored `tallyAlterId >= incoming`, the write is skipped (`status:"duplicate"`). Re-running an already-applied batch is provably a no-op (tested — see §13).
 - **AlterID handling:** the checkpoint's `lastAlterId` only ever advances inside `releaseLock()`, and only when the batch's status is explicitly `"success"`. A batch with any failures leaves `lastAlterId` untouched so the same delta is retried next tick.
 - **Retry behavior:** both workers are designed to never throw out of their top-level per-{tenant, module} function — every outcome (success, partial failure, Tally error, Mongo error) returns a result object and always releases its own lock.
@@ -494,108 +519,137 @@ Delete one chat (scoped to `{tenantId, userId}`). 404 if not found/not owned; 20
 
 ## 10. Analytics Engine
 
-Every function below is a plain MongoDB aggregation — **no Claude involvement anywhere in this file**, and every `$match` stage is built exclusively via `analyticsScope.buildVoucherMatchStage()`.
+Plain MongoDB aggregations — **no Claude involvement anywhere** in `src/services/analytics/` — and every `$match` stage is built through `analyticsScope.buildVoucherMatchStage()`, which requires a `tenantId` and defaults to active vouchers only.
 
-| Function | Input | Output shape (informal) | Status |
-|---|---|---|---|
-| `getSalesSummary(tenantId, period)` | `period{from,to,label,isPartial}` | `{totalSales, orderCount, averageOrderValue, period, hasData}` | **IMPLEMENTED** |
-| `getSalesComparison(tenantId, current, previous)` | two periods | `{current, previous, growthAmount, growthPercentage, comparisonNote}` | **IMPLEMENTED** |
-| `getSalesGrowthVsPreviousMonth` / `getSalesGrowthVsSameMonthLastYear` | reference date | same as comparison, fixed period pairing | **IMPLEMENTED** |
-| `getTopProducts(tenantId, period, {limit})` | period + limit (1–50) | `{items:[{itemName,totalAmount,totalQuantity,orderCount}], period, hasData}` | **IMPLEMENTED** |
-| `getTopGrowingProducts` / `getDecliningProducts` | two periods + limit | `{items:[{itemName,current,previous,growthAmount,growthPercentage,isNew}], hasData}` | **IMPLEMENTED** — new products get `growthPercentage:null, isNew:true` rather than a fabricated infinite growth number |
-| `getTopCustomers(tenantId, period, {limit})` | period + limit | `{customers:[{customerName,totalAmount,orderCount}], period, hasData}` | **IMPLEMENTED** |
-| `getCategoryPerformance()` | — | `{supported:false, reason:"..."}` | **NOT IMPLEMENTED** — see below |
-| `getPurchaseSummary` / `getPurchaseComparison` / `getPurchaseGrowthVsPreviousMonth` | mirrors Sales | mirrors Sales (`totalPurchases` instead of `totalSales`) | **IMPLEMENTED** |
-| `getTopPurchasedProducts` | period + limit | same shape as `getTopProducts` | **IMPLEMENTED** in `purchaseAnalytics.js`, but **not currently exposed** as an AI tool (§11) |
+| Module | Role |
+|---|---|
+| `salesAnalytics.js`, `purchaseAnalytics.js` | Summaries, comparisons, top products/customers/suppliers, growing/declining products, trends, customer counts, customer sales. Back the REST analytics endpoints and are the independent oracles the query engine is checked against (`verify-query-parity.js`). |
+| `stockGroupAnalytics.js` | Deterministic Top-10 stock-group sales (item → group via `StockItemMaster`). |
+| `reportAnalytics.js` | Product/customer reports and CSV export rows. |
+| `periodEngine.js` | The single source of period kinds (current/previous week, month, quarter, FY, YTD, rolling windows, custom, same-period-last-year…) and their like-for-like / full-previous comparison windows. |
+| `dateRanges.js` | Calendar helpers (month-end-safe shifts) and the REST request periods (`resolveRequestPeriod`, `resolveRequestComparison`). |
+| `referenceDate.js` | The tenant's reference date (today, end of the local day) and its synced coverage window; one read per chat turn. |
+| `coverage.js` | Classifies a requested period against the synced window: covered / partly outside (caveat) / outside (refusal — missing data is never shown as zero). |
+| `freshness.js` | `fresh` / `stale` / `sync_failed` / `never_synced` from `SyncCheckpoint` (threshold `ANALYTICS_FRESHNESS_THRESHOLD_MINUTES`, default 15). |
+| `trustEnvelope.js` | Wraps every REST analytics result as `{state, data, freshness, message}`. |
 
-**Category analytics is explicitly and permanently `{supported:false}` given the current schema** — `Sale.inventory`/`Purchase.inventory` items only store `{itemName, quantity, rate, amount, discountPercentage, discountAmount}`; no stock-item category/group field is captured by the parser or mapper. Implementing it would require a parser/mapper change to extract and store that field — not done, and the code deliberately returns a typed "unsupported" result rather than a fabricated one.
+```json
+{
+  "state": "valid_data | zero_result | stale_data | sync_failed | no_usable_data | analytics_error",
+  "data": { "…": "the numbers; always includes hasData" },
+  "freshness": { "state": "fresh | stale | sync_failed | never_synced", "dataAsOf": "ISO date or null", "minutesSinceLastSync": 13, "lastRunStatus": "success | failed | never_run", "lastError": null, "message": "…" },
+  "message": "human-readable state explanation, or null when state=valid_data"
+}
+```
 
-Every result above is wrapped by `trustEnvelope.wrapAnalyticsResult()` before it ever leaves the tool layer — see §11 and §17 for the actual JSON shape a caller receives.
+Growth percentages are `null` (never infinity or zero) when the previous value is 0; products new in a period carry `isNew: true`. Category analytics beyond stock groups does not exist: the stored voucher items carry no category field and nothing is invented.
 
 ---
 
-## 11. AI Architecture
+## 11. AI Architecture: the query pipeline
 
-| Piece | File | Status |
-|---|---|---|
-| Tool argument schemas (zod, `.strict()`) | `src/services/ai/tools.js` | **IMPLEMENTED** |
-| Tool → analytics dispatch, tenant-context enforcement | `src/services/ai/toolRouter.js` | **IMPLEMENTED** |
-| Chat-turn orchestration loop (tool_use ↔ tool_result, `MAX_TURNS=4` cap) | `src/services/ai/chatOrchestrator.js` (`handleChatTurn`) | **IMPLEMENTED**, tested against a **mock** Claude client |
-| System prompt | `chatOrchestrator.js`'s `SYSTEM_PROMPT` constant | **IMPLEMENTED** (written, never sent to a real model) |
-| Actual Claude API network call | `chatOrchestrator.js`'s `callClaude()` | **NOT IMPLEMENTED** — always throws `"callClaude is not implemented - requires @anthropic-ai/sdk and a configured ANTHROPIC_API_KEY."` |
-| `@anthropic-ai/sdk` package | — | **not installed** (absent from `package.json`) |
-| `ANTHROPIC_API_KEY` | — | **not configured** (absent from `.env`) |
+There is **one** AI path. Claude is called once per question, as a *planner*; everything else is deterministic.
 
-**Security model, as actually implemented (not aspirational):**
-- Every tool schema is `.strict()` — an unexpected key (e.g. an attempt to smuggle a `tenantId` into tool arguments) is rejected outright, not silently stripped. No tool schema declares a tenant/company field in the first place.
-- Tenant/company context is a function *parameter*, supplied by the chat controller from `req.companyContext` (itself from `resolveAuthorizedCompany()`) — never read from tool arguments, never from anything the model returns.
-- All 9 currently defined tools (`get_sales_summary`, `get_sales_comparison`, `get_sales_growth`, `get_top_products`, `get_product_growth`, `get_declining_products`, `get_top_customers`, `get_category_performance`, `get_purchase_summary`, `get_purchase_growth`) are read-only — there is no "run arbitrary query" tool.
-- `get_top_purchased_products` (the Purchase equivalent of `get_top_products`) exists as an analytics function but is **not currently wired up as a 10th tool** — a real, minor gap, not a security issue.
+```
+question (+ the previous turn's structured plan, for follow-ups)
+  → safety gate (unsafe/empty/oversized text is refused before any call)
+  → freshness gate (nothing is planned for a company that never synced)
+  → planner:  ONE forced tool call `submit_query_plan` → a Query Plan, or a decline
+  → parseQueryPlan (strict zod schema) → validateQueryPlan (semantic catalog, tenant reference date)
+  → planner guards: year stated?  revenue basis?  new-customer comparison?  month-comparison rule
+  → tenant-scoped entity resolution (every customer/supplier/product/group name re-verified against the tenant's own data)
+  → freshness + coverage gates (no data is never shown as zero)
+  → answer cache (keyed by plan + reference date + TenantDataVersion)
+  → compile (safe, tenant-scoped aggregation pipeline) → execute (bounded time and size)
+  → deterministic answer text + presentation model (KPI / ranking / trend / comparison / table / empty)
+```
 
-**What "planned" means here:** the architecture (system prompt, tool defs, orchestration loop, security boundary) is fully designed and unit-tested via dependency injection (a mock `claudeClient` function). The only missing piece is installing `@anthropic-ai/sdk`, configuring `ANTHROPIC_API_KEY`, and implementing `callClaude()` as a thin wrapper around the real SDK — then testing it live. **Do not describe this as "Claude API integration exists" anywhere downstream of this document — it does not, yet.**
+| Module (`src/services/query/`) | Role |
+|---|---|
+| `queryChat.js` | The only entry point (`tryAnswerWithQueryEngine`): runs the pipeline above and always ends in an honest answer. |
+| `planner.js` | The Claude call and the server-side guards. System prompt and tool schema are generated from the catalog and marked cacheable; the request is the question (plus the previous plan as JSON) — never chat history, tenant data or the date. Bounded: attempt timeout, deadline, no repair call on the chat path. Anthropic-shaped client seam (`claudeClient(request, {signal})`). |
+| `queryPlan.schema.js` | The Query Plan v1 contract: entity (sales, purchase, sales_return, purchase_return), mode (aggregate/list), metrics, groupBy, filters, compare, having, sort, limit. Strict: tenant/company fields, Mongo operators and expressions are structurally impossible. |
+| `semanticCatalog.js` | What each metric, dimension, period and entity *means*; the single source for validator, compiler, planner prompt and tests. |
+| `validator.js` | Semantic validation and resolution of relative periods with the tenant reference date. |
+| `entityResolver.js` | Per-tenant name lists; an exact normalized match wins, or a unique leading word; an outage is reported as "unavailable", never as "not found". |
+| `compile.js`, `execute.js` | The plan becomes an aggregation pipeline that starts with the tenant + active `$match` (`assertPipelineSafe`); executor limits time and result size. |
+| `answerCache.js`, `dataVersion.js` | Cache invalidated by any write to a model that feeds answers. |
+| `followUp.js` | The previous turn's plan, stored on the assistant message and strictly re-parsed before use. |
+| `answerFormatter.js`, `presentation.js` | Deterministic text and the structured presentation model; no figure is computed by Claude or by the frontend. |
+| `turnTelemetry.js`, `usageStore.js` | One allow-listed event per turn (codes only) and one `AiTurnUsage` record. |
+
+**What Claude can never do here (structurally):** reach MongoDB, choose a tenant, write a pipeline, invent a name that is not in the tenant's data, or put a figure in an answer. It can only return a plan that survives the schema, the validator and the guards, or a decline.
+
+**Failure behaviour:** planner unreachable or unusable → a fixed "planner unavailable" message (no figure, no second Claude path); query too slow/large or any unexpected error → a fixed failure message; period outside the synced window → a missing-data refusal; unsupported or ambiguous question → the planner's decline or clarification.
+
+**Evaluation:** `backend/verify-nlu-eval.js` scores the planner against `backend/eval/nlu-corpus.json` (synthetic names, expected Query Plans). Its default mode is a free self-check; `--live --limit=N` makes one planner call per question.
 
 ---
 
 ## 12. Chat Architecture
 
-- **Chat model:** `Chat` (§5.1) — scoped by `{tenantId, userId}` together (never tenant alone, never user alone), so a query missing either filter still cannot cross into another user's or another company's chat history. Deliberately stores only the assistant's structured answer and minimal tool-call metadata (`toolName`, `state`) — never the raw analytics payload or a raw Mongo document.
-- **Routes:** `src/routes/chatRoutes.js` — every route passes through `auth` (JWT) then `activeCompanyContext` (authorization) before reaching the controller; no chat route ever sees `req.companyContext.tenantId` without both having passed.
-- **Message flow:** `sendChatMessage` loads (or creates in-memory) a `Chat`, appends the user message, calls `handleChatTurn()` with `{tenantId, companyGuid}` + full conversation history, appends the assistant's structured response, and **only then** persists (`chat.save()`) — a failed AI call never leaves an empty orphan chat behind.
-- **Tool execution:** delegated entirely to `toolRouter.executeToolCall()` (§11) — the controller and orchestrator never touch MongoDB or Tally directly.
-- **History:** `conversationHistory` is reconstructed from `chat.messages` as `{role, content}` pairs on every turn and passed back into `handleChatTurn`.
-- **Tenant/user isolation:** every chat lookup (`listChats`, `getChat`, `deleteChat`) filters by both `tenantId` and `userId`; a chat ID from another user or company simply 404s.
-- **Current real-world behavior:** every one of the above steps runs for real up to the point of calling `callClaude()`, which throws — the controller catches this and returns **HTTP 501**, without ever writing a chat message that was never actually answered.
+- **Model:** `Chat` (§5.1), scoped by `{tenantId, userId}` together.
+- **Routes:** `src/routes/chatRoutes.js` — every route passes `auth` (JWT) then `activeCompanyContext` before the controller runs.
+- **Turn:** `sendChatMessage` loads (or creates in memory) the chat, appends the user message, calls the query pipeline with `{tenantId, companyGuid}`, the previous structured plan and the abort signal, appends the assistant message (answer, presentation, freshness, warnings, stored plan) and only then saves — a failed turn never leaves an orphan chat.
+- **Stop:** the browser's `AbortController` closes the HTTP response; the controller turns that into an abort signal that stops the planner call, skips saving and records `clientAborted` / HTTP 499 in telemetry. Tokens the provider already processed may still be billed.
+- **Telemetry:** one `tallypulse.ai.turn` log line per turn (allow-listed codes, no free text) and one `AiTurnUsage` record, both carrying the request id returned as `X-Request-Id`.
+- **Frontend rendering:** the answer text is rendered as sanitised Markdown; the `visualization` model drives KPI cards, ranking/trend/comparison charts and exact-value tables.
 
 ---
 
 ## 13. Testing
 
-There is **no test framework** configured (`package.json`'s `"test"` script is the default placeholder). All verification is done via ad-hoc `node <script>.js` runners at the backend root, following the repo's existing convention. As of 2026-09-17, the current/maintained suites are:
+There is no test framework: every suite is a plain `node verify-*.js` script in `backend/` (and `verify-*.mjs` in `frontend/`) that prints a pass/fail line per check and exits non-zero on failure. Suites that need MongoDB use **synthetic tenants** they create and remove themselves; suites with a "REAL DATA" section compare against the real WE FOUR / Nirmal tenants read-only and print `SKIPPED` where those do not exist.
 
-| Script | Checks | Result (2026-09-17) | Label |
-|---|---|---|---|
-| `verify-analytics-and-ai.js` | Voucher identity, analytics scope fail-closed behavior, all 6 trust-envelope states, company-context authorization, tool-layer injection defense, mock-Claude tenant-smuggling defense | **18/18 PASS** | Mostly **SYNTHETIC**; runs against the real dev tenant's live data where noted |
-| `verify-voucher-lifecycle.js` | A–M matrix: create, replay/duplicate, alter, cancel, delete-tombstone (code path only), persistence-failure + retry, restart-recovery proxy, cross-tenant isolation, independent checkpoints, out-of-order AlterID, concurrent-write race | **14/14 PASS** | **SYNTHETIC**, one item explicitly marked **INFERRED**, and test G is explicitly labeled: tests the deletion code path only — a **real** `$IsDeleted=true` from a live Tally deletion remains **UNVERIFIED** (Tally never actually sets that flag — see §6.5; real deletions are caught by reconciliation, §3.4, not this flag) |
-| `verify-reconciliation.js` | **REAL**: two actual TallyPrime-deleted vouchers (Sales `SA/49/2025-26`, Purchase `SA/54/2025-26`) correctly detected, marked `deleted`, excluded from analytics, idempotent on re-run. Plus **SYNTHETIC** fail-closed guards (connection error, empty result, >50% ratio, malformed response) and checkpoint isolation/lock tests | **22/22 PASS** | **REAL** (deletion detection) + **SYNTHETIC** (safety guards) |
-| `verify-reconciliation-perf-and-failure.js` *(added during this verification pass)* | Performance at 8,000 synthetic active vouchers (single Mongo `find`, index-served per `.explain()`, single bulk `updateMany`, <1s); MongoDB failure simulated *after* a successful Tally snapshot — confirms fail-safe return, lock release, and successful retry on the very next run | **13/13 PASS** (0/11 pre-fix, before the reconciliation.js try/catch fix described in §3.5) | **SYNTHETIC**, isolated to a dedicated `PERFTEST-TENANT-RECON` tenant, fully cleaned up after |
+| Area | Suites |
+|---|---|
+| Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity`, `verify-query-planner`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
+| Chat, cost, telemetry | `verify-chat-management`, `verify-cost-forensic`, `verify-ai-telemetry`, `verify-ai-usage-persist` |
+| Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-planner-live-eval` (manual, real tenant, billed) |
+| Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
+| Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-migrate-voucher-total-amount` |
+| Sync and recovery | `verify-sync-batching`, `verify-voucher-recovery`, `verify-self-heal`, `verify-reconciliation-history`, `verify-reconciliation-perf-and-failure` |
+| Identity and security | `verify-security-audit` (executable audit probes), `verify-company-identity`, `verify-company-ownership`, `verify-multi-company` |
+| Needs live TallyPrime | `verify-voucher-type-classification`, `verify-voucher-lifecycle`, `verify-sync-worker-guard`, `verify-reconciliation` |
+| Needs a running backend on :5000 | `verify-company-guid-match`, `verify-dashboard-real-data`, `verify-reports`, `verify-voucher-pagination` |
+| Frontend (from `frontend/`) | `verify-chat-api.mjs`, `verify-chat-rendering.mjs`, `verify-chat-presentation.mjs`, `verify-dashboard-report-link.mjs`; `verify-chat-timeout.cjs` (about 45 s, run manually) |
 
-**Current total (maintained suites): 67/67 passing.**
-
-Older, superseded ad-hoc scripts also exist at the backend root from the original Sales-only phase (`verify-import-flow.js`, `verify-import-final.js`, `verify-duplicate-protection.js`, `verify-real-multi-voucher.js`, `verify-refactor.js`, `tmp-verify.js`, `list-indexes.js`, `drop-stale-indexes.js`) plus three small unit scripts under `src/services/*/test*.js` (`testTallyParser.js`, `testSalesMapper.js`, `testTallySalesImport.js`). These predate the Purchase/reconciliation/analytics work, are not part of the maintained regression suite, and are not required to pass for the backend to be considered verified today.
-
-**REAL vs SYNTHETIC vs UNVERIFIED, summarized:**
-- **REAL:** AlterID and IsCancelled are genuinely filterable Tally fields; a deleted voucher vanishes from every Tally query at every AlterID threshold; reconciliation correctly detected two actual live deletions; TallyPrime's HTTP/JSONEx gateway accepts the ad-hoc TDL collections this codebase sends.
-- **SYNTHETIC:** almost all lifecycle, idempotency, concurrency, and fail-closed-guard tests use constructed voucher payloads or substituted fetch functions, run against real MongoDB.
-- **UNVERIFIED:** `$IsDeleted` ever actually becoming `true` for a real deletion; reconciliation's empty-result guard's behavior for a tenant that is genuinely, legitimately empty of all data (vs. a bad Tally response) — the two are indistinguishable from Tally's response alone, and the current code treats both conservatively as "abort," which is safe but could show as a false "stuck" state for a truly-empty new tenant; reconciliation at real production scale (thousands, not just the 8,000 synthetic tested here); the entire Claude API integration (§11).
+**CI** (`.github/workflows/ci.yml`, on pull requests and pushes to `main`): backend install + syntax check + `npm audit`, frontend lint + build + verification scripts, and the self-contained backend suites above against a throwaway MongoDB service. The live-Tally, running-backend and billed-Claude suites are excluded and run manually.
 
 ---
 
 ## 14. Deployment / Environment
 
-### 14.1 Environment variables (all confirmed via source, none invented)
+### 14.1 Environment variables
+
+`backend/.env.example` is the committed template, with every variable below and its default. A real `.env` is never committed.
 
 | Variable | Used in | Default if unset |
 |---|---|---|
 | `PORT` | `server.js` | `5000` |
 | `MONGODB_URI` | `src/config/db.js` | none — required, process exits on connection failure |
 | `JWT_SECRET` | `authController.js`, `middleware/auth.js` | none — required |
-| `TALLY_URL` | `src/services/odbc/odbcService.js` | `http://localhost:9000` |
-| `TALLY_SYNC_INTERVAL_SECONDS` | `tallySyncWorker.js` | `60` |
-| `RECONCILIATION_INTERVAL_MINUTES` | `reconciliationWorker.js` | `20` |
-| `RECONCILIATION_MAX_DELETE_RATIO` | `reconciliation.js` | `0.5` |
+| `ANTHROPIC_API_KEY` | `planner.js` | none — without it every question gets the "planner unavailable" answer |
+| `ANTHROPIC_PLANNER_MODEL`, `ANTHROPIC_MODEL` | `planner.js`, `usageStore.js` | a built-in default model |
+| `AI_USAGE_PERSIST` | `usageStore.js` | persisting; `off` disables |
+| `TALLY_URL` | `odbcService.js` | `http://localhost:9000` |
+| `TALLY_SYNC_INTERVAL_SECONDS`, `TALLY_SYNC_BATCH_SIZE` | `tallySyncWorker.js` | `60`, workers' own default |
+| `RECONCILIATION_INTERVAL_MINUTES`, `RECONCILIATION_MAX_DELETE_RATIO` | `reconciliationWorker.js`, `reconciliation.js` | `20`, `0.5` |
+| `SELF_HEAL_ENABLED`, `SELF_HEAL_COOLDOWN_MINUTES`, `SELF_HEAL_MAX_BATCHES`, `SELF_HEAL_BATCH_SIZE`, `SELF_HEAL_MAX_AUTO_RECOVER` | `selfHeal.js` | `true`, `360`, `3`, unset, `20000` |
+| `VOUCHER_TYPE_CLASSIFICATION_CACHE_TTL_MINUTES` | `voucherTypeClassifier.js` | `360` |
+| `CORS_ORIGINS` | `httpSecurity.js` | the local Vite dev origins |
 | `ANALYTICS_FRESHNESS_THRESHOLD_MINUTES` | `freshness.js` | `15` |
-
-No `.env.example` file exists in the repository. `backend/.env` (present, git-tracked as modified per the working tree, not reproduced here) currently defines `PORT`, `MONGODB_URI`, `JWT_SECRET` only — the Tally/sync/reconciliation/freshness variables above are all currently running on their code defaults.
 
 ### 14.2 Ports / network
 
-- Backend HTTP server: `PORT` (default 5000).
-- MongoDB: Atlas-hosted, reached via `MONGODB_URI` (cloud, not local).
-- TallyPrime: `localhost:9000` by default — **this is an on-prem/LAN assumption**. The backend process must be able to reach the machine running TallyPrime directly; there is no tunnel, relay, or cloud-Tally-connectivity layer in this codebase. If the backend is ever deployed to the cloud while TallyPrime stays on-prem, direct connectivity from that cloud environment to `localhost:9000` (or any per-company `tallyConnection.baseUrl`) would not exist without additional infrastructure not present here.
+- Backend HTTP server: `PORT` (default 5000). Frontend dev server: 5173.
+- MongoDB: reached via `MONGODB_URI`.
+- TallyPrime: `localhost:9000` by default — an on-prem/LAN assumption. The backend process must reach the machine running TallyPrime directly; there is no tunnel or relay in this codebase.
+- Anthropic API: outbound HTTPS from the backend, from the planner only.
 
 ### 14.3 Worker requirements
 
-Both `startTallySyncWorker()` and `startReconciliationWorker()` are started from `server.js` in-process, immediately after `connectDB()` resolves — no separate worker process/deployment target exists; they run inside the same Node process as the HTTP server.
+The sync, reconciliation and self-heal workers start from `server.js` in the same Node process as the HTTP server, after `connectDB()` resolves. There is no separate worker deployment.
 
 ---
 
@@ -603,78 +657,41 @@ Both `startTallySyncWorker()` and `startReconciliationWorker()` are started from
 
 | Area | Status |
 |---|---|
-| Sales incremental sync | **DONE** |
-| Purchase incremental sync | **DONE** |
+| Sales / Purchase / Credit Note / Debit Note incremental sync | **DONE** |
 | Voucher identity (`tenantId`+`tallyGuid`) | **DONE** |
-| Reconciliation (deletion safety-net) | **DONE**, real-tested |
-| Reconciliation performance at scale (thousands+) | **PARTIALLY DONE** — verified to 8,000 synthetic vouchers; untested beyond that |
-| Reconciliation Mongo-failure safety | **DONE** (fixed 2026-09-17) |
-| Deterministic Sales/Purchase analytics | **DONE**, except category analytics |
-| Category-level analytics | **NOT IMPLEMENTED** (schema gap, deliberate) |
-| Freshness / trust-envelope states | **DONE** |
-| Auth (register/login/JWT) | **DONE** |
-| Single-company-per-user authorization | **DONE** |
-| True multi-company-per-user | **NOT IMPLEMENTED** (seam exists, join collection does not) |
-| Manual Sales import (file + live) | **DONE** |
-| Manual Purchase import endpoint | **NOT IMPLEMENTED** (Purchase only enters via the incremental worker) |
-| Chat data model, routes, tool-calling loop | **DONE**, tested against a mock Claude client |
-| Live Claude API call | **NOT IMPLEMENTED** (stub throws; no SDK/key) |
-| AI tool coverage of `getTopPurchasedProducts` | **NOT IMPLEMENTED** as a tool (analytics function exists, unexposed) |
-| `/api/odbc/*` authentication | **DONE** (2026-09-21, audit F-03) |
-| Frontend | **NOT IMPLEMENTED** — no code exists |
-| Automated test framework | **NOT IMPLEMENTED** — ad-hoc `node script.js` only |
+| Reconciliation, self-heal, recovery (Sales/Purchase) | **DONE**; reconciliation verified live and synthetically up to 8,000 vouchers |
+| Reconciliation/recovery for Credit/Debit Notes | **NOT IMPLEMENTED** (incremental sync only) |
+| Master refreshes (stock items, ledgers) | **DONE**, on demand (no scheduled job) |
+| REST analytics, vouchers, reports (CSV) | **DONE** |
+| Ask AI (planner + deterministic engine, follow-ups, Stop, rename, delete) | **DONE** |
+| Return analytics (sales/purchase returns, product-level returns) | **DONE** (engine); planner prompt coverage of the return entities is evaluated separately (`verify-nlu-eval.js`) |
+| Auth, Connect Tally, multi-company access, tenant isolation | **DONE** |
+| Invitation / owner approval for multi-user access to one company | **NOT IMPLEMENTED** |
+| Manual Purchase import endpoint | **NOT IMPLEMENTED** (Purchase enters via the incremental worker) |
+| Frontend | **DONE** (React) |
+| Automated tests | scripts + CI (§13); no test framework |
 
 ---
 
 ## 16. Known Limitations / Risks
 
-Only issues actually present and observed in this repository/testing are listed.
-
-1. ~~`/api/odbc/company` and `/api/odbc/sales` require no authentication.~~ **Fixed 2026-09-21 (audit F-03):** both need a signed-in user; `/sales` also needs the caller's own company to be the one Tally has selected. Remaining note: `/company` returns Tally's list of open company names to any signed-in account.
-2. **Sensitive data is logged to the console.** `authController.js`'s `register`/`login` handlers log full company/user objects and JWT payloads via `console.log`. Pre-existing, flagged in prior sessions, not fixed (kept out of scope for this documentation task per instructions not to modify app code beyond what's necessary).
-3. **Reconciliation's empty-result guard cannot distinguish "bad Tally response" from "this tenant genuinely has zero vouchers."** Both currently abort as `aborted_unsafe`. Safe by design, but would present as a permanently-stuck reconciliation state for a legitimately empty new tenant — untested against that specific scenario.
-4. **Reconciliation is untested at real production scale** (thousands to tens of thousands of vouchers) — only verified synthetically to 8,000.
-5. **No live Claude API integration** — `callClaude()` is a stub; `/api/chat/*/message` currently always returns 501.
-6. **`getTopPurchasedProducts` exists but is not exposed as an AI tool** — a real, minor completeness gap on the Purchase side relative to Sales' `getTopProducts`.
-7. **No manual Purchase import endpoint** — if the incremental sync worker is ever down for an extended period, there is no fallback manual-fetch path for Purchase data (Sales has one via `/api/import/tally-live`).
-8. **True multi-company-per-user is not implemented** — the authorization seam (`resolveAuthorizedCompany`) exists for it, but the underlying join collection does not.
-9. **Category-level analytics is unsupported by design** — the current schema does not capture stock-item category/group.
-10. **On-prem/LAN Tally connectivity assumption** — see §14.2. Any future cloud deployment of the backend needs a connectivity story to reach TallyPrime that does not exist in this codebase today.
-11. **No automated test framework or CI** — correctness relies entirely on the ad-hoc verification scripts described in §13, run manually.
-12. ~~Several `package.json` dependencies are declared but unused (`odbc`, `joi`, `winston`, `bcrypt`)~~ — **removed 2026-09-21 (audit F-17).**
+1. **Reconciliation's empty-result guard cannot distinguish "bad Tally response" from "this tenant genuinely has zero vouchers"**: both abort as `aborted_unsafe`. Safe, but a legitimately empty new tenant would look stuck.
+2. **Reconciliation is untested at real production scale** (tens of thousands of vouchers); verified synthetically to 8,000.
+3. **No poison-voucher quarantine:** one unmappable voucher blocks the checkpoint.
+4. **Credit/Debit Note recovery and reconciliation do not exist yet**; a manually deleted note strands like a manually deleted Sale would.
+5. **No manual Purchase import endpoint**: if the sync worker is down for long, there is no manual fallback for Purchase data.
+6. **No invitation system:** a company belongs to the account that connected it first.
+7. **Stock-item and ledger masters refresh on demand only.**
+8. **On-prem/LAN Tally connectivity assumption** (§14.2): a cloud deployment needs a connectivity story that does not exist here.
+9. **The planner is not cached** and costs one Claude call per question; the entity resolver cold-loads a tenant's name lists after a data refresh.
+10. **Stop cannot undo provider work already done**: tokens processed before the abort may still be billed; if the server finished and saved before the disconnect arrived, the turn appears when the chat is reopened.
+11. **REST dashboards anchor to the latest voucher** and their `vs_previous_month` cards keep the same-days comparison, while Ask AI uses today's date and "this month vs last month" means the month to date against the complete previous month (see `PROJECT_CONTEXT.md` §H).
 
 ---
 
-## 17. Frontend Readiness
+## 17. Frontend
 
-**What is ready today:**
-
-- **Auth:** `/api/auth/register` (name/email/password), `/api/auth/login` (email/password) and `POST /api/auth/companies` ("Connect Tally") are complete; the last one returns a company-scoped JWT usable as `Authorization: Bearer <token>` on every other authenticated route.
-- **Manual Sales import:** both `/api/import/tally-json` (file upload) and `/api/import/tally-live` (date-range live fetch) are complete, with a stable, documented response shape (§7.4–7.5).
-- **Chat scaffolding:** list/get/delete chat endpoints (`GET /api/chat/`, `GET /api/chat/:chatId`, `DELETE /api/chat/:chatId`) are fully functional today and return real, persisted data. A frontend chat list/history UI can be built against these three right now.
-- **Analytics contract, if/when reachable:** every analytics tool result (see §10, §11) — once actually reachable through a working `POST /api/chat/*/message` call — is wrapped in a single, stable, already-verified JSON envelope:
-  ```json
-  {
-    "state": "valid_data | zero_result | stale_data | sync_failed | no_usable_data | analytics_error",
-    "data": { /* the actual numbers, shape varies by tool, always includes hasData */ },
-    "freshness": {
-      "state": "fresh | stale | sync_failed | never_synced",
-      "dataAsOf": "ISO date or null",
-      "minutesSinceLastSync": 13,
-      "lastRunStatus": "success | failed | never_run",
-      "lastError": null,
-      "message": "human-readable freshness explanation"
-    },
-    "message": "human-readable state explanation, or null when state=valid_data"
-  }
-  ```
-  This shape was live-verified against all 9 currently-defined tools during this verification pass and contains no leaked Mongo internals (`_id`, `__v`) — a frontend can render `state`/`freshness`/`message` directly without guessing field names.
-
-**What is NOT ready:**
-
-- **`POST /api/chat/*/message` currently always returns 501.** There is no way to actually get an analytics answer through the chat endpoint yet — the tool layer works, but nothing calls it in production because `callClaude()` is unimplemented. A frontend chat UI can be built against the request/response *shape*, but cannot demo a real answer until §11 is completed.
-- **No direct REST endpoints for analytics** — every analytics tool (§10) is reachable *only* through the chat/tool-calling path, not as its own `GET /api/analytics/...` route. If the frontend needs analytics before Claude integration lands, either (a) a thin REST wrapper around the existing `toolRouter.executeToolCall()` would need to be added (small, additive — not part of this documentation task), or (b) frontend work is blocked on §11.
-- **No Purchase live-import or purchased-products-tool endpoint** for a frontend that wants those specifically outside the incremental sync's own cadence.
+`frontend/` is a React 19 + Vite single-page app (Tailwind CSS 4, Recharts, react-router). Pages: Dashboard, Sales / Purchase / Customers / Products analytics, Reports (with CSV export), Sync Data (checkpoint status and recovery), Ask AI, Settings, and the auth pages (register, login, Connect Tally). It talks to the backend over REST with the company-scoped JWT; it never computes a business number — Ask AI figures come from the answer text and the presentation model the backend produced. `frontend/src/api/` holds the API layer; `frontend/src/components/chat/` renders answers.
 
 ---
 
@@ -683,92 +700,65 @@ Only issues actually present and observed in this repository/testing are listed.
 ### 18.1 Project structure
 
 ```
-D:\TallyPulse\
+TallyPulse/
 ├── backend/
-│   ├── server.js                     # Express app entry point
-│   ├── .env                          # PORT, MONGODB_URI, JWT_SECRET
+│   ├── server.js                       # Express app entry point
+│   ├── .env.example                    # configuration template (real .env is git-ignored)
 │   ├── src/
-│   │   ├── config/db.js              # mongoose.connect()
-│   │   ├── controllers/              # authController, importController, odbcController, chatController
-│   │   ├── middleware/               # auth.js (JWT), upload.js (multer)
-│   │   ├── models/                   # company, user, sales, purchase, syncCheckpoint,
-│   │   │                             # reconciliationCheckpoint, chat
-│   │   ├── routes/                   # authRoutes, importRoutes, odbcRoutes, chatRoutes
+│   │   ├── config/db.js
+│   │   ├── controllers/                # auth, import, odbc, chat, analytics, report, voucher, sync*
+│   │   ├── middleware/                 # auth, httpSecurity, rateLimit, requestId, errorHandler, upload
+│   │   ├── models/                     # §5.1
+│   │   ├── routes/
 │   │   └── services/
-│   │       ├── ai/                   # tools.js, toolRouter.js, chatOrchestrator.js
-│   │       ├── analytics/            # analyticsScope, dateRanges, freshness, trustEnvelope,
-│   │       │                         # salesAnalytics, purchaseAnalytics
-│   │       ├── auth/                 # companyContext.js
-│   │       ├── import/               # tallySalesImport.js, tallyPurchaseImport.js
-│   │       ├── mapper/               # salesMapper.js, purchaseMapper.js
-│   │       ├── odbc/                 # odbcService.js (Tally HTTP/JSONEx client)
-│   │       ├── parser/               # tallyParser.js, jsonParser.js
-│   │       └── sync/                 # tallySyncWorker.js, reconciliationWorker.js,
-│   │                                 # reconciliation.js, voucherPersistence.js
-│   ├── sample-data/                  # tally-sales.json, tally-multi-vouchers.json
-│   ├── uploads/                      # multer disk storage target (files are deleted after processing)
-│   └── verify-*.js, list-indexes.js, etc.  # ad-hoc verification scripts (see §13)
-├── docs/                             # this file
-├── postman/                          # scaffold only — no populated collections/environments yet
-├── README.md                         # brief, partially outdated project summary
-└── REFACTORING_SUMMARY.md            # historical record of a past cleanup pass
+│   │       ├── analytics/              # §10
+│   │       ├── auth/                   # companyContext, companyIdentity, tallyCompanyGuard
+│   │       ├── import/                 # tallySalesImport, tallyPurchaseImport
+│   │       ├── mapper/ parser/         # Tally voucher -> documents
+│   │       ├── odbc/                   # Tally HTTP/JSONEx client (+ URL safety)
+│   │       ├── query/                  # §11 the query pipeline
+│   │       ├── sync/                   # workers, reconciliation, self-heal, recovery, persistence
+│   │       └── tally/                  # masters, voucher-type classifier, ownership guard
+│   ├── eval/nlu-corpus.json            # planner evaluation corpus (synthetic names)
+│   ├── verify-*.js                     # verification suites (§13)
+│   └── *.js                            # operator scripts (master refreshes, migrations, index tools)
+├── frontend/                           # React app + verify-*.mjs
+├── docs/                               # this file, PROJECT_CONTEXT.md, SEMANTIC_FOUNDATION.md
+├── TallyPulse-Security-Audit.md        # security audit, fix log and runnable probes' register
+├── .github/workflows/ci.yml
+└── CLAUDE.md                           # working rules for AI-assisted development
 ```
 
-### 18.2 Install
+### 18.2 Install and configure
 
 ```bash
-cd backend
-npm install
+cd backend && npm install
+cp .env.example .env     # then fill in MONGODB_URI, JWT_SECRET and (for Ask AI) ANTHROPIC_API_KEY
+cd ../frontend && npm install
 ```
 
-### 18.3 Configure
-
-Create/edit `backend/.env`:
-
-```
-PORT=5000
-MONGODB_URI=<your MongoDB Atlas or local connection string>
-JWT_SECRET=<any long random string>
-```
-
-Optional overrides (all have working defaults — see §14.1): `TALLY_URL`, `TALLY_SYNC_INTERVAL_SECONDS`, `RECONCILIATION_INTERVAL_MINUTES`, `RECONCILIATION_MAX_DELETE_RATIO`, `ANALYTICS_FRESHNESS_THRESHOLD_MINUTES`.
-
-### 18.4 Start the server (and both workers)
+### 18.3 Run
 
 ```bash
-cd backend
-node server.js
+cd backend && node server.js        # API + both workers (nodemon: npx nodemon server.js)
+cd frontend && npm run dev          # http://localhost:5173
 ```
 
-Both the incremental sync worker and the reconciliation worker start automatically, in-process, once MongoDB connects — there is no separate command to run them.
-
-For auto-restart during development:
-```bash
-cd backend
-npx nodemon server.js
-```
-
-### 18.5 Run the verification suites
+### 18.4 Verify
 
 ```bash
-cd backend
-node verify-analytics-and-ai.js
-node verify-voucher-lifecycle.js
-node verify-reconciliation.js
-node verify-reconciliation-perf-and-failure.js
+cd backend && node verify-query-planner.js     # any single suite
+cd frontend && npm run lint && npm run build && node verify-chat-rendering.mjs
 ```
 
-Each connects to the real configured MongoDB, runs its checks (mutating and then cleaning up its own test data), and prints a `PASS`/`FAIL` line per check plus a final `X passed, Y failed` summary. TallyPrime must be reachable at the configured URL for the REAL sections of `verify-reconciliation.js` to run (it skips them gracefully and logs `Skipping REAL sections` if not).
+Each backend suite connects to the configured MongoDB, creates and removes its own synthetic data, and prints `X passed, Y failed`. Point `MONGODB_URI` at a throwaway database when running the sync/reconciliation/security suites — CI does.
 
-### 18.6 Test the HTTP API
+### 18.5 Development notes
 
-See §19 below for concrete examples. In short: register → login → Connect Tally (open the company in TallyPrime first) → use the returned company-scoped JWT as a Bearer token for every other route except `/`, `/api/auth/register`, `/api/auth/login`, and (currently, unintentionally) `/api/odbc/*`.
-
-### 18.7 Important development notes
-
-- Never assume TallyPrime or the backend process are still running from a previous session — both restart independently. Always check with `curl -s -o /dev/null -w "%{http_code}" http://localhost:9000` before relying on Tally connectivity.
-- The project's convention is **no commits without explicit instruction** — this repository has substantial uncommitted work in its working tree by design; do not assume `git status` being "dirty" is unintentional.
-- Prefer real TallyPrime testing over synthetic wherever Tally is reachable; label synthetic tests explicitly when used (the existing `verify-*.js` scripts all follow this convention and this document does too, per §13).
+- Never assume TallyPrime or the backend process are still running from a previous session.
+- Tally is queried one request at a time, narrow ranges, bounded timeouts; the gateway hangs under wide or concurrent queries.
+- No real tenant data in fixtures: use synthetic names and GUIDs.
+- Commits and pushes are made only on explicit instruction (`CLAUDE.md`).
 
 ---
 
@@ -817,7 +807,7 @@ Response (201): `{ "success": true, "message": "Company connected.", "token": "<
 ```bash
 curl -X POST http://localhost:5000/api/import/tally-json \
   -H "Authorization: Bearer $TOKEN" \
-  -F "file=@sample-data/tally-multi-vouchers.json"
+  -F "file=@your-tally-sales-export.json"
 ```
 
 ### 19.4 Trigger a live Tally import for a date range
@@ -840,7 +830,7 @@ curl -H "Authorization: Bearer <company-scoped-token>" http://localhost:5000/api
 # List chats
 curl http://localhost:5000/api/chat/ -H "Authorization: Bearer $TOKEN"
 
-# Send a message (starts a new chat) — currently returns 501, see §11/§12
+# Send a message (starts a new chat); needs ANTHROPIC_API_KEY, otherwise the answer says the planner is unavailable
 curl -X POST http://localhost:5000/api/chat/message \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -849,30 +839,25 @@ curl -X POST http://localhost:5000/api/chat/message \
 # Fetch a specific chat
 curl http://localhost:5000/api/chat/<chatId> -H "Authorization: Bearer $TOKEN"
 
+# Rename a chat
+curl -X PATCH http://localhost:5000/api/chat/<chatId> \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Q3 sales review"}'
+
 # Delete a chat
 curl -X DELETE http://localhost:5000/api/chat/<chatId> -H "Authorization: Bearer $TOKEN"
 ```
 
-### 19.7 Exercising the analytics tool layer directly (Node REPL / script — no REST route exists yet)
+### 19.7 Deterministic analytics (no AI involved)
 
-Since no REST endpoint exposes analytics directly (§17), a developer who wants to test analytics before Claude integration lands can call the tool router in a small script:
-
-```js
-require("dotenv").config();
-const connectDB = require("./src/config/db");
-const { executeToolCall } = require("./src/services/ai/toolRouter");
-
-(async () => {
-  await connectDB();
-  const result = await executeToolCall({
-    toolName: "get_sales_summary",
-    toolInput: {},
-    context: { tenantId: "<your tenantId>", companyGuid: "<your companyGuid>" },
-  });
-  console.log(JSON.stringify(result, null, 2));
-  process.exit(0);
-})();
+```bash
+curl "http://localhost:5000/api/analytics/sales/summary?period=current_month" \
+  -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:5000/api/analytics/sales/top-customers?period=custom&from=2026-09-01&to=2026-09-30" \
+  -H "Authorization: Bearer $TOKEN"
 ```
+
+Both return the trust envelope (§10).
 
 ---
 
@@ -884,6 +869,6 @@ const { executeToolCall } = require("./src/services/ai/toolRouter");
 | **Voucher identity is `{tenantId, tallyGuid}`, not `voucherNo`.** | Confirmed live that two distinct Tally voucher masters can share a voucher number; keying identity on `tallyGuid` is the only correct choice, applied identically to both Sale and Purchase. |
 | **Incremental AlterID sync + a separate reconciliation safety-net, rather than one mechanism trying to do both.** | AlterID-based polling is cheap and correct for creates/edits but structurally cannot see deletions (confirmed live); rather than compromise the proven incremental path, deletion detection was built as its own independent job with its own checkpoint, cadence, and fail-closed guards. |
 | **Shared-database, multi-tenant architecture via `tenantId`, not per-tenant databases.** | One MongoDB deployment serves every company; isolation is enforced entirely in application code (`analyticsScope`, `voucherPersistence`, `companyContext`) rather than at the infrastructure level — a deliberate simplicity trade-off, with `tenantId` treated as a mandatory, fail-closed parameter everywhere. |
-| **Deterministic analytics before AI.** | Every number Claude will ever present is computed by a plain MongoDB aggregation, wrapped in an explicit trust/freshness envelope, before any model is involved. Claude's role is explanation, never computation — enforced structurally (no tool exists that lets Claude run an arbitrary query), not just by prompt instruction. |
+| **Deterministic analytics before AI.** | Every number the product shows is computed by a plain MongoDB aggregation, wrapped in an explicit trust/freshness envelope, by code, never by a model. Claude's only role is turning a question into a structured Query Plan, never computation — enforced structurally (the plan schema cannot express a tenant, a Mongo operator or a figure; the engine compiles every pipeline itself), not just by prompt instruction. |
 | **Smallest-safe-change / parallel-implementation over shared abstraction.** | Reconciliation deliberately mirrors (rather than shares code with) the incremental sync worker's lock pattern, and uses its own checkpoint collection, so a bug in the newer mechanism can never corrupt the proven one. |
 | **Fail-closed as the default posture for anything touching tenant data or bulk mutations.** | Both `analyticsScope` (missing tenantId) and `reconciliation.js` (connection errors, malformed responses, suspicious empty results, high delete ratios, and now Mongo failures) refuse to act rather than guess, even at the cost of occasionally requiring manual review. |

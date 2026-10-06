@@ -7,6 +7,7 @@
 | **Not touched** | No production code was changed. No real customer data, real Tally instance or real secret value was read or printed |
 | **Result** | **74 probes: 74 secure, 0 vulnerable** (30 / 23 of 53 at the start of the fixes on 2026-09-21) (3 open companies simulated: Nirmal, WE FOUR, Intelli-Cart) |
 | **Status** | Remediation in progress (2026-09-21): **17 of the 19 findings fixed and verified** (all Low findings included); **F-02** (database credentials — replaced at deployment) and **F-09** (a decision) remain — it needs you to rotate the MongoDB password. See [Section 0](#0-remediation-progress) |
+| **Later changes** | `verify-analytics-and-ai.js`, named in the test tables below, was retired when the legacy Claude chat was removed; `verify-security-audit.js` remains the executable record of the probes. A database credential committed earlier (F-02) stays valid in anyone's copy of the old history until it is rotated in MongoDB Atlas, whatever is done to the history |
 | **Audience** | A developer who is still learning security — every finding says *what*, *where*, *why it matters* and *how big the fix is* |
 
 ---

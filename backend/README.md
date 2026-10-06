@@ -1,34 +1,26 @@
-# TallyPulse
+# TallyPulse backend
 
-TallyPulse is a backend application for handling Tally import workflows and related sales data processing.
-
-## Project structure
-
-- `backend/` - Express server, routes, models, config, and uploads
-
-## Features
-
-- Express API server
-- MongoDB connectivity
-- Import route for tally JSON payloads
-- Backend service structure ready for extension
-
-## Getting started
+Node.js (CommonJS) + Express 5 + Mongoose 9. Entry point: `server.js`, which connects MongoDB, mounts the routes under `/api/*` and starts the sync, reconciliation and self-heal workers in the same process.
 
 ```bash
-cd backend
 npm install
-node server.js
+cp .env.example .env     # fill in MONGODB_URI, JWT_SECRET, and ANTHROPIC_API_KEY for Ask AI
+npm start                # node server.js
+npm run dev              # nodemon server.js
 ```
 
-The server runs on port `5000` by default.
+## Layout
 
-## API example
+| Path | Role |
+|---|---|
+| `src/controllers`, `src/routes`, `src/middleware` | HTTP layer: auth, import, Tally connectivity, sync status, vouchers, analytics, reports, chat |
+| `src/services/odbc`, `parser`, `mapper`, `tally` | The Tally HTTP/JSONEx client, parsing and mapping, master refreshes, company ownership checks |
+| `src/services/sync` | Incremental sync worker, reconciliation, self-heal, recovery, idempotent persistence |
+| `src/services/analytics` | Deterministic aggregations, period math, freshness and coverage (REST analytics and reports) |
+| `src/services/query` | Ask AI: Claude planner → Query Plan → validation → compile → execute → deterministic answer |
+| `src/models` | Mongoose models (every tenant-owned document carries `tenantId`) |
+| `eval/nlu-corpus.json` | Planner evaluation corpus (synthetic names) |
+| `verify-*.js` | Verification suites, run with plain `node` |
+| `refresh-*.js`, `run-adjustment-note-sync.js`, `migrate-*.js`, `*-indexes.js` | Operator scripts (master refreshes, one-off migrations, index tools) |
 
-```http
-POST /api/import/tally-json
-```
-
-## Notes
-
-This project is currently under active backend development.
+See the [technical documentation](../docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md) for the architecture, data model, API reference and the list of test suites, and [`../docs/PROJECT_CONTEXT.md`](../docs/PROJECT_CONTEXT.md) for the code map.
