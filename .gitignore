@@ -1,4 +1,4 @@
-# Secrets: never commit real environment files. Use .env.example for a template.
+# Secrets: never commit real environment files. Use backend/.env.example as the template.
 .env
 .env.*
 !.env.example
@@ -11,5 +11,14 @@ dist-ssr/
 # Logs
 *.log
 
-# Customer files uploaded through the manual import (deleted after processing, but never commit any)
+# Real customer data: files uploaded through the manual import, and real-tenant exports / audit output.
+# Never commit any of it.
 backend/uploads/
+backend/*-backfill-export.json
+backend/ai-audit-results.json
+
+# Generated evaluation output (regenerated on demand by verify-nlu-eval.js / verify-planner-live-eval.js)
+backend/eval-*.json
+
+# Local tool state
+.claude/scheduled_tasks.lock
