@@ -79,7 +79,7 @@ const groupResult = {
 };
 const DETERMINISTIC = formatQueryAnswer({ plan: groupPlan, result: groupResult }).text;
 const NO_DATA = formatQueryAnswer({ plan: groupPlan, result: { ...groupResult, rows: [], totals: { values: { lineAmount: 0 } } } }).text;
-const CLARIFY = formatNonAnswer({ status: "needs_clarification", code: "period_label_unsupported", reason: "x" });
+const CLARIFY = formatNonAnswer({ status: "needs_clarification", code: "year_missing", reason: "x" });
 const LONG = formatQueryAnswer({
   plan: groupPlan,
   result: { ...groupResult, rows: Array.from({ length: 40 }, (_, i) => ({ key: { productGroup: `Test Group ${i + 1}` }, values: { lineAmount: 100000 - i * 997.5 } })) },
@@ -126,10 +126,10 @@ try {
   check("no raw pipes/asterisks/hashes visible", !RAW_MD.test(visible(h)) && !visible(h).includes("|"), visible(h));
   check("currency and percentages unchanged", ["₹18,74,081.23", "+12.3%", "-0.7%", "₹29,71,055.08"].every((v) => visible(h).includes(v)));
 
-  section("3. Clarification answer (router text, ₹0 path) + visual variant");
-  h = bubble({ role: "assistant", text: CLARIFY, toolCalls: [], details: { toolCalls: [], queryEngine: { route: "router", status: "needs_clarification", code: "period_label_unsupported", claudeCalls: 0 } } });
+  section("3. Clarification answer (planner clarification text, ₹0 path) + visual variant");
+  h = bubble({ role: "assistant", text: CLARIFY, toolCalls: [], details: { toolCalls: [], queryEngine: { route: "planner", status: "needs_clarification", code: "year_missing", claudeCalls: 0 } } });
   check("clarification bubble is visually distinct and labelled", /Clarification needed/.test(h) && /bg-brand-50/.test(h), h);
-  check("clarification text shown exactly", visible(h).includes("Q1 = April–June") && visible(h).includes('"2025-04-01 to 2025-06-30"'), visible(h));
+  check("clarification text shown exactly", visible(h).includes("Which year do you mean?") && visible(h).includes('"April 2025"'), visible(h));
 
   section("4. No-data answer + visual variant");
   h = bubble({ role: "assistant", text: NO_DATA, toolCalls: [{ toolName: "query_engine", state: "zero_result" }] });
