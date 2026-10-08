@@ -211,10 +211,12 @@ function validateQueryPlan(raw, { referenceDate } = {}) {
     }
   }
 
-  // quantity is unit-safe only when tied to a single product.
+  // A quantity (quantity, returnQuantity) is unit-safe only when tied to a single product: every metric that declares the mixed_units
+  // caveat in the catalog gets it (no unit of measure is stored).
   const singleProductFilter = plan.filters.some((f) => f.dim === "product" && (f.op === "eq_ci" || (f.op === "in_ci" && f.value.length === 1)));
-  if (usableMetrics.includes("quantity") && !groupDims.includes("product") && !singleProductFilter) {
-    warnings.push({ code: "warn_mixed_units", message: CATALOG.metrics.quantity.caveatRules[0].message });
+  const mixedUnitsRule = usableMetrics.map((id) => (CATALOG.metrics[id].caveatRules || []).find((r) => r.code === "mixed_units")).find(Boolean);
+  if (mixedUnitsRule && !groupDims.includes("product") && !singleProductFilter) {
+    warnings.push({ code: "warn_mixed_units", message: mixedUnitsRule.message });
   }
 
   // 3. Mode-specific ---------------------------------------------------------

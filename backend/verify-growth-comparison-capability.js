@@ -50,6 +50,9 @@ function check(label, cond, detail) {
   }
 }
 const section = (t) => console.log(`\n=== ${t} ===`);
+// A reference date is a LOCAL calendar day (the app uses the end of the local day): the anchors are built as local noon of that day, never as a UTC instant
+// (a UTC-midnight instant is the previous calendar day west of UTC).
+const localNoon = (iso) => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d, 12); };
 const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 (async () => {
   // =============================================================== A
@@ -64,7 +67,7 @@ const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
     const dc = buildDateContext({ sales: { earliest: d(2025, 4, 1), latest: d(2025, 12, 8) }, purchase: { earliest: d(2025, 3, 15), latest: d(2025, 12, 10) } }, new Date(2026, 8, 28, 12));
     const none = buildDateContext({ sales: {}, purchase: {} }, new Date(2026, 8, 28, 12));
     // Decision 1 (2026-09-28): the reference date is TODAY (end of the local day), never the latest voucher
-    check("reference date = today (decision 1), not the latest voucher; synced window starts at the earlier first voucher; no vouchers -> no window", dc.referenceDate.getTime() === new Date(2026, 8, 28, 23, 59, 59, 999).getTime() && dc.source === "today" && dc.coverage.earliest.getTime() === d(2025, 3, 15).getTime() && none.coverage.earliest === null && none.coverage.latest === null);
+    check("reference date = today (decision 1), not the latest voucher; synced window starts at the earlier first voucher; no vouchers -> no window", dc.referenceDate.getTime() === new Date(2026, 8, 28, 23, 59, 59, 999).getTime() && dc.source === "today" && ymdLocal(dc.coverage.earliest) === "2025-03-15" && none.coverage.earliest === null && none.coverage.latest === null);
     const lag = new Date(2025, 11, 8, 0, 0); // a tenant whose sync ends 8 Dec 2025
     const engineMonth = periodEngine.resolvePeriod("current_month", lag);
     const restMonth = dateRanges.resolveRequestPeriod({ period: "current_month" }, lag);
@@ -338,7 +341,7 @@ async function engineVsOracle() {
     const fmt = (s) => ymdLocal(new Date(s));
     const problems = [];
     for (const anchor of ANCHORS) {
-      const referenceDate = new Date(`${anchor}T00:00:00.000Z`);
+      const referenceDate = localNoon(anchor);
       for (const q of QUESTIONS) {
         oracleRuns += 1;
         const plan = planOfSpec(q);
@@ -375,16 +378,16 @@ async function engineVsOracle() {
     section("D. data coverage: when a zero baseline means 'no data', not 'no sales'");
     const refT = await getTenantReferenceDate(T);
     const [minDoc] = await Sale.collection.find({ tenantId: T, voucherStatus: "active" }).sort({ "header.voucherDate": 1 }).limit(1).toArray();
-    const coverage = { earliest: minDoc.header.voucherDate.toISOString().slice(0, 10), latest: refT.toISOString().slice(0, 10) };
+    const coverage = { earliest: minDoc.header.voucherDate.toISOString().slice(0, 10), latest: ymdLocal(refT) }; // the REST reference date is the CALENDAR day of the latest voucher (a local-midnight Date), not its stored UTC instant
     check(`coverage is derivable from existing data: earliest ${coverage.earliest}, latest ${coverage.latest} (latest = the reference date)`, coverage.earliest === "2024-01-01" && coverage.latest === "2026-02-28");
     // 1. comparison entirely before history: every active customer "grew" from 0 and NOTHING says the baseline has no data
-    const a1 = new Date("2024-02-29T00:00:00.000Z");
+    const a1 = localNoon("2024-02-29");
     const p1 = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount"], filters: [], groupBy: [{ dim: "customer" }], compare: { mode: "same_period_last_year" }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }; // "Which customers grew this month compared to same month last year?"
     const e1 = await executeQuery(p1, { tenantId: T, referenceDate: a1 });
     const cmp1 = { from: fmt(e1.comparison.from), to: fmt(e1.comparison.to) };
     check(`comparison ${cmp1.from}..${cmp1.to} lies BEFORE history (${classifyCoverage(cmp1, coverage)}): all ${e1.rows.length} rows show previous = 0, and the result carries no coverage warning`, classifyCoverage(cmp1, coverage) === "before_history" && e1.rows.length > 0 && e1.rows.every((r) => r.comparison.invoiceAmount.previous === 0) && !(e1.warnings || []).some((w) => /coverage|history|before/i.test(w.code || "")));
     // 2. comparison partly before history
-    const a2 = new Date("2025-01-31T00:00:00.000Z");
+    const a2 = localNoon("2025-01-31");
     const p2 = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_fy" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [], compare: { mode: "like_for_like" } }; // "Sales this financial year vs last financial year"
     const e2 = await executeQuery(p2, { tenantId: T, referenceDate: a2 });
     const cmp2 = { from: fmt(e2.comparison.from), to: fmt(e2.comparison.to) };
@@ -413,7 +416,7 @@ async function engineVsOracle() {
     const refOne = await getTenantReferenceDate(T_ONE);
     const pOne = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [], compare: { mode: "full_previous" } }; // "Sales this month vs last month"
     const eOne = await executeQuery(pOne, { tenantId: T_ONE, referenceDate: refOne });
-    check(`tenant with ONE voucher (${refOne.toISOString().slice(0, 10)}): this month = 500 vs last month 0 - a 'no data' baseline presented as growth`, eOne.ok && eOne.totals.values.invoiceAmount === 500 && eOne.totals.comparison.invoiceAmount.previous === 0 && eOne.totals.comparison.invoiceAmount.deltaPct === null);
+    check(`tenant with ONE voucher (${ymdLocal(refOne)}): this month = 500 vs last month 0 - a 'no data' baseline presented as growth`, eOne.ok && eOne.totals.values.invoiceAmount === 500 && eOne.totals.comparison.invoiceAmount.previous === 0 && eOne.totals.comparison.invoiceAmount.deltaPct === null);
   } finally {
     await clean();
     const left = await Promise.all([Sale.collection.countDocuments({ tenantId: { $in: [T, T_EMPTY, T_ONE] } }), Purchase.collection.countDocuments({ tenantId: { $in: [T, T_EMPTY, T_ONE] } }), StockItemMaster.collection.countDocuments({ tenantId: { $in: [T, T_EMPTY, T_ONE] } })]);
@@ -425,7 +428,7 @@ async function engineVsOracle() {
     for (const c of tenants) {
       const [mn] = await Sale.collection.find({ tenantId: c.tenantId, voucherStatus: "active" }).sort({ "header.voucherDate": 1 }).limit(1).toArray();
       const ref = await getTenantReferenceDate(c.tenantId);
-      if (mn) cov.push(`${mn.header.voucherDate.toISOString().slice(0, 10)}..${ref.toISOString().slice(0, 10)}`);
+      if (mn) cov.push(`${mn.header.voucherDate.toISOString().slice(0, 10)}..${ymdLocal(ref)}`);
     }
     console.log(`    real tenants (read-only, unnamed): synced coverage ${cov.join(", ")} - a YoY question at their anchor compares against a year with NO synced data`);
     await mongoose.disconnect();

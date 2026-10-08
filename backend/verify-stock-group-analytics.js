@@ -106,10 +106,11 @@ async function seedFixtures() {
   // across several other tests.
   await StockItemMaster.create({ tenantId: TENANT_A, itemName: "BoundaryItem", stockGroupName: "BoundaryGroup", tallyGuid: "guidBoundary-1", syncedAt: new Date() });
   await Sale.create([
-    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-10T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 500, 500)] }), // exactly on `from`
-    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-19T23:59:59.999Z"), inventory: [inv("BoundaryItem", 1, 300, 300)] }), // exactly on `to`
-    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-09T23:59:59.999Z"), inventory: [inv("BoundaryItem", 1, 999, 999)] }), // 1ms before `from` - must be excluded
-    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-20T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 999, 999)] }), // 1ms after `to` - must be excluded
+    // Voucher dates are stored exactly as production stores them: UTC midnight of the Tally date.
+    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-10T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 500, 500)] }), // the FIRST day of the period
+    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-19T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 300, 300)] }), // the LAST day of the period
+    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-09T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 999, 999)] }), // the day BEFORE the period - must be excluded
+    makeSale({ tenantId: TENANT_A, date: new Date("2025-07-20T00:00:00.000Z"), inventory: [inv("BoundaryItem", 1, 999, 999)] }), // the day AFTER the period - must be excluded
   ]);
 
   // June 2025: the "large" dataset - 11 distinct groups with distinct,
@@ -203,25 +204,41 @@ async function runSyntheticTests() {
     check("negative-does-not-produce-NaN", "the result is a finite number, never NaN", Number.isFinite(groupAlpha.salesAmount), true);
   }
 
-  console.log("\n=== Date-boundary inclusion (exact from/to edges) ===");
+  console.log("\n=== Date-boundary inclusion (first and last calendar day of a period) ===");
+  // A period is a range of CALENDAR DAYS (what periodEngine produces: local midnight .. local 23:59:59.999) and a voucher is dated by the calendar
+  // day of its stored UTC-midnight date, so these hold in ANY server time zone (run this suite with TZ=America/New_York to see it).
+  const localStart = (y, m, d) => new Date(y, m, d, 0, 0, 0, 0);
+  const localEnd = (y, m, d) => new Date(y, m, d, 23, 59, 59, 999);
   {
-    // Isolated BoundaryGroup dataset (July 2025): a voucher exactly on
-    // `from`, one exactly on `to`, one 1ms before `from`, one 1ms after
-    // `to`. Only the two exact-boundary vouchers (500 + 300 = 800)
-    // should be included.
-    const period = { from: new Date("2025-07-10T00:00:00.000Z"), to: new Date("2025-07-19T23:59:59.999Z") };
+    // Isolated BoundaryGroup dataset (July 2025): a voucher on the first day (Jul 10), one on the last day (Jul 19), one on the day before
+    // (Jul 9) and one on the day after (Jul 20). Only the first-day and last-day vouchers (500 + 300 = 800) should be included.
+    const period = { from: localStart(2025, 6, 10), to: localEnd(2025, 6, 19) };
     const result = await stockGroupAnalytics.getTopStockGroups(TENANT_A, period, null, null, { limit: 10 });
     const boundaryGroup = result.items.find((i) => i.stockGroupName === "BoundaryGroup");
-    check("boundary-inclusive-both-ends", "vouchers dated exactly on `from` and exactly on `to` are both included (500 + 300 = 800), and the two just-outside vouchers (999 each) are excluded",
+    check("boundary-inclusive-both-ends", "vouchers dated on the first day and on the last day of the period are both included (500 + 300 = 800), and the vouchers of the day before and the day after (999 each) are excluded",
       boundaryGroup.salesAmount, 800);
   }
   {
-    // Same isolated dataset, `from` moved 1ms later - only the exact-`from`
-    // voucher (500) should now drop out, leaving just the exact-`to` one (300).
-    const periodExcludingFromBoundary = { from: new Date("2025-07-10T00:00:00.001Z"), to: new Date("2025-07-19T23:59:59.999Z") };
-    const result = await stockGroupAnalytics.getTopStockGroups(TENANT_A, periodExcludingFromBoundary, null, null, { limit: 10 });
+    // Same isolated dataset, `from` moved one calendar day later - only the first-day voucher (500) drops out, leaving the last-day one (300).
+    const periodExcludingFirstDay = { from: localStart(2025, 6, 11), to: localEnd(2025, 6, 19) };
+    const result = await stockGroupAnalytics.getTopStockGroups(TENANT_A, periodExcludingFirstDay, null, null, { limit: 10 });
     const boundaryGroup = result.items.find((i) => i.stockGroupName === "BoundaryGroup");
-    check("boundary-excludes-just-before-from", "moving `from` 1ms later correctly drops the exact-`from` voucher (800 -> 300)", boundaryGroup.salesAmount, 300);
+    check("boundary-excludes-just-before-from", "moving `from` one day later drops the first-day voucher (800 -> 300)", boundaryGroup.salesAmount, 300);
+  }
+  {
+    // ... and `to` moved one calendar day earlier - only the last-day voucher (300) drops out, leaving the first-day one (500).
+    const periodExcludingLastDay = { from: localStart(2025, 6, 10), to: localEnd(2025, 6, 18) };
+    const result = await stockGroupAnalytics.getTopStockGroups(TENANT_A, periodExcludingLastDay, null, null, { limit: 10 });
+    const boundaryGroup = result.items.find((i) => i.stockGroupName === "BoundaryGroup");
+    check("boundary-excludes-just-after-to", "moving `to` one day earlier drops the last-day voucher (800 -> 500)", boundaryGroup.salesAmount, 500);
+  }
+  {
+    // A one-day period returns exactly that day's voucher, and the day before / after it returns nothing from this group.
+    const oneDay = await stockGroupAnalytics.getTopStockGroups(TENANT_A, { from: localStart(2025, 6, 19), to: localEnd(2025, 6, 19) }, null, null, { limit: 10 });
+    const g = oneDay.items.find((i) => i.stockGroupName === "BoundaryGroup");
+    const gap = await stockGroupAnalytics.getTopStockGroups(TENANT_A, { from: localStart(2025, 6, 11), to: localEnd(2025, 6, 18) }, null, null, { limit: 10 });
+    check("boundary-one-day-period", "a one-day period [Jul 19, Jul 19] returns exactly that day's voucher (300)", g && g.salesAmount, 300);
+    check("boundary-gap-period", "the days between the two vouchers [Jul 11, Jul 18] contain nothing from the group", gap.items.find((i) => i.stockGroupName === "BoundaryGroup"), undefined);
   }
 
   console.log("\n=== 10-17. Period-kind wiring (via periodEngine, real date filtering) ===");

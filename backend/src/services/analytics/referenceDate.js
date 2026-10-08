@@ -2,6 +2,7 @@ const Sale = require("../../models/sales.model");
 const Purchase = require("../../models/purchase.model");
 const SyncCheckpoint = require("../../models/syncCheckpoint.model");
 const { buildVoucherMatchStage } = require("./analyticsScope");
+const { calendarDayOfStored } = require("./dateRanges");
 
 // --------------------------------------------------
 // The reporting reference date ("today") and the synced coverage window.
@@ -31,8 +32,10 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 
 const DAY = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
 const valid = (d) => d instanceof Date && !Number.isNaN(d.getTime());
-// Voucher dates are stored as UTC midnight of the Tally date and every period boundary is local time, so the
-// end of today's LOCAL day includes every voucher dated today and none dated tomorrow.
+// Voucher dates are stored as UTC midnight of the Tally date and every period boundary is a LOCAL calendar day. Everything this
+// module hands out (coverage window, latest voucher, the REST anchor) is therefore the calendar day of the stored date as a
+// local-midnight Date (dateRanges.calendarDayOfStored), so it compares with period boundaries and with "today" by calendar day in
+// any server zone.
 const endOfLocalDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
 // The earliest and latest active voucher date of one collection (two indexed lookups).
@@ -62,7 +65,7 @@ async function lastSuccessfulSync(tenantId) {
  */
 function buildDateContext(bounds, now) {
   const wallClock = new Date(now);
-  const pickBounds = (b) => ({ earliest: valid(b && b.earliest) ? b.earliest : null, latest: valid(b && b.latest) ? b.latest : null });
+  const pickBounds = (b) => ({ earliest: valid(b && b.earliest) ? calendarDayOfStored(b.earliest) : null, latest: valid(b && b.latest) ? calendarDayOfStored(b.latest) : null });
   const sales = pickBounds(bounds.sales);
   const purchase = pickBounds(bounds.purchase);
   const lastSync = valid(bounds.lastSyncedAt) ? new Date(bounds.lastSyncedAt) : null;
@@ -99,7 +102,7 @@ async function getTenantDateContext(tenantId, { now = new Date() } = {}) {
 async function getTenantReferenceDate(tenantId) {
   const [sales, purchase] = await Promise.all([voucherDateBounds(Sale, tenantId), voucherDateBounds(Purchase, tenantId)]);
   const latests = [sales.latest, purchase.latest].filter(Boolean).map((d) => d.getTime());
-  return latests.length ? new Date(Math.max(...latests)) : new Date();
+  return latests.length ? calendarDayOfStored(new Date(Math.max(...latests))) : new Date();
 }
 
 module.exports = { getTenantReferenceDate, getTenantDateContext, buildDateContext };

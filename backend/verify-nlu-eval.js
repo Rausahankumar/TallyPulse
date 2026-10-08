@@ -5,7 +5,8 @@
  * eval/nlu-corpus.json (synthetic names, expected plans in the existing queryPlan v1 contract). The planner is the
  * only interpreter (there is no deterministic router), so the evaluation is of the planner.
  *
- *   node verify-nlu-eval.js                       FREE: corpus self-check + scoring self-tests with fake providers. No Claude, no
+ *   node verify-nlu-eval.js                       FREE: corpus self-check + scoring self-tests with fake providers (period mutations, a one-field-at-a-time
+ *                                                  mutation test of the comparator, the UTC pin, and the 380-row bucket accounting). No Claude, no
  *                                                  database, no network (network is blocked and any attempt fails the run).
  *   node verify-nlu-eval.js --live --limit=20     LIVE: one existing-planner (Claude) call per question, no repair.
  *                                                  --limit is REQUIRED; more than 60 also needs --confirm-spend.
@@ -19,9 +20,9 @@
  * query. The independent MongoDB oracles live in verify-planner-live-eval.js (tenant-specific, 18 questions).
  */
 
+require("./eval/evalTimezone"); // FIRST: the evaluation runs in UTC whatever the machine's zone (E3)
 process.env.AI_USAGE_PERSIST = "off"; // an evaluation never writes usage records
 const fs = require("fs");
-const path = require("path");
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
@@ -49,19 +50,10 @@ if (!LIVE) {
   https.request = block;
 }
 
-const { validateQueryPlan } = require("./src/services/query/validator");
-const { compileQuery } = require("./src/services/query/compile");
-const { CATALOG } = require("./src/services/query/semanticCatalog");
-const { createEntityResolver } = require("./src/services/query/entityResolver");
-const { planQuestion, createAnthropicPlannerClient } = require("./src/services/query/planner");
-
-const CORPUS_PATH = path.join(__dirname, "eval", "nlu-corpus.json");
-const corpus = JSON.parse(fs.readFileSync(CORPUS_PATH, "utf8"));
-const REF_DATE = (() => {
-  const [y, m, d] = corpus.referenceDate.split("-").map(Number);
-  return new Date(y, m - 1, d, 23, 59, 59, 999); // end of the local reference day, like the product's "today"
-})();
-const TENANT = "eval-tenant"; // a label only: nothing here queries a tenant
+const { planQuestion, createAnthropicPlannerClient, uncalculableTermRefusal } = require("./src/services/query/planner");
+const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
+// The corpus, the semantic comparator and the scoring are shared with eval-nlu-models.js (one implementation for every model).
+const { corpus, REF_DATE, canonical, diffPlans, makeResolver, scoreRow: scoreLive, needsDiagnostic, diagnose } = require("./eval/nluScoring");
 
 const STATUSES = new Set(["supported", "clarify", "decline"]);
 const LANGUAGES = new Set(["english", "hinglish", "mixed"]);
@@ -77,67 +69,7 @@ const check = (label, ok, detail) => {
 };
 const section = (t) => console.log(`\n=== ${t} ===`);
 
-// ------------------------------------------------------------------ semantic plan comparison
-
-const ms = (d) => (d instanceof Date ? d.getTime() : null);
-const iso = (t) => (t === null ? null : new Date(t).toISOString().slice(0, 10));
 const lower = (v) => String(v).toLowerCase();
-
-/** The validator's own resolved form of a plan, reduced to the fields that carry meaning. Null when the plan is invalid. */
-function canonical(plan) {
-  const v = validateQueryPlan(plan, { referenceDate: REF_DATE });
-  if (!v.ok) return { invalid: true, errors: v.errors.map((e) => e.code) };
-  const n = v.normalized;
-  return {
-    entity: n.entity,
-    mode: n.mode,
-    period: `${iso(ms(n.period.from))}..${iso(ms(n.period.to))}`,
-    comparison: n.comparison ? `${iso(ms(n.comparison.from))}..${iso(ms(n.comparison.to))}` : "none",
-    metrics: [...n.metrics].sort(),
-    groupBy: n.groupBy.map((g) => (g.dim === "date" ? `date:${g.bucket}` : g.dim)).sort(),
-    filters: n.filters.map((f) => `${f.dim}=${(Array.isArray(f.value) ? f.value : [f.value]).map(lower).sort().join("|")}`).sort(),
-    having: n.having.map((h) => `${h.metric} ${h.op} ${h.value}`).sort(),
-    sort: n.sort.map((s) => `${s.by} ${s.dir}`),
-    limit: n.limit,
-  };
-}
-
-/**
- * Field-level differences between an actual and an expected plan ({field, expected, actual, minor?}); empty = semantically equal.
- * An extra metric of the same grain as an expected one (e.g. invoiceCount next to invoiceAmount) is NOT a difference: the ranking is
- * compared through "sort", so an extra column cannot change the answer. A larger row limit is a MINOR difference (it still contains
- * what was asked, plus more rows). Every other difference is MAJOR: it changes the financial meaning of the answer.
- */
-function diffPlans(actual, expected) {
-  const a = canonical(actual);
-  const e = canonical(expected);
-  if (a.invalid) return [{ field: "valid", expected: "valid plan", actual: `invalid: ${a.errors.join(",")}` }];
-  if (e.invalid) return [{ field: "expected", expected: "valid expected plan", actual: `corpus bug: ${e.errors.join(",")}` }];
-  const out = [];
-  for (const k of ["entity", "mode", "period", "comparison"]) if (a[k] !== e[k]) out.push({ field: k, expected: e[k], actual: a[k] });
-  if (a.limit !== e.limit) out.push({ field: "limit", expected: e.limit, actual: a.limit, minor: typeof a.limit === "number" && typeof e.limit === "number" && a.limit > e.limit });
-  // metrics: every expected metric must be present; an extra metric is minor only if it shares the grain (invoice / line / return) of an expected one
-  const grain = (m) => (CATALOG.metrics[m] ? CATALOG.metrics[m].grain : null);
-  const missing = e.metrics.filter((m) => !a.metrics.includes(m));
-  const extra = a.metrics.filter((m) => !e.metrics.includes(m));
-  if (missing.length) out.push({ field: "metrics", expected: e.metrics.join(","), actual: a.metrics.join(",") });
-  else if (extra.some((m) => !e.metrics.some((x) => grain(x) === grain(m)))) out.push({ field: "metrics", expected: e.metrics.join(","), actual: a.metrics.join(",") });
-  for (const k of ["groupBy", "filters", "having"]) if (a[k].join(";") !== e[k].join(";")) out.push({ field: k, expected: e[k].join(";") || "-", actual: a[k].join(";") || "-" });
-  if (a.sort.join(";") !== e.sort.join(";")) out.push({ field: "sort", expected: e.sort.join(";"), actual: a.sort.join(";") });
-  return out;
-}
-
-/** Could the engine compile this validated plan into a pipeline? (no database is touched) */
-function compiles(plan) {
-  try {
-    const v = validateQueryPlan(plan, { referenceDate: REF_DATE });
-    if (!v.ok) return false;
-    compileQuery(v.normalized, { tenantId: TENANT, groupItemNames: [], newPartyNames: [] });
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
 
 // ------------------------------------------------------------------ corpus self-check
 
@@ -174,11 +106,6 @@ function selfCheck() {
 
 // ------------------------------------------------------------------ shared
 
-function makeResolver() {
-  const list = (dim) => async () => corpus.fixtures[dim];
-  return createEntityResolver({ tenantId: TENANT, sources: { customer: list("customer"), supplier: list("supplier"), product: list("product"), productGroup: list("productGroup") } });
-}
-
 const bump = (o, k, by = 1) => {
   o[k] = (o[k] || 0) + by;
 };
@@ -193,26 +120,6 @@ function selectRows(rows) {
     out = out.filter((r) => want.has(r.id));
   }
   return out;
-}
-
-/** Score one planner answer against the row's expectation. A plan where a refusal was expected, or a plan with the wrong meaning, is "wrong_but_executable" when the engine could compile it. */
-function scoreLive(row, planned) {
-  const exp = row.expected;
-  const also = exp.alsoAccept || [];
-  const got = planned.status === "supported" ? "supported" : planned.status === "needs_clarification" ? "clarify" : planned.status === "unsupported" ? "decline" : "failure";
-  let outcome;
-  let diffs = [];
-  let executable = null;
-  if (got === "failure") outcome = "provider_failure";
-  else if (got === "supported") {
-    executable = compiles(planned.plan);
-    if (exp.status === "supported" && exp.plan) {
-      diffs = diffPlans(planned.plan, exp.plan);
-      outcome = !diffs.length ? "plan_correct" : diffs.every((d) => d.minor) ? "plan_imprecise" : executable ? "wrong_but_executable" : "wrong_not_executable";
-    } else outcome = also.includes("supported") ? "plan_correct" : executable ? "wrong_but_executable" : "wrong_not_executable";
-  } else if (exp.status === "supported") outcome = also.includes(got) ? "refusal_accepted" : "false_refusal";
-  else outcome = got === exp.status || also.includes(got) ? "correct_refusal" : "refusal_kind_differs";
-  return { got, outcome, diffs, executable };
 }
 
 async function runLive(rows) {
@@ -243,7 +150,7 @@ async function runLive(rows) {
     for (const k of Object.keys(tot)) tot[k] += u[k] || 0;
     const exp = row.expected;
     const { got, outcome, diffs, executable } = scoreLive(row, planned);
-    results.push({ id: row.id, group: row.group, language: row.language, question: row.question, expectedStatus: exp.status, got, plannerStatus: `${planned.status}${planned.code ? "/" + planned.code : ""}`, outcome, executable, diffs, usage: { calls: u.calls || 0, input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0, cache_read_input_tokens: u.cache_read_input_tokens || 0, cache_creation_input_tokens: u.cache_creation_input_tokens || 0 }, ms });
+    results.push({ id: row.id, group: row.group, language: row.language, question: row.question, expectedStatus: exp.status, got, plannerStatus: `${planned.status}${planned.code ? "/" + planned.code : ""}`, outcome, executable, diffs, diagnostic: needsDiagnostic(outcome) ? diagnose({ row, planned, outcome, got }) : null, usage: { calls: u.calls || 0, input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0, cache_read_input_tokens: u.cache_read_input_tokens || 0, cache_creation_input_tokens: u.cache_creation_input_tokens || 0 }, ms });
     const last = results[results.length - 1];
     console.log(`  ${outcome.padEnd(22)} ${row.id} ${String(ms).padStart(5)}ms in=${last.usage.input_tokens} out=${last.usage.output_tokens}  "${row.question}"${diffs.length ? "  " + diffs.map((d) => `${d.field}: want ${d.expected} got ${d.actual}`).join(" | ") : ""}`);
   }
@@ -357,12 +264,231 @@ async function followUpSelfTest() {
   check(`every follow-up row delivers its previous plan to the planner request as JSON, one message, and the golden answer scores correct (${JSON.stringify(tally)})`, problems.length === 0, problems.slice(0, 5).join(" | "));
 }
 
+// ------------------------------------------------------------------ the comparator itself (E1, E6): one change at a time
+
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const fieldsOf = (diffs) => diffs.map((d) => d.field);
+
+// Known valid expected plans (synthetic names). Every mutation below changes exactly ONE thing in one of them.
+const BASES = {
+  trend: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_fy" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "date", bucket: "month" }] },
+  ranking: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount", "invoiceCount"], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 5 },
+  filtered: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, metrics: ["lineAmount"], filters: [{ dim: "product", op: "eq_ci", value: "LED Bulb 9W" }] },
+  growth: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, compare: { mode: "full_previous" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "customer" }], having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }], limit: 10 },
+  comparison: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, compare: { mode: "full_previous" }, metrics: ["invoiceAmount"] },
+  completeComparison: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, compare: { mode: "like_for_like" }, metrics: ["invoiceAmount"] },
+  list: { v: 1, entity: "sales", mode: "list", period: { kind: "current_month" }, sort: [{ by: "date", dir: "desc" }], limit: 10 },
+  twoDims: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["lineAmount"], groupBy: [{ dim: "customer" }, { dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }], limit: 10 },
+  names: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount"], filters: [{ dim: "customer", op: "in_ci", value: ["Acme Traders", "Zenith Retail"] }] },
+  specificFy: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "specific_fy", fy: "2025-26" }, metrics: ["invoiceAmount"] },
+  previousFyTrend: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_fy" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "date", bucket: "month" }] },
+  byVoucherType: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "voucherType" }], sort: [{ by: "invoiceAmount", dir: "desc" }] },
+};
+
+// [what changed, base, how, the field the scorer must flag]. All of them stay VALID plans: the scorer must see a different MEANING, not an invalid plan.
+const MUTATIONS = [
+  ["metric: the only metric swapped (invoiceAmount -> invoiceCount)", "trend", (p) => (p.metrics = ["invoiceCount"]), "metrics"],
+  ["metric: an expected metric is missing", "ranking", (p) => (p.metrics = ["invoiceAmount"]), "metrics"],
+  ["metric: the second metric swapped for a different one", "ranking", (p) => (p.metrics = ["invoiceAmount", "averageInvoiceValue"]), "metrics"],
+  ["entity: sales -> purchase", "list", (p) => (p.entity = "purchase"), "entity"],
+  ["period: current FY -> previous FY", "trend", (p) => (p.period = { kind: "previous_fy" }), "period"],
+  ["period: previous month -> current month", "ranking", (p) => (p.period = { kind: "current_month" }), "period"],
+  ["period: a custom range moved by a month", "filtered", (p) => (p.period = { kind: "custom", from: "2025-08-01", to: "2025-08-31" }), "period"],
+  ["groupBy: the dimension changed (customer -> voucherType)", "ranking", (p) => (p.groupBy = [{ dim: "voucherType" }]), "groupBy"],
+  ["groupBy: removed", "trend", (p) => (p.groupBy = []), "groupBy"],
+  ["groupBy: the date bucket changed (month -> week)", "trend", (p) => (p.groupBy = [{ dim: "date", bucket: "week" }]), "groupBy"],
+  ["groupBy: a second dimension added", "ranking", (p) => (p.groupBy = [{ dim: "customer" }, { dim: "voucherType" }]), "groupBy"],
+  ["filter operator: eq_ci -> contains_ci (same text)", "filtered", (p) => (p.filters[0].op = "contains_ci"), "filters"],
+  ["filter removed", "filtered", (p) => (p.filters = []), "filters"],
+  ["filter added", "ranking", (p) => (p.filters = [{ dim: "customer", op: "eq_ci", value: "Acme Traders" }]), "filters"],
+  ["filter value changed", "filtered", (p) => (p.filters[0].value = "Widget Alpha"), "filters"],
+  ["filter dimension changed (product -> productGroup, same text)", "filtered", (p) => (p.filters[0].dim = "productGroup"), "filters"],
+  ["sort: direction flipped", "ranking", (p) => (p.sort = [{ by: "invoiceAmount", dir: "asc" }]), "sort"],
+  ["sort: key changed (invoiceAmount -> invoiceCount)", "ranking", (p) => (p.sort = [{ by: "invoiceCount", dir: "desc" }]), "sort"],
+  ["sort: the growth key changed (delta -> deltaPct)", "growth", (p) => ((p.sort = [{ by: "invoiceAmount.deltaPct", dir: "desc" }])), "sort"],
+  ["limit: halved (a smaller ranking is a different answer)", "ranking", (p) => (p.limit = 2), "limit"],
+  ["having: operator flipped (gt -> lt)", "growth", (p) => (p.having[0].op = "lt"), "having"],
+  ["having: threshold changed", "growth", (p) => (p.having[0].value = 1000), "having"],
+  ["having: removed", "growth", (p) => (p.having = []), "having"],
+  ["comparison: full_previous -> like_for_like (a different baseline for a month to date)", "comparison", (p) => (p.compare = { mode: "like_for_like" }), "comparison"],
+  ["comparison: removed", "comparison", (p) => (p.compare = null), "comparison"],
+  ["comparison: -> same period last year", "comparison", (p) => (p.compare = { mode: "same_period_last_year" }), "comparison"],
+];
+
+// Equivalences the scorer deliberately accepts. Each must score plan_correct.
+const EQUIVALENT = [
+  ["filter: a one-value in_ci is eq_ci (the product's own equivalence: same regex, same validator treatment)", "filtered", (p) => (p.filters = [{ dim: "product", op: "in_ci", value: ["LED Bulb 9W"] }])],
+  ["filter: names are case-insensitive", "filtered", (p) => (p.filters[0].value = "led bulb 9w")],
+  ["filter: in_ci value order and case do not matter", "names", (p) => (p.filters[0].value = ["zenith retail", "ACME TRADERS"])],
+  ["groupBy: dimension order does not matter", "twoDims", (p) => (p.groupBy = [p.groupBy[1], p.groupBy[0]])],
+  ["metrics: order does not matter", "ranking", (p) => (p.metrics = ["invoiceCount", "invoiceAmount"])],
+  ["metrics: an extra metric of the same grain cannot change the answer", "trend", (p) => (p.metrics = ["invoiceAmount", "invoiceCount"])],
+  ["sort: omitting the default sort is stating it (a low-cardinality grouping needs no explicit sort)", "byVoucherType", (p) => (p.sort = [])],
+  ["limit: omitting the default limit is stating it", "growth", (p) => delete p.limit],
+  ["period: previous month = its custom range", "ranking", (p) => (p.period = { kind: "custom", from: "2025-11-01", to: "2025-11-30" })],
+  ["period: current month to date = the same custom days", "list", (p) => (p.period = { kind: "custom", from: "2025-12-01", to: "2025-12-08" })],
+  ["period: previous FY = its custom dates", "previousFyTrend", (p) => (p.period = { kind: "custom", from: "2024-04-01", to: "2025-03-31" })],
+  ["period: a specific FY = its custom dates", "specificFy", (p) => (p.period = { kind: "custom", from: "2025-04-01", to: "2026-03-31" })],
+  ["comparison: like_for_like = full_previous when the period is already complete", "completeComparison", (p) => (p.compare = { mode: "full_previous" })],
+];
+
+async function comparatorSelfTest() {
+  section("comparator self-test: every important field is detected when it changes (E6), and only the established equivalences are accepted (E1)");
+  const asRow = (plan) => ({ expected: { status: "supported", plan } });
+  const scored = (plan, base) => scoreLive(asRow(base), { status: "supported", plan });
+
+  for (const [name, base] of Object.entries(BASES)) {
+    check(`base "${name}" is a valid plan and equals itself`, !canonical(base).invalid && diffPlans(clone(base), base).length === 0, JSON.stringify(canonical(base).errors));
+  }
+  for (const [label, baseName, mutate, field] of MUTATIONS) {
+    const base = BASES[baseName];
+    const plan = clone(base);
+    mutate(plan);
+    const valid = !canonical(plan).invalid;
+    const diffs = valid ? diffPlans(plan, base) : [];
+    const sc = valid ? scored(plan, base) : null;
+    check(`MUTATION ${label}: still a valid plan, flagged in "${field}", scored wrong_but_executable`, valid && diffs.some((d) => d.field === field && !d.minor) && sc.outcome === "wrong_but_executable", valid ? `${JSON.stringify(fieldsOf(diffs))} ${sc.outcome}` : `invalid: ${canonical(plan).errors}`);
+  }
+  for (const [label, baseName, mutate] of EQUIVALENT) {
+    const base = BASES[baseName];
+    const plan = clone(base);
+    mutate(plan);
+    const valid = !canonical(plan).invalid;
+    const sc = valid ? scored(plan, base) : null;
+    check(`EQUIVALENT ${label}: accepted as plan_correct`, valid && diffPlans(plan, base).length === 0 && sc.outcome === "plan_correct", valid ? `${JSON.stringify(diffPlans(plan, base))} ${sc.outcome}` : `invalid: ${canonical(plan).errors}`);
+  }
+  const larger = clone(BASES.ranking);
+  larger.limit = 10;
+  check("limit: a LARGER limit is imprecise (acceptable, never exact); a smaller one is wrong", scored(larger, BASES.ranking).outcome === "plan_imprecise" && diffPlans(larger, BASES.ranking).every((d) => d.minor) && scored({ ...clone(BASES.ranking), limit: 2 }, BASES.ranking).outcome === "wrong_but_executable");
+
+  // ---- E1: the filter operator, case by case
+  const withFilter = (op, value) => ({ ...clone(BASES.filtered), filters: [{ dim: "product", op, value }] });
+  const eq = withFilter("eq_ci", "LED Bulb 9W");
+  const { FILTER_OPS } = require("./src/services/query/queryPlan.schema");
+  check("E1 eq_ci vs contains_ci (same text) -> different, and the difference is in the filter", fieldsOf(diffPlans(withFilter("contains_ci", "LED Bulb 9W"), eq)).includes("filters") && scored(withFilter("contains_ci", "LED Bulb 9W"), eq).outcome === "wrong_but_executable");
+  check("E1 contains_ci vs eq_ci -> different (both directions)", fieldsOf(diffPlans(eq, withFilter("contains_ci", "LED Bulb 9W"))).includes("filters"));
+  const startsWith = withFilter("starts_with_ci", "LED Bulb 9W");
+  check("E1 eq_ci vs starts_with_ci -> different: starts_with_ci is NOT an operator of the plan DSL (eq_ci, in_ci, contains_ci, new_in_period only), so the plan is invalid, and no equivalence is invented", !FILTER_OPS.includes("starts_with_ci") && canonical(startsWith).invalid === true && diffPlans(startsWith, eq).some((d) => d.field === "valid") && scored(startsWith, eq).outcome !== "plan_correct", JSON.stringify(diffPlans(startsWith, eq)));
+  check("E1 eq_ci vs one-value in_ci -> equal in both directions (the established equivalence)", diffPlans(withFilter("in_ci", ["LED Bulb 9W"]), eq).length === 0 && diffPlans(eq, withFilter("in_ci", ["led bulb 9w"])).length === 0);
+  check("E1 in_ci with TWO values vs eq_ci -> different", fieldsOf(diffPlans(withFilter("in_ci", ["LED Bulb 9W", "Widget Alpha"]), eq)).includes("filters"));
+  check("E1 contains_ci vs one-value in_ci -> different (the equivalence is eq_ci only)", fieldsOf(diffPlans(withFilter("contains_ci", "LED Bulb 9W"), withFilter("in_ci", ["LED Bulb 9W"]))).includes("filters"));
+  check("E1 identical operators and text -> equal (eq, contains, in_ci pair)", diffPlans(withFilter("eq_ci", "LED Bulb 9W"), eq).length === 0 && diffPlans(withFilter("contains_ci", "LED Bulb 9W"), withFilter("contains_ci", "led bulb 9w")).length === 0 && diffPlans(withFilter("in_ci", ["A One", "B Two"]), withFilter("in_ci", ["b two", "a one"])).length === 0);
+  const newParty = { ...clone(BASES.ranking), filters: [{ dim: "customer", op: "new_in_period", value: "period" }] };
+  const nameEq = { ...clone(BASES.ranking), filters: [{ dim: "customer", op: "eq_ci", value: "period" }] };
+  check("E1 new_in_period vs eq_ci on the same dimension and text -> different", !canonical(newParty).invalid && fieldsOf(diffPlans(newParty, nameEq)).includes("filters"));
+}
+
+// ------------------------------------------------------------------ the deterministic D1-D3 term guards against the whole corpus
+
+function termGuardCorpusSelfTest() {
+  section("D1-D3 term guards vs the corpus: no supported row is refused, every decided-term row is");
+  const KIND = { decline: "unsupported", clarify: "needs_clarification" };
+  const planOf = (p) => (p ? parseQueryPlan(p).plan : null);
+  const generic = parseQueryPlan({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount"], filters: [] }).plan;
+
+  // (1) a row whose expected outcome is an answer must never be refused by the guard, given the plan the corpus expects (and its previous plan)
+  const supported = corpus.rows.filter((r) => r.expected.status === "supported" && r.expected.plan);
+  const falseRefusals = supported.map((r) => ({ r, g: uncalculableTermRefusal(r.question, planOf(r.expected.plan), planOf(r.previousPlan)) })).filter((x) => x.g);
+  check(`none of the ${supported.length} supported corpus rows is refused by a term guard (no false refusal, English / Hinglish / mixed, follow-ups included)`, falseRefusals.length === 0, falseRefusals.slice(0, 4).map((x) => `${x.r.id}:${x.g.code}`).join(" "));
+
+  // (2) every row that expects a refusal and uses a decided term is refused by the guard for a generic plan, with a kind the row accepts
+  const decided = corpus.rows.filter((r) => /^D[1-3]\b/.test(r.note || "") && r.expected.status !== "supported");
+  const wrong = [];
+  for (const r of decided) {
+    const g = uncalculableTermRefusal(r.question, generic, planOf(r.previousPlan));
+    const accepted = [r.expected.status, ...(r.expected.alsoAccept || [])].map((k) => KIND[k]);
+    if (!g || !accepted.includes(g.status)) wrong.push(`${r.id}:${g ? g.status : "not refused"}`);
+  }
+  check(`all ${decided.length} decided-term rows that expect a refusal or clarification are refused by the guard in a kind the row accepts`, decided.length >= 15 && wrong.length === 0, wrong.join(" "));
+
+  // (3) other rows that use a guarded term (turnover, orders) expect a refusal too: the guard and the corpus never disagree about WHETHER to answer.
+  // (Whether it is a decline or a clarification is the model's call; the guard is the fallback if the model produced a plan, and it never returns a figure.)
+  const others = corpus.rows.filter((r) => !/^D[1-3]/.test(r.note || "")).map((r) => ({ r, g: uncalculableTermRefusal(r.question, r.expected.plan ? planOf(r.expected.plan) : generic, planOf(r.previousPlan)) })).filter((x) => x.g);
+  check(`every other row that uses a guarded term (${others.length} rows, e.g. turnover, orders) expects a refusal, never an answer`, others.length >= 1 && others.every((x) => x.r.expected.status !== "supported"), others.filter((x) => x.r.expected.status === "supported").map((x) => x.r.id).join(" "));
+
+  // (4) coverage of the corpus itself: the decided terms are present in English and Hinglish and as follow-ups
+  const langs = new Set(decided.map((r) => r.language));
+  check("the decided-term rows cover English and Hinglish and include follow-ups with a previous plan", langs.has("english") && langs.has("hinglish") && decided.some((r) => r.previousPlan), [...langs].join());
+}
+
+// ------------------------------------------------------------------ the evaluation's time zone (E3)
+
+async function timezoneSelfTest() {
+  section("E3: the evaluation runs in UTC whatever the machine's time zone (child processes started in other zones)");
+  const path = require("path");
+  const { spawnSync } = require("child_process");
+  check("this process: TZ is UTC and the runtime applied it (offset 0 in January and in July)", process.env.TZ === "UTC" && [0, 6].every((m) => new Date(2025, m, 15).getTimezoneOffset() === 0));
+  const scorer = path.join(__dirname, "eval", "nluScoring.js");
+  const script = (afterLoad) => `
+process.env.AI_USAGE_PERSIST = "off";
+const S = require(${JSON.stringify(scorer)});
+${afterLoad}
+const v = (period) => ({ v: 1, entity: "sales", mode: "aggregate", period, metrics: ["invoiceAmount"] });
+const pairs = [
+  [v({ kind: "previous_month" }), v({ kind: "custom", from: "2025-11-01", to: "2025-11-30" })],
+  [v({ kind: "current_month" }), v({ kind: "custom", from: "2025-12-01", to: "2025-12-08" })],
+  [v({ kind: "previous_quarter" }), v({ kind: "custom", from: "2025-07-01", to: "2025-09-30" })],
+  [v({ kind: "previous_fy" }), v({ kind: "custom", from: "2024-04-01", to: "2025-03-31" })],
+  [v({ kind: "specific_fy", fy: "2025-26" }), v({ kind: "custom", from: "2025-04-01", to: "2026-03-31" })],
+  [v({ kind: "last_7_days" }), v({ kind: "custom", from: "2025-12-02", to: "2025-12-08" })],
+];
+console.log(JSON.stringify({ tz: process.env.TZ, offsets: [0, 6].map((m) => new Date(2025, m, 15).getTimezoneOffset()), equal: pairs.map(([a, b]) => S.diffPlans(a, b).length === 0) }));`;
+  const run = (zone, afterLoad = "") => {
+    const r = spawnSync(process.execPath, ["-e", script(afterLoad)], { env: { ...process.env, TZ: zone }, encoding: "utf8", timeout: 60000 });
+    try {
+      return JSON.parse(String(r.stdout).trim().split("\n").pop());
+    } catch (e) {
+      return { error: `${r.status} ${String(r.stderr).slice(0, 200)}` };
+    }
+  };
+  for (const zone of ["UTC", "Asia/Kolkata", "America/New_York", "America/Los_Angeles", "Pacific/Auckland"]) {
+    const out = run(zone);
+    check(`machine zone ${zone}: the scorer pins UTC and a relative period equals the custom dates it means, for all 6 period kinds`, out.tz === "UTC" && !!out.offsets && out.offsets.every((o) => o === 0) && Array.isArray(out.equal) && out.equal.length === 6 && out.equal.every(Boolean), JSON.stringify(out));
+  }
+  const control = run("UTC", `process.env.TZ = "America/New_York"; // control: switch the zone AFTER the scorer loaded, i.e. what an unpinned evaluator would see`);
+  check("control: with the zone forced to America/New_York after the scorer loaded, relative-vs-custom comparisons DO break (so the pin is what makes the scores machine-independent)", Array.isArray(control.equal) && control.equal.some((x) => !x), JSON.stringify(control));
+}
+
+// ------------------------------------------------------------------ every row accounted for (E4)
+
+async function accountingSelfTest() {
+  section("E4: every evaluated row of the corpus sits in exactly one reporting bucket (fake providers, no network, no spend)");
+  const runner = require("./eval/nluModelRunner");
+  const resolver = makeResolver();
+  const answer = (input) => async () => ({ content: [{ type: "tool_use", id: "fake", name: "submit_query_plan", input }], usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+  const providers = {
+    "a perfect provider": (row) => fakeProvider("golden", () => row),
+    "a provider that answers for the wrong period": (row) => fakeProvider("mutated", () => row),
+    "a provider that declines everything": () => answer({ decline: { code: "unsupported_domain", message: "fake" } }),
+    "a provider that clarifies everything": () => answer({ decline: { code: "needs_clarification", message: "fake" } }),
+    "a provider whose plans the validator rejects": () => answer({ plan: { v: 1, entity: "sales", mode: "aggregate", metrics: ["notARealMetric"], period: { kind: "current_month" } } }),
+  };
+  const total = corpus.rows.length;
+  for (const [name, make] of Object.entries(providers)) {
+    const records = [];
+    for (const row of corpus.rows) records.push(await runner.evaluateRow({ row, target: { provider: "claude", model: null, label: name, client: make(row) }, resolver, cache: null }));
+    const s = runner.aggregate(records);
+    const sum = Object.values(s.buckets).reduce((a, b) => a + b, 0);
+    const countSum = Object.values(s.counts).reduce((a, b) => a + b, 0);
+    check(`${name}: all ${total} rows evaluated, bucket totals = ${total}, outcome counts = ${total}, partition OK`, s.questions === total && sum === total && countSum === total && s.partition.ok === true && runner.partitionProblem(s) === null && s.harnessErrors === 0 && s.skipped === 0, JSON.stringify(s.partition));
+    console.log(`  ${runner.accountingLines([{ label: name, summary: s }])[1].trim()}`);
+    if (name === "a perfect provider") check("a perfect provider has no wrong, invalid or failed row (at most the capability-gap rows, which have no expected plan, are refused)", s.buckets.wrongPlan === 0 && s.buckets.invalid === 0 && s.buckets.failure === 0 && s.buckets.refusalKindDiffers === 0 && s.buckets.falseRefusal <= corpus.rows.filter((r) => r.needsEngineCapability).length, JSON.stringify(s.buckets));
+    if (name === "a provider that declines everything") check("false refusals and wrong-kind refusals are reported, not dropped", s.buckets.falseRefusal > 0 && s.buckets.refusalKindDiffers > 0 && s.buckets.correctRefusal > 0, JSON.stringify(s.buckets));
+    if (name === "a provider that clarifies everything") check("the same for a provider that clarifies everything (a decline row answered by a clarification is a kind difference)", s.buckets.falseRefusal > 0 && s.buckets.refusalKindDiffers > 0, JSON.stringify(s.buckets));
+    if (name === "a provider whose plans the validator rejects") check("rejected plans are counted as invalid", s.buckets.invalid > 0 && s.buckets.wrongPlan === 0, JSON.stringify(s.buckets));
+  }
+}
+
 // ------------------------------------------------------------------ main
 
 (async () => {
   selfCheck();
   if (!fail) await liveSelfTest();
   if (!fail) await followUpSelfTest();
+  if (!fail) await comparatorSelfTest();
+  if (!fail) termGuardCorpusSelfTest();
+  if (!fail) await timezoneSelfTest();
+  if (!fail) await accountingSelfTest();
   if (!LIVE || fail) {
     if (!LIVE) {
       check("the free self-check made no network attempts", networkAttempts === 0, networkAttempts);

@@ -5,14 +5,15 @@
 //
 // Single source of truth for what "sales amount", "quantity", "customer",
 // "product group" MEAN. Claude never defines any of this; it only ever
-// refers to the ids below. Nothing in production imports this module yet
-// (Phase 1A is catalog + DSL schema + tests only - no behavior change).
+// refers to the ids below. The planner prompt (planner.js buildCatalogDigest)
+// is generated from this catalog, so what is written here is what the model is told.
 //
-// Scope, deliberately narrow: existing Sales and Purchase data only. No
-// GST/tax, credit/debit notes, receipts/payments, ledgers, profit/COGS.
-// Anything Sales/Purchase-related that cannot be answered honestly today
-// is listed under UNSUPPORTED_CAPABILITIES with the reason, so a later
-// validator can refuse deterministically (0 LLM calls).
+// Scope, deliberately narrow: Sales and Purchase data plus the Credit/Debit
+// Notes classified as returns (the sales_return / purchase_return entities).
+// No GST/tax, receipts/payments, ledgers, profit/COGS. Anything
+// Sales/Purchase-related that cannot be answered honestly today is listed
+// under UNSUPPORTED_CAPABILITIES with the reason, so the planner declines it
+// and nothing is guessed.
 //
 // Every measure below was derived from the EXISTING analytics
 // implementations (salesAnalytics / purchaseAnalytics /
@@ -89,7 +90,7 @@ const DIMENSIONS = {
     cardinality: "series",
     filterOps: [], // dates are constrained ONLY through `period`
     notes:
-      "Financial-year conventions come from periodEngine (FY Apr-Mar, FY-aligned quarters, Monday-start weeks). Only buckets that contain data are returned; empty buckets are never zero-filled (matches getSalesTrend).",
+      "Financial-year conventions come from periodEngine (FY Apr-Mar, FY-aligned quarters, Monday-start weeks). Only buckets that contain data are returned; empty buckets are never zero-filled (matches getSalesTrend). Buckets are cut in UTC, the zone the voucher dates are stored in; periods are the server's local calendar days. There is no calendar-year bucket (use fy, or a custom range).",
   },
   customer: {
     id: "customer",
@@ -100,7 +101,7 @@ const DIMENSIONS = {
     cardinality: "high",
     filterOps: ["eq_ci", "in_ci", "contains_ci", "new_in_period"],
     notes:
-      "Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). new_in_period (value \"period\") keeps only parties whose Tally ledger was CREATED inside the query period (LedgerMaster.createdDate, exact name match); it cannot be combined with compare.",
+      "Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). new_in_period (value \"period\") keeps only parties whose Tally ledger was CREATED inside the query period (LedgerMaster.createdDate, exact name match); it cannot be combined with compare. Spelling variants (case, punctuation, spacing) of one party are separate groups; a name filter matches case-insensitively.",
   },
   supplier: {
     id: "supplier",
@@ -120,7 +121,7 @@ const DIMENSIONS = {
     source: { path: "inventory.itemName" },
     cardinality: "high",
     filterOps: ["eq_ci", "in_ci", "contains_ci"],
-    notes: "Stock item name as stored on the voucher line - the same raw-name identity already used for sales/purchase (no StockItemMaster merge; a differently-cased or misspelled name is a different product, exactly as elsewhere).",
+    notes: "Stock item name as stored on the voucher line - the same raw-name identity already used for sales/purchase (no StockItemMaster merge; a differently-cased or misspelled name is a different product, exactly as elsewhere). A name filter is verified against the synced Stock Item master first, so a product that exists only on vouchers can be grouped but not filtered by name.",
   },
   productGroup: {
     id: "productGroup",
@@ -139,7 +140,7 @@ const DIMENSIONS = {
     cardinality: "medium",
     filterOps: ["eq_ci", "in_ci", "contains_ci"],
     notes:
-      "Classification is CURRENT Tally state (not a historical snapshot). Lines whose item has no master record are excluded from group results and reported in a mapping diagnostic.",
+      "Classification is CURRENT Tally state (not a historical snapshot). Lines whose item has no master record (or whose name differs from the master's exactly) are excluded from group results and totals, and reported in a mapping diagnostic and a warning. The group is the item's immediate Stock Group; it is not rolled up to a top-level group.",
   },
   voucherType: {
     id: "voucherType",
@@ -150,7 +151,7 @@ const DIMENSIONS = {
     cardinality: "low",
     filterOps: ["eq_ci", "in_ci"],
     notes:
-      "The RAW Tally voucher-type NAME (e.g. \"Invoice\"), which customized companies rename freely. It is not a Sales/Purchase class - that classification happens at sync time.",
+      "The RAW Tally voucher-type NAME (e.g. \"Invoice\"), which customized companies rename freely. It is not a Sales/Purchase class - that classification happens at sync time. A name filter is not verified against known types; a voucher whose type name is absent is stored as \"Sales\".",
   },
 };
 
@@ -170,7 +171,11 @@ const METRICS = {
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
     description: "Total invoice value (party-ledger total, tax-inclusive) summed over active Sales vouchers.",
-    disclosures: ["Gross of returns: credit notes are not imported."],
+    disclosures: [
+      "Gross of returns: Credit/Debit Notes are stored separately and are never netted against this total.",
+      "Tax-inclusive only when the party-ledger line of the voucher is found (exact, case-sensitive name match); otherwise the pre-tax item sum is stored.",
+      "The sign is not kept: the stored total is an absolute value.",
+    ],
   },
   invoiceCount: {
     id: "invoiceCount",
@@ -193,7 +198,7 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
-    description: "invoiceAmount / invoiceCount (0 when there are no invoices, matching existing analytics).",
+    description: "invoiceAmount / invoiceCount (0 when there are no invoices).",
     disclosures: [],
   },
   purchaseAmount: {
@@ -206,7 +211,11 @@ const METRICS = {
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
     description: "Total purchase invoice value (party-ledger total, tax-inclusive) summed over active Purchase vouchers.",
-    disclosures: ["Gross of returns: debit notes are not imported."],
+    disclosures: [
+      "Gross of returns: Credit/Debit Notes are stored separately and are never netted against this total.",
+      "Tax-inclusive only when the party-ledger line of the voucher is found (exact, case-sensitive name match); otherwise the pre-tax item sum is stored.",
+      "The sign is not kept: the stored total is an absolute value.",
+    ],
   },
   purchaseInvoiceCount: {
     id: "purchaseInvoiceCount",
@@ -241,8 +250,11 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
-    description: "Total value (party-ledger total, tax-inclusive) of active Credit/Debit Notes deterministically classified as a return (see docs/PROJECT_CONTEXT.md) for the given entity.",
-    disclosures: ["Only notes classified as a return by their item accounting-allocation pattern are counted; value-adjustment notes are excluded, never netted against sales/purchase totals."],
+    description: "Total value (party-ledger total, tax-inclusive) of active Credit/Debit Notes deterministically classified as a return, for the given entity.",
+    disclosures: [
+      "Only notes classified as a return by their item accounting-allocation pattern are counted; value-adjustment notes are excluded, never netted against sales/purchase totals.",
+      "Tax-inclusive only when the party-ledger line of the note is found (exact name match); otherwise the absolute pre-tax item sum is stored.",
+    ],
   },
   returnCount: {
     id: "returnCount",
@@ -299,12 +311,18 @@ const METRICS = {
     label: "Line amount (pre-tax)",
     entities: ["sales", "purchase"],
     grain: "line",
-    aggregation: { op: "sum", path: "inventory.amount" },
+    // Tally books PURCHASE stock entries with the opposite (negative) sign (parser fixtures, real purchase documents). entitySign negates them so a
+    // purchase figure reads as a positive value. It is a plain sign flip, not abs: opposite-signed lines still net against the rest.
+    aggregation: { op: "sum", path: "inventory.amount", entitySign: { purchase: -1 } },
     sign: "positive",
     amountBasis: AMOUNT_BASIS.LINE_ITEM_PRE_TAX,
     status: "supported",
     description: "Pre-tax inventory line amount. Never reconciles to invoiceAmount/purchaseAmount - different basis.",
-    disclosures: ["Pre-tax line-item basis; does not reconcile to invoice totals."],
+    disclosures: [
+      "Pre-tax line-item basis; does not reconcile to invoice totals.",
+      "Item lines only: tax, freight/other charges and vouchers without item lines are not included, so it is not an invoice total before tax.",
+      "Purchase item amounts are negated (Tally stores them negative) so purchase values are positive.",
+    ],
   },
   quantity: {
     id: "quantity",
@@ -416,7 +434,8 @@ const COMPARISON_SUPPORT = {
 const PERIOD_RULES = {
   customDateFormat: "YYYY-MM-DD",
   maxCustomRangeDays: 1830, // ~5 years; enforced by the Phase 1B validator
-  anchor: "tenant_reference_date", // 'current_X' resolves against the tenant's latest voucher date, not the wall clock
+  anchor: "reporting_reference_date", // 'current_X' resolves against today (the end of the server's local day), never the latest voucher date
+  dayBoundaries: "server_local_calendar_days", // "today" and every period are calendar days of the server's calendar; voucher dates are stored as UTC midnight of the Tally date and are matched by CALENDAR DAY (analytics/dateRanges.js), so the server's time zone never moves a voucher across a period edge
   samePeriodLastYear: "supported for every kind except all_time (uniform year shift of the resolved range)",
 };
 
@@ -424,7 +443,7 @@ const PERIOD_RULES = {
 
 const LIMITS = {
   defaultLimit: 10,
-  defaultSeriesLimit: 100, // groupBy includes date: a truncated series would be misleading
+  defaultSeriesLimit: 100, // groupBy includes date: a lone date series is validated to fit (series_too_long); date + another dimension can still exceed it and is then truncated and flagged
   maxLimit: 100,
   maxGroupBy: 2,
   maxMetrics: 4,
@@ -486,7 +505,7 @@ const QUERY_RULES = [
   { code: "compare_mode_unsupported_for_period", description: "compare.mode must be supported for the period kind (COMPARISON_SUPPORT)." },
   { code: "derived_ref_requires_compare", description: "having/sort refs ending in .previous/.delta/.deltaPct require `compare`." },
   { code: "ref_not_selected", description: "having/sort may only reference selected metrics (or their derived suffixes) or groupBy dimensions." },
-  { code: "high_cardinality_requires_sort", description: "Grouping by a high-cardinality dimension (customer/supplier/product) requires an explicit sort; the limit is always bounded." },
+  { code: "high_cardinality_requires_sort", description: "Grouping by a high-cardinality dimension (customer/supplier/product) requires an explicit sort." },
   { code: "series_too_long", description: "A date series must not exceed maxLimit buckets for the resolved range; use a coarser bucket." },
   { code: "range_too_long", description: "Custom range must not exceed maxCustomRangeDays." },
   { code: "all_time_cannot_compare", description: "period.kind=all_time has no comparison." },
@@ -499,7 +518,8 @@ const QUERY_RULES = [
   { code: "reference_date_required", description: "Relative periods (current_X, last_N_days, ...) need the tenant reference date supplied by the backend." },
   { code: "period_invalid", description: "The period could not be resolved by periodEngine." },
   { code: "warn_invoice_total_not_product_share", description: "Warning: invoice-level amounts filtered by a product/group are whole-invoice values, not the product's share." },
-  { code: "warn_mixed_units", description: "Warning attached when quantity is not unit-safe (see METRICS.quantity.caveatRules)." },
+  { code: "warn_mixed_units", description: "Warning attached when quantity or returnQuantity is not unit-safe (see their caveatRules)." },
+  { code: "warn_unmapped_product_group_lines", description: "Warning (executor): item lines whose item has no Stock Group in the synced master are excluded from a productGroup breakdown and its total." },
 ];
 
 // ---------- honest refusals ----------
@@ -507,13 +527,21 @@ const QUERY_RULES = [
 // correctly. `unlocks` names the data that would be needed - documentation
 // for later phases, NOT work to do now.
 
+// Named once: the planner prompt shows them as examples and the reason text below is built from the same list.
+const OTHER_DOMAIN_EXAMPLES = ["orders", "delivery notes", "stock valuation", "payroll", "expenses"];
+
 const UNSUPPORTED_CAPABILITIES = [
-  { id: "tax_breakdown", reason: "GST/tax amounts are not modelled in this phase.", unlocks: "ledger classification (later phase)" },
+  {
+    id: "tax_breakdown",
+    reason:
+      "GST/tax amounts are not modelled, and there is no invoice-level total before tax: sales are shown as invoice totals including tax, or as revenue (the pre-tax value of the item lines only, which is not an invoice total before tax).",
+    unlocks: "identifying the tax ledger lines of each voucher (later phase)",
+  },
   {
     id: "net_of_returns",
     reason:
-      'Sales and purchase totals are shown gross of returns (Credit/Debit Notes are not netted against them). Sales/purchase returns themselves can be asked directly, for example "sales returns this month" or "purchase returns this month" - return reasons, return rate, partial/full status, GST-head impact, a per-product breakdown and net sales/purchases after returns are not available yet.',
-    unlocks: "per-product returns, return rate, net sales/purchases after returns",
+      'Sales and purchase totals are shown gross of returns: Credit/Debit Notes are never netted against them, and one query cannot combine sales with returns. Net sales (turnover: invoice sales after returns and before tax) therefore cannot be calculated. Sales/purchase returns themselves can be asked directly, for example "sales returns this month" or "purchase returns this month"; return reasons, return rate, partial/full status, GST-head impact and product-group returns are not available yet.',
+    unlocks: "a combined sales-and-returns calculation on a before-tax basis, return rate, product-group returns",
   },
   { id: "profit_margin", reason: "No cost/COGS data is available.", unlocks: "cost data (later phase)" },
   { id: "discount_analysis", reason: "Line discounts are not captured (stored discount fields are always zero).", unlocks: "parser change (later phase)" },
@@ -521,7 +549,12 @@ const UNSUPPORTED_CAPABILITIES = [
   { id: "sales_by_region_or_salesperson", reason: "State, region, customer group and salesperson are not stored in this phase.", unlocks: "party master (later phase)" },
   { id: "cross_entity_comparison", reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
   { id: "outstanding_or_payments", reason: "Receipts, payments and balances are outside Sales/Purchase in this phase.", unlocks: "receipt/payment sync (later phase)" },
-  { id: "other_accounting_domains", reason: "Orders, delivery notes, stock valuation, payroll, expenses and other accounting areas are outside Sales/Purchase in this phase.", unlocks: "new Tally data (later phases)" },
+  {
+    id: "other_accounting_domains",
+    examples: OTHER_DOMAIN_EXAMPLES,
+    reason: `${OTHER_DOMAIN_EXAMPLES.join(", ").replace(/^./, (c) => c.toUpperCase())} and other accounting areas are outside Sales/Purchase in this phase.`,
+    unlocks: "new Tally data (later phases)",
+  },
 ];
 
 // ---------- parity oracles (Phase 1C ground truth) ----------
@@ -627,7 +660,7 @@ function compatibilityCell(metric, dim) {
     return {
       status: "invalid",
       code: "dimension_not_applicable_to_voucher_metric",
-      reason: `${metric.label} is an invoice-level value and cannot be attributed to ${dim.label.toLowerCase()} without inventing a tax/freight allocation. Use a line-level metric (lineAmount) for ${dim.label.toLowerCase()} breakdowns.`,
+      reason: `${metric.label} is an invoice-level value and cannot be attributed to ${dim.label.toLowerCase()} without inventing a tax/freight allocation. Use a line-level metric (${metric.entities.some((e) => e.endsWith("_return")) ? "returnLineAmount" : "lineAmount"}) for ${dim.label.toLowerCase()} breakdowns.`,
     };
   }
   if (metric.caveatRules) {

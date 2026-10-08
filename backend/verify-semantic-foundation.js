@@ -246,7 +246,8 @@ function oracle(kind, mode, r) {
     const NOW = new Date(2026, 8, 28, 12); // 28-Sep-2026, noon
     const a = buildDateContext({ sales: { earliest: U(2025, 4, 1), latest: U(2025, 12, 8) }, purchase: { earliest: U(2025, 3, 15), latest: U(2025, 12, 10) } }, NOW);
     check("rule: reference date = end of TODAY (28 Sep 2026 23:59:59.999 local), whatever the vouchers say (source today)", a.referenceDate.getTime() === new Date(2026, 8, 28, 23, 59, 59, 999).getTime() && a.source === "today");
-    check("coverage window: first voucher of EITHER type .. last voucher (no sync recorded); per-entity bounds kept", a.coverage.earliest.getTime() === U(2025, 3, 15).getTime() && a.coverage.latest.getTime() === U(2025, 12, 10).getTime() && a.coverage.sales.earliest.getTime() === U(2025, 4, 1).getTime());
+    check("coverage window: first voucher of EITHER type .. last voucher (no sync recorded); per-entity bounds kept", ymd(a.coverage.earliest) === "2025-03-15" && ymd(a.coverage.latest) === "2025-12-10" && ymd(a.coverage.sales.earliest) === "2025-04-01");
+    check("the coverage window is expressed in calendar days (local midnight of each stored UTC-midnight voucher date), so it compares with period boundaries in any server zone", a.coverage.earliest.getHours() === 0 && a.coverage.earliest.getMinutes() === 0 && a.coverage.sales.latest.getHours() === 0);
     const synced = buildDateContext({ sales: { earliest: U(2025, 4, 1), latest: U(2026, 9, 20) }, purchase: {}, lastSyncedAt: new Date(2026, 8, 28, 9, 30) }, NOW);
     check("coverage window ends at the later of the last voucher and the last successful sync (a synced day with no vouchers is a real zero)", ymd(synced.coverage.latest) === "2026-09-28");
     const b = buildDateContext({ sales: { earliest: U(2025, 4, 1), latest: U(2025, 12, 8) }, purchase: { earliest: U(2025, 3, 15), latest: U(2025, 12, 10) } }, NOW);
@@ -312,7 +313,7 @@ function oracle(kind, mode, r) {
         // the planner path: Claude's (scripted) plan is the plan; validated + executed with the turn's date
         const eng = fakeEngine();
         const planner = async () => ({ content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { plan: x.plan } }], usage: { input_tokens: 1, output_tokens: 1 } });
-        await tryAnswerWithQueryEngine({ context: { tenantId: "SF-PURE" }, userMessage: q.replace("sales", "turnover"), conversationHistory: [], deps: { resolveEntity: resolver, getFreshness: async () => ({ state: "fresh", dataAsOf: null, message: "ok" }), plannerClient: planner, execute: eng, getDateContext: async () => dates } });
+        await tryAnswerWithQueryEngine({ context: { tenantId: "SF-PURE" }, userMessage: q.replace("sales", "total sales"), conversationHistory: [], deps: { resolveEntity: resolver, getFreshness: async () => ({ state: "fresh", dataAsOf: null, message: "ok" }), plannerClient: planner, execute: eng, getDateContext: async () => dates } });
         const pv = eng.calls.length ? validateQueryPlan(eng.calls[0].plan, { referenceDate: eng.calls[0].ctx.referenceDate }).normalized : null;
         const e = `${range(v.period)} / ${range(v.comparison)}`;
         const p = pv ? `${range(pv.period)} / ${range(pv.comparison)}` : "no plan";

@@ -44,5 +44,5 @@ The chat stores the previous answer's validated plan on the assistant message (`
 
 - Typos ("custmers", "grwoth") are the planner's to interpret; an unknown name gets the spelling clarification.
 - Gaps inside the synced window are not detectable (§2).
-- The planner prompt still tells Claude to decline "returns/credit notes", although the engine supports the return entities, so return questions may be declined until the prompt is revisited and evaluated with `verify-nlu-eval.js --live`.
+- The planner prompt is generated from the catalog and no longer declines returns; whether a model now picks the tax-inclusive invoice total for generic "sales" and answers return questions correctly is measured by the evaluation corpus, not assumed.
 - The planner itself is not cached: every question costs one Claude call.

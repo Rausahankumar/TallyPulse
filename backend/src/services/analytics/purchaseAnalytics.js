@@ -84,7 +84,9 @@ async function getTopPurchasedProducts(tenantId, period, { limit = 10 } = {}) {
     {
       $group: {
         _id: "$inventory.itemName",
-        totalAmount: { $sum: "$inventory.amount" },
+        // Tally stores purchase item amounts negative; negated so the total reads as a positive purchase value and the descending sort
+        // ranks the largest purchase first (same rule as the query engine's lineAmount for purchases).
+        totalAmount: { $sum: { $multiply: [-1, "$inventory.amount"] } },
         totalQuantity: { $sum: "$inventory.quantity" },
         orderCount: { $sum: 1 },
       },

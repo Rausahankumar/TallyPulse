@@ -519,7 +519,7 @@ Every turn ends with an honest answer in this shape: a figure computed by the en
 
 ## 10. Analytics Engine
 
-Plain MongoDB aggregations — **no Claude involvement anywhere** in `src/services/analytics/` — and every `$match` stage is built through `analyticsScope.buildVoucherMatchStage()`, which requires a `tenantId` and defaults to active vouchers only.
+Plain MongoDB aggregations — **no Claude involvement anywhere** in `src/services/analytics/` — and every `$match` stage is built through `analyticsScope.buildVoucherMatchStage()`, which requires a `tenantId`, defaults to active vouchers only and turns each period bound into the stored (UTC-midnight) form of its calendar day.
 
 | Module | Role |
 |---|---|
@@ -527,8 +527,8 @@ Plain MongoDB aggregations — **no Claude involvement anywhere** in `src/servic
 | `stockGroupAnalytics.js` | Deterministic Top-10 stock-group sales (item → group via `StockItemMaster`). |
 | `reportAnalytics.js` | Product/customer reports and CSV export rows. |
 | `periodEngine.js` | The single source of period kinds (current/previous week, month, quarter, FY, YTD, rolling windows, custom, same-period-last-year…) and their like-for-like / full-previous comparison windows. |
-| `dateRanges.js` | Calendar helpers (month-end-safe shifts) and the REST request periods (`resolveRequestPeriod`, `resolveRequestComparison`). |
-| `referenceDate.js` | The tenant's reference date (today, end of the local day) and its synced coverage window; one read per chat turn. |
+| `dateRanges.js` | Calendar helpers (month-end-safe shifts), the REST request periods (`resolveRequestPeriod`, `resolveRequestComparison`) and the one conversion between the two date conventions: voucher/ledger dates are stored as UTC midnight of the Tally date while period boundaries are local calendar days, so `storedDayStart` / `storedDayEnd` / `calendarDayOfStored` / `parseCalendarDay` compare them by calendar day. The server's time zone therefore never moves a voucher across a period edge. |
+| `referenceDate.js` | The tenant's reference date (today, end of the local day) and its synced coverage window, both as calendar days; one read per chat turn. |
 | `coverage.js` | Classifies a requested period against the synced window: covered / partly outside (caveat) / outside (refusal — missing data is never shown as zero). |
 | `freshness.js` | `fresh` / `stale` / `sync_failed` / `never_synced` from `SyncCheckpoint` (threshold `ANALYTICS_FRESHNESS_THRESHOLD_MINUTES`, default 15). |
 | `trustEnvelope.js` | Wraps every REST analytics result as `{state, data, freshness, message}`. |
@@ -567,7 +567,7 @@ question (+ the previous turn's structured plan, for follow-ups)
 | Module (`src/services/query/`) | Role |
 |---|---|
 | `queryChat.js` | The only entry point (`tryAnswerWithQueryEngine`): runs the pipeline above and always ends in an honest answer. |
-| `planner.js` | The Claude call and the server-side guards. System prompt and tool schema are generated from the catalog and marked cacheable; the request is the question (plus the previous plan as JSON) — never chat history, tenant data or the date. Bounded: attempt timeout, deadline, no repair call on the chat path. Anthropic-shaped client seam (`claudeClient(request, {signal})`). |
+| `planner.js` | The Claude call and the server-side guards. System prompt (`buildCatalogDigest`: metric meanings, the validator rules the schema cannot express, the unsupported list - all read from the catalog) and tool schema are generated from the catalog and marked cacheable; the request is the question (plus the previous plan as JSON) — never chat history, tenant data or the date. Bounded: attempt timeout, deadline, no repair call on the chat path. Anthropic-shaped client seam (`claudeClient(request, {signal})`). |
 | `queryPlan.schema.js` | The Query Plan v1 contract: entity (sales, purchase, sales_return, purchase_return), mode (aggregate/list), metrics, groupBy, filters, compare, having, sort, limit. Strict: tenant/company fields, Mongo operators and expressions are structurally impossible. |
 | `semanticCatalog.js` | What each metric, dimension, period and entity *means*; the single source for validator, compiler, planner prompt and tests. |
 | `validator.js` | Semantic validation and resolution of relative periods with the tenant reference date. |
@@ -582,7 +582,7 @@ question (+ the previous turn's structured plan, for follow-ups)
 
 **Failure behaviour:** planner unreachable or unusable → a fixed "planner unavailable" message (no figure, no second Claude path); query too slow/large or any unexpected error → a fixed failure message; period outside the synced window → a missing-data refusal; unsupported or ambiguous question → the planner's decline or clarification.
 
-**Evaluation:** `backend/verify-nlu-eval.js` scores the planner against `backend/eval/nlu-corpus.json` (synthetic names, expected Query Plans). Its default mode is a free self-check; `--live --limit=N` makes one planner call per question.
+**Evaluation:** `backend/verify-nlu-eval.js` scores the planner against `backend/eval/nlu-corpus.json` (synthetic names, expected Query Plans). Its default mode is a free self-check; `--live --limit=N` makes one planner call per question. `backend/eval-nlu-models.js` compares models: it runs the same corpus rows through the unchanged planner with the Claude baseline and any OpenRouter models (`OPENROUTER_EVAL_MODELS`, `OPENROUTER_API_KEY`), scores every answer with the same semantic comparator (a plan that executes but means the wrong thing is *wrong*), and reports exact / acceptable / wrong / invalid / failure rates, latency percentiles, tokens and per-category breakdowns (language, follow-up, comparison, ranking, period, grouping, entity, capability-gap, clarification). It uses bounded concurrency (`NLU_EVAL_CONCURRENCY`) and a response cache keyed by the planner prompt/schema fingerprint, writes git-ignored reports to `backend/eval/results/`, and is evaluation-only: the OpenRouter client lives under `backend/eval/` and no production file imports it. OpenRouter use is **free-only**: each model id must be an exact `:free` id whose every price field in the live catalogue is 0 (otherwise it is recorded as unavailable and not called, never replaced), requests name that one model, forbid provider fallbacks and cap the price at 0, routers (`openrouter/*`) are refused, and a response reporting a cost halts the model. OpenRouter limits free models to 20 requests/minute and, for an account that never purchased credits, 50 requests/day, so `--sample=N` evaluates N evenly spaced rows, requests are paced (`--rpm`), a model refused three times in a row is halted, and cached answers let later days continue where a run stopped.
 
 ---
 
@@ -603,10 +603,10 @@ There is no test framework: every suite is a plain `node verify-*.js` script in 
 
 | Area | Suites |
 |---|---|
-| Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity`, `verify-query-planner`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
+| Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity`, `verify-query-planner`, `verify-planner-digest`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
 | Chat, cost, telemetry | `verify-chat-management`, `verify-cost-forensic`, `verify-ai-telemetry`, `verify-ai-usage-persist` |
-| Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-planner-live-eval` (manual, real tenant, billed) |
-| Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
+| Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-openrouter-eval` (offline tests of the multi-model evaluation, local stub server), `eval-nlu-models.js` (manual; the Claude baseline is billed, OpenRouter models are free-only), `verify-planner-live-eval` (manual, real tenant, billed) |
+| Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-timezone-boundaries` (six server zones), `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
 | Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-migrate-voucher-total-amount` |
 | Sync and recovery | `verify-sync-batching`, `verify-voucher-recovery`, `verify-self-heal`, `verify-reconciliation-history`, `verify-reconciliation-perf-and-failure` |
 | Identity and security | `verify-security-audit` (executable audit probes), `verify-company-identity`, `verify-company-ownership`, `verify-multi-company` |

@@ -429,7 +429,11 @@ async function groundTruth() {
       const Model = n.entity === "sales" ? Sale : Purchase;
       const dim = n.groupBy.length ? n.groupBy[0].dim : null;
       const line = n.metrics.some((m) => LINE[m]);
-      const pipeline = [{ $match: { tenantId, voucherStatus: "active", "header.voucherDate": { $gte: range.from, $lte: range.to } } }];
+      // A period bound is a local CALENDAR day and a voucher is dated by the calendar day of its stored UTC-midnight date; the oracle builds the
+      // stored-date window itself from the bound's Y/M/D (it does not use the engine's helper).
+      const dayStart = new Date(Date.UTC(range.from.getFullYear(), range.from.getMonth(), range.from.getDate()));
+      const dayEnd = new Date(Date.UTC(range.to.getFullYear(), range.to.getMonth(), range.to.getDate(), 23, 59, 59, 999));
+      const pipeline = [{ $match: { tenantId, voucherStatus: "active", "header.voucherDate": { $gte: dayStart, $lte: dayEnd } } }];
       if (line) pipeline.push({ $unwind: "$inventory" });
       const group = { _id: dim === null ? null : dim === "product" ? "$inventory.itemName" : "$header.partyName" };
       for (const m of n.metrics) group[m] = VOUCHER[m] ? { $sum: VOUCHER[m] } : LINE[m] ? { $sum: LINE[m] } : { $sum: 1 };

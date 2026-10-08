@@ -172,13 +172,52 @@ function lastNMonthsEnding(referenceDate, n) {
   return { from, to, label: `Last ${n} months`, isPartial: false };
 }
 
+// ---------------------------------------------------------------- calendar days <-> stored voucher dates
+// Two conventions meet in the analytics, and these helpers are the ONLY place they are converted:
+//  - a voucher (or ledger) date is stored as UTC midnight of its Tally calendar date (parseTallyDate), whatever the server's zone;
+//  - every period boundary is built from LOCAL calendar days (new Date(y, m, d, ...)): "today" and "this month" follow the
+//    server's calendar.
+// Compared as raw instants the two differ by the server's UTC offset: west of UTC an "Aug 1" start (04:00Z in New York) is after a
+// voucher stored at Aug 1 00:00Z, and an "Aug 20" end (Aug 21 03:59Z) includes one dated Aug 21. So a period bound is turned into
+// the stored form of its CALENDAR DAY before it reaches MongoDB, and a stored date is turned into its calendar day before it is
+// compared with a period boundary. The period engine itself is unchanged: it still works in local calendar days.
+
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** A YYYY-MM-DD string is a calendar day (local midnight), not a UTC instant: new Date("2025-08-01") is UTC midnight, i.e. Jul 31 west of UTC. */
+function parseCalendarDay(input) {
+  if (typeof input === "string") {
+    const m = ISO_DAY.exec(input.trim());
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  return new Date(input);
+}
+
+/** The stored form of a period START: UTC midnight of the boundary's calendar day. */
+function storedDayStart(boundary) {
+  const d = new Date(boundary);
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+}
+
+/** The stored form of a period END (inclusive): the last millisecond of the boundary's calendar day, in the stored (UTC) convention. */
+function storedDayEnd(boundary) {
+  const d = new Date(boundary);
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999));
+}
+
+/** The calendar day of a STORED voucher/ledger date, as a local-midnight Date comparable with period boundaries. */
+function calendarDayOfStored(stored) {
+  const d = new Date(stored);
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 /**
  * A caller-supplied custom range, validated and normalized to day
  * boundaries.
  */
 function customRange(fromInput, toInput) {
-  const from = startOfDay(new Date(fromInput));
-  const to = endOfDay(new Date(toInput));
+  const from = startOfDay(parseCalendarDay(fromInput));
+  const to = endOfDay(parseCalendarDay(toInput));
 
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
     throw new Error("customRange: invalid from/to date.");
@@ -229,6 +268,10 @@ module.exports = {
   sameMonthLastYearToDate,
   lastNMonthsEnding,
   customRange,
+  parseCalendarDay,
+  storedDayStart,
+  storedDayEnd,
+  calendarDayOfStored,
   resolveRequestPeriod,
   resolveRequestComparison,
 };

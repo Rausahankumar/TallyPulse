@@ -7806,27 +7806,12 @@
    "question": "turnover August 2025",
    "previousPlan": null,
    "expected": {
-    "status": "supported",
-    "plan": {
-     "v": 1,
-     "entity": "sales",
-     "mode": "aggregate",
-     "period": {
-      "kind": "custom",
-      "from": "2025-08-01",
-      "to": "2025-08-31"
-     },
-     "metrics": [
-      "invoiceAmount"
-     ],
-     "groupBy": [],
-     "filters": []
-    },
+    "status": "decline",
     "alsoAccept": [
      "clarify"
     ]
    },
-   "note": "'turnover' is ambiguous in the product; the live planner eval treats it as invoice amount"
+   "note": "D3: turnover = net sales (invoice sales after returns, before tax); the engine has no pre-tax invoice total and cannot combine sales with returns, so it is declined"
   },
   {
    "id": "nl_0256",
@@ -8861,27 +8846,12 @@
    "question": "show turnover for August 2025",
    "previousPlan": null,
    "expected": {
-    "status": "supported",
-    "plan": {
-     "v": 1,
-     "entity": "sales",
-     "mode": "aggregate",
-     "period": {
-      "kind": "custom",
-      "from": "2025-08-01",
-      "to": "2025-08-31"
-     },
-     "metrics": [
-      "invoiceAmount"
-     ],
-     "groupBy": [],
-     "filters": []
-    },
+    "status": "decline",
     "alsoAccept": [
      "clarify"
     ]
    },
-   "note": "turnover/spend/cost are ambiguous metrics in the product"
+   "note": "D3: turnover = net sales (invoice sales after returns, before tax); the engine has no pre-tax invoice total and cannot combine sales with returns, so it is declined"
   },
   {
    "id": "nl_0305",
@@ -9583,34 +9553,12 @@
    "question": "average order value per customer in August 2025",
    "previousPlan": null,
    "expected": {
-    "status": "supported",
-    "plan": {
-     "v": 1,
-     "entity": "sales",
-     "mode": "aggregate",
-     "period": {
-      "kind": "custom",
-      "from": "2025-08-01",
-      "to": "2025-08-31"
-     },
-     "metrics": [
-      "averageInvoiceValue"
-     ],
-     "groupBy": [
-      {
-       "dim": "customer"
-      }
-     ],
-     "filters": [],
-     "sort": [
-      {
-       "by": "averageInvoiceValue",
-       "dir": "desc"
-      }
-     ],
-     "limit": 10
-    }
-   }
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1: an order is not an invoice and TallyPulse has no order data; averageInvoiceValue must not stand in for average order value"
   },
   {
    "id": "nl_0345",
@@ -11237,6 +11185,306 @@
     }
    },
    "note": "'pichle mahine' relative to a stated September is ambiguous; August (the month before the subject) is the natural reading, last month relative to today is another"
+  },
+  {
+   "id": "nl_0381",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "net sales for August 2025",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D3: net sales is invoice sales after returns and before tax; not calculable"
+  },
+  {
+   "id": "nl_0382",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "sales after returns last month",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D3: sales net of returns; not calculable"
+  },
+  {
+   "id": "nl_0383",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "invoice sales for September 2025",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D2: invoice sales = before tax and before returns; no invoice-level total before tax exists"
+  },
+  {
+   "id": "nl_0384",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "sales excluding GST in September 2025",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D2: no invoice-level total before tax; revenue (item lines) is a different quantity"
+  },
+  {
+   "id": "nl_0385",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "how many orders did we get in August 2025?",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1: orders are not invoices; there is no order data, so invoiceCount must not answer this"
+  },
+  {
+   "id": "nl_0386",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "returns last month",
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales_return",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_month"
+     },
+     "metrics": [
+      "returnAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    }
+   },
+   "note": "D4: bare returns default to sales returns"
+  },
+  {
+   "id": "nl_0387",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "credit note amount this month",
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales_return",
+     "mode": "aggregate",
+     "period": {
+      "kind": "current_month"
+     },
+     "metrics": [
+      "returnAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    }
+   },
+   "note": "D5: credit notes use the sales-return interpretation (only notes classified as returns are counted; the answer says so)"
+  },
+  {
+   "id": "nl_0388",
+   "group": "decided_terms",
+   "language": "hinglish",
+   "previousPlan": null,
+   "question": "pichle mahine kitne orders aaye?",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1 (Hinglish): orders are not invoices; there is no order data"
+  },
+  {
+   "id": "nl_0389",
+   "group": "decided_terms",
+   "language": "hinglish",
+   "previousPlan": null,
+   "question": "August 2025 ka net sales kitna hai?",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D3 (Hinglish): net sales is not calculable"
+  },
+  {
+   "id": "nl_0390",
+   "group": "decided_terms",
+   "language": "hinglish",
+   "previousPlan": null,
+   "question": "September 2025 mein GST ke bina sales kitni hui?",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D2 (Hinglish): sales before tax is not calculable"
+  },
+  {
+   "id": "nl_0391",
+   "group": "decided_terms",
+   "language": "hinglish",
+   "previousPlan": null,
+   "question": "pichle mahine ka turnover batao",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D3 (Hinglish): turnover is not calculable"
+  },
+  {
+   "id": "nl_0392",
+   "group": "decided_terms",
+   "language": "hinglish",
+   "previousPlan": null,
+   "question": "August 2025 ke orders ki list dikhao",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1 (Hinglish): a list of orders must not be answered with the invoice list"
+  },
+  {
+   "id": "nl_0393",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "show orders by customer for September 2025",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1: orders by customer is not invoices by customer"
+  },
+  {
+   "id": "nl_0394",
+   "group": "decided_terms",
+   "language": "english",
+   "previousPlan": null,
+   "question": "average order value last month",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1: an average order value is not the average invoice value"
+  },
+  {
+   "id": "nl_0395",
+   "group": "follow_up",
+   "language": "english",
+   "previousPlan": {
+    "v": 1,
+    "entity": "sales",
+    "mode": "aggregate",
+    "period": {
+     "kind": "custom",
+     "from": "2025-09-01",
+     "to": "2025-09-30"
+    },
+    "metrics": [
+     "invoiceAmount"
+    ],
+    "groupBy": [],
+    "filters": []
+   },
+   "question": "now exclude tax",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D2 follow-up: a tax-inclusive total cannot be turned into a before-tax figure"
+  },
+  {
+   "id": "nl_0396",
+   "group": "follow_up",
+   "language": "english",
+   "previousPlan": {
+    "v": 1,
+    "entity": "sales",
+    "mode": "aggregate",
+    "period": {
+     "kind": "custom",
+     "from": "2025-09-01",
+     "to": "2025-09-30"
+    },
+    "metrics": [
+     "invoiceAmount"
+    ],
+    "groupBy": [],
+    "filters": []
+   },
+   "question": "now show my turnover",
+   "expected": {
+    "status": "decline",
+    "alsoAccept": [
+     "clarify"
+    ]
+   },
+   "note": "D3 follow-up: turnover is not calculable"
+  },
+  {
+   "id": "nl_0397",
+   "group": "follow_up",
+   "language": "english",
+   "previousPlan": {
+    "v": 1,
+    "entity": "sales",
+    "mode": "aggregate",
+    "period": {
+     "kind": "custom",
+     "from": "2025-09-01",
+     "to": "2025-09-30"
+    },
+    "metrics": [
+     "invoiceCount"
+    ],
+    "groupBy": [],
+    "filters": []
+   },
+   "question": "how many orders?",
+   "expected": {
+    "status": "clarify",
+    "alsoAccept": [
+     "decline"
+    ]
+   },
+   "note": "D1 follow-up: an invoice count must not answer an order question"
   }
  ]
 }

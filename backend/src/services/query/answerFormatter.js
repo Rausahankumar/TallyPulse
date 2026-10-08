@@ -83,6 +83,14 @@ function isZero(plan, result) {
   return Object.values(v).every((n) => n === 0);
 }
 
+// Limitations that follow from the SHAPE of the plan, stated whatever the wording of the question (product decisions D5 and D6):
+// - product-level amounts are pre-tax item values (lineAmount): they are not invoice totals and do not add up to total sales/purchases;
+// - returns are only the Credit/Debit Notes classified as returns, and nothing is netted against sales or purchase totals.
+const RETURN_ENTITIES = new Set(["sales_return", "purchase_return"]);
+const RETURNS_NOTE = "Returns are only the Credit/Debit Notes classified as returns (value-adjustment notes are not counted); sales and purchase totals are not reduced by them.";
+const productLevelNote = (entity) => `Product-level amounts are pre-tax item values: tax and charges that are not on an item line are left out, so they do not add up to total ${entity === "purchase" ? "purchases" : "sales"} (invoice totals).`;
+const touchesProduct = (plan) => (plan.groupBy || []).some((g) => g.dim === "product" || g.dim === "productGroup") || (plan.filters || []).some((f) => f.dim === "product" || f.dim === "productGroup");
+
 /**
  * @returns {{text:string, warnings:string[], zero:boolean}}
  */
@@ -141,6 +149,8 @@ function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumpti
   const notes = contextNotes.map((n) => n.message);
   for (const a of plannerAssumptions) notes.push(`Interpretation (AI-assisted): ${a}`);
   for (const a of definitionNotes) notes.push(a.message);
+  if (Object.values(result.amountBasis || {}).includes("line_item_pre_tax") && (plan.entity === "sales" || plan.entity === "purchase") && touchesProduct(plan)) notes.push(productLevelNote(plan.entity));
+  if (RETURN_ENTITIES.has(plan.entity)) notes.push(RETURNS_NOTE);
   for (const a of result.assumptions || []) notes.push(a.message);
   const bases = new Set(Object.values(result.amountBasis || {}));
   if (bases.has("voucher_total_incl_tax")) notes.push("Invoice amounts are invoice totals including tax.");

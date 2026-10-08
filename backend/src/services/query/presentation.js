@@ -7,7 +7,7 @@
 // trend, comparison, table or empty state). It is built from the plan and the result the engine already
 // returned - no Claude call, no re-query, no recalculation of any financial figure. Every number carried
 // here is a value the engine produced, formatted with the same helpers as the text answer. The one derived
-// column - "Avg order" in a comparison - is amount / orders of two returned values, and is marked `derived`.
+// column - "Avg invoice" in a comparison - is amount / invoices of two returned values, and is marked `derived`.
 //
 // Carried in the existing response/persisted slot `visualization` (chat.model.js), so reloaded chats render
 // the same way. The text `answer` is unchanged and remains the fallback for anything not described here
@@ -24,8 +24,9 @@ const MAX_TABLE_ROWS = 25;
 const MAX_CHART_POINTS = 10;
 
 const SHORT = {
-  invoiceAmount: "Sales", invoiceCount: "Orders", averageInvoiceValue: "Avg order",
-  purchaseAmount: "Purchases", purchaseInvoiceCount: "Orders", averagePurchaseValue: "Avg order",
+  // An invoice count is never labelled "Orders": TallyPulse has no order data (product decision D1).
+  invoiceAmount: "Sales", invoiceCount: "Invoices", averageInvoiceValue: "Avg invoice",
+  purchaseAmount: "Purchases", purchaseInvoiceCount: "Invoices", averagePurchaseValue: "Avg invoice",
   lineAmount: "Amount (pre-tax)", quantity: "Quantity", lineCount: "Lines",
   returnAmount: "Returns", returnCount: "Return notes", returnQuantity: "Returned qty", returnLineAmount: "Returned value (pre-tax)",
 };
@@ -172,7 +173,7 @@ function build({ plan, result, notes = [], zero = false }) {
     const countId = metrics.find((m) => /(InvoiceCount|Count)$/.test(m));
     const columns = [col("period", "Period", "left")].concat(metrics.map((m) => col(m, shortLabel(m))));
     const withAvg = !!(amountId && countId && cmp[amountId] && cmp[countId]);
-    if (withAvg) columns.push(col("avg", "Avg order", "right", { derived: true, hint: "Amount ÷ orders, from the two figures in this row" }));
+    if (withAvg) columns.push(col("avg", "Avg invoice", "right", { derived: true, hint: "Amount ÷ invoices, from the two figures in this row" }));
     const avg = (a, n) => (n > 0 ? fmtValue(amountId, a / n) : "—");
     const prevRow = { cells: { period: prevLabel }, range: compareRange(plan, result) };
     const curRow = { cells: { period: curLabel }, range: base.period.range, current: true };
@@ -201,8 +202,9 @@ function build({ plan, result, notes = [], zero = false }) {
   const rows = result.rows || [];
   const hasCompare = rows.some((r) => r.comparison && r.comparison[primary]);
 
-  // ---- date grouping: a trend
-  if (groupBy[0].dim === "date") {
+  // ---- date grouping: a trend. Only when date is the ONLY grouping: a trend row has a single label, so date + customer (date first)
+  // would lose the customer. Every other grouping is a ranking whose row name joins all its dimensions.
+  if (groupBy.length === 1 && groupBy[0].dim === "date") {
     const tableRows = rows.map((r) => ({ cells: Object.assign({ label: bucketLabel(r.key) }, ...metrics.map((m) => ({ [m]: fmtValue(m, r.values[m]) }))) }));
     const totals = !result.truncated && result.totals && result.totals.values ? { cells: Object.assign({ label: "Total" }, ...metrics.map((m) => ({ [m]: fmtValue(m, result.totals.values[m]) }))) } : null;
     return withCommon({

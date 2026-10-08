@@ -104,7 +104,9 @@ try {
   let h = md(DETERMINISTIC);
   check("renders as an ordered list of rows", (h.match(/<li/g) || []).length === 3, h);
   check("the 'Total:' line is NOT swallowed into the last list item", !/<li[^>]*>[^]*?Total:[^]*?<\/li>/.test(h) && /Total:/.test(visible(h)), h);
-  check("header, rows, total and note are separate blocks", /<p[^>]*>Sales — [^<]*<\/p>/.test(h) && /<p[^>]*>Total: [^<]*<\/p>/.test(h) && /<p[^>]*>• Line amounts are item values before tax.<\/p>/.test(h), h);
+  // A product-group answer carries two notes (the product-level limitation, then the line-amount basis): consecutive note lines render as ONE block
+  // (line breaks inside a paragraph), separate from the header, the rows and the total.
+  check("header, rows, total and the notes block are separate blocks", /<p[^>]*>Sales — [^<]*<\/p>/.test(h) && /<p[^>]*>Total: [^<]*<\/p>/.test(h) && /<p[^>]*>• Product-level amounts are pre-tax item values[^<]*(?:<br\s*\/?>\s*)• Line amounts are item values before tax\.<\/p>/.test(h), h);
   const consecutive = md("Invoice amount: ₹1,000.00\nCompared with last month: previous ₹800.00, change +₹200.00 (+25.0%)");
   check("consecutive plain lines stay on their own lines (no run-on paragraph)", /₹1,000.00<br\s*\/?>\s*Compared with/.test(consecutive), consecutive);
   for (const v of ["₹18,74,081.23", "₹10,96,973.85", "₹7,51,574.81", "₹37,22,629.89"]) check(`value ${v} shown exactly as the backend formatted it`, visible(h).includes(v));
