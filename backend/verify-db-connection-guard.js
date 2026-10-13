@@ -2,6 +2,7 @@
 // Nothing here connects to MongoDB: the guard is a pure decision function.
 // Run: node verify-db-connection-guard.js
 const assert = require("assert");
+const path = require("path");
 const { checkConnectionTarget, isTestMode, parseMongoUri } = require("./src/config/db");
 
 let passed = 0;
@@ -27,7 +28,7 @@ check("TALLYPULSE_TEST_MODE=1 enables test mode", () => {
   assert.strictEqual(isTestMode({ TALLYPULSE_TEST_MODE: "1" }, "/x/server.js"), true);
 });
 check("verify-*.js entry script enables test mode", () => {
-  assert.strictEqual(isTestMode({}, "D:\\TallyPulse\\backend\\verify-sales-mapper.js"), true);
+  assert.strictEqual(isTestMode({}, path.join("backend", "verify-sales-mapper.js")), true); // native separators: backslashes are not separators on Linux
   assert.strictEqual(isTestMode({}, "/x/verify-company-identity.js"), true);
 });
 check("server.js with no env markers is NOT test mode", () => {
