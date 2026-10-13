@@ -97,7 +97,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/sync/reconciliation.js` (254 lines, 3 functions)
 - `src/services/sync/reconciliationWorker.js` (360 lines, 10 functions)
 - `src/services/sync/selfHeal.js` (186 lines, 2 functions)
-- `src/services/sync/tallySyncWorker.js` (674 lines, 10 functions)
+- `src/services/sync/tallySyncWorker.js` (662 lines, 9 functions)
 - `src/services/sync/voucherLineBackfill.js` (280 lines, 10 functions)
 - `src/services/sync/voucherPersistence.js` (287 lines, 1 functions)
 - `src/services/sync/voucherRecovery.js` (383 lines, 5 functions)
@@ -1133,7 +1133,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/models/company.js`, `src/models/syncCheckpoint.model.js`
 
-**Exports:** `startTallySyncWorker`, `stopTallySyncWorker`, `runSyncForAllCompanies`, `runSyncForCompany`, `runSyncForCompanyModule`, `SALES_SYNC_MODULE`, `PURCHASE_SYNC_MODULE`, `CREDIT_NOTE_SYNC_MODULE`, `DEBIT_NOTE_SYNC_MODULE`
+**Exports:** `startTallySyncWorker`, `stopTallySyncWorker`, `runSyncForAllCompanies`, `runSyncForCompanyModule`, `SALES_SYNC_MODULE`, `PURCHASE_SYNC_MODULE`, `CREDIT_NOTE_SYNC_MODULE`, `DEBIT_NOTE_SYNC_MODULE`
 
 - **`resolveTallyBaseUrl()`** — line 126
   - Purpose: (no comment in code — see name and calls below)
@@ -1150,19 +1150,16 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: Runs one incremental sync pass for a single {company, sync module} combination. Never throws — failures are recorded on the checkpoint and returned in the result so the caller can log them and move on.
   - Calls in this file: `resolveTallyBaseUrl()`, `ensureCheckpointExists()`, `acquireLock()`, `releaseLock()`
   - Calls other files: `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → computeBatchWindow()`, `src/services/sync/batchWindow.js → findMissingAlterIds()`, `src/services/import/tallySalesImport.js → extractVoucherCollection()`, `src/services/auth/tallyCompanyGuard.js → verifyOpenTallyCompany()`, `src/services/tally/companyOwnership.js → assertBatchOwnership()`, `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`
-- **`runSyncForCompany()`** _(async)_ — line 548
-  - Purpose: Sales-only entry point, kept with its original name/signature/behavior for backward compatibility (anything already calling runSyncForCompany the old way — including this file's own exports — keeps working unchanged). Purely a thin wrapper over the generic function above.
-  - Calls in this file: `runSyncForCompanyModule()`
-- **`runSyncForAllCompanies()`** _(async)_ — line 555
+- **`runSyncForAllCompanies()`** _(async)_ — line 544
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `runSyncForCompanyModule()`
   - Calls other files: `src/models/company.js → find()`
-- **`buildCronExpression()`** — line 617
+- **`buildCronExpression()`** — line 606
   - Purpose: (no comment in code — see name and calls below)
-- **`startTallySyncWorker()`** — line 625
+- **`startTallySyncWorker()`** — line 614
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `runSyncForAllCompanies()`, `buildCronExpression()`
-- **`stopTallySyncWorker()`** — line 656
+- **`stopTallySyncWorker()`** — line 645
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/sync/voucherLineBackfill.js`

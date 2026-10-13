@@ -541,17 +541,6 @@ async function runSyncForCompanyModule(
   }
 }
 
-// Sales-only entry point, kept with its original name/signature/behavior
-// for backward compatibility (anything already calling runSyncForCompany
-// the old way — including this file's own exports — keeps working
-// unchanged). Purely a thin wrapper over the generic function above.
-async function runSyncForCompany(
-  company,
-  { intervalSeconds = DEFAULT_INTERVAL_SECONDS } = {}
-) {
-  return runSyncForCompanyModule(company, SALES_SYNC_MODULE, { intervalSeconds });
-}
-
 async function runSyncForAllCompanies(
   { intervalSeconds = DEFAULT_INTERVAL_SECONDS } = {}
 ) {
@@ -664,7 +653,6 @@ module.exports = {
   startTallySyncWorker,
   stopTallySyncWorker,
   runSyncForAllCompanies,
-  runSyncForCompany,
   runSyncForCompanyModule,
   SALES_SYNC_MODULE,
   PURCHASE_SYNC_MODULE,
