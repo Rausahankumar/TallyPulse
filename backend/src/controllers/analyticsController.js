@@ -1,5 +1,6 @@
 const salesAnalytics = require("../services/analytics/salesAnalytics");
 const purchaseAnalytics = require("../services/analytics/purchaseAnalytics");
+const insights = require("../services/analytics/insights");
 const dateRanges = require("../services/analytics/dateRanges");
 const periodEngine = require("../services/analytics/periodEngine");
 const stockGroupAnalytics = require("../services/analytics/stockGroupAnalytics");
@@ -364,7 +365,65 @@ const getStockGroupPerformance = handle(async (req, res) => {
   return res.status(200).json({ success: true, ...envelope });
 });
 
+// Discount and price insights (services/analytics/insights.js): the same functions the Ask AI tool calls.
+const DISCOUNT_BREAKDOWNS = { sales: ["customer", "product", "month"], purchase: ["supplier", "product", "month"] };
+
+const getDiscountSummary = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const entity = req.query.entity === "purchase" ? "purchase" : "sales";
+  const by = req.query.by || null;
+  if (by !== null && !DISCOUNT_BREAKDOWNS[entity].includes(by)) {
+    const err = new Error(`Invalid "by". Expected one of: ${DISCOUNT_BREAKDOWNS[entity].join(", ")}.`);
+    err.status = 400;
+    throw err;
+  }
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: entity === "purchase" ? "Purchase" : "Sales",
+    run: () => insights.discountSummary(tenantId, period, { entity, by, limit }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+const getProductRates = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => insights.ratesByProduct(tenantId, period, { limit, product: req.query.product || null }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+const getSupplierRates = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Purchase",
+    run: () => insights.supplierRates(tenantId, period, { limit, product: req.query.product || null }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
 module.exports = {
+  getDiscountSummary,
+  getProductRates,
+  getSupplierRates,
   getSalesSummary,
   getSalesComparison,
   getTopProducts,

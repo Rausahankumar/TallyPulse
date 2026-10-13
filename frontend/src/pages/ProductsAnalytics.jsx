@@ -13,7 +13,7 @@ import { useAsync } from "../lib/useAsync";
 import { usePersistedRange } from "../lib/usePersistedRange";
 import { formatCurrency } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/dateRange";
-import { getTopProducts, getGrowingProducts, getDecliningProducts } from "../api/analytics";
+import { getTopProducts, getGrowingProducts, getDecliningProducts, getProductRates } from "../api/analytics";
 
 const TABS = [
   { key: "top", label: "Top Products" },
@@ -34,13 +34,15 @@ async function loadProductsAnalytics(range) {
   const from = toDateInputValue(range.from);
   const to = toDateInputValue(range.to);
 
-  const [top, growing, declining] = await Promise.all([
+  // The rates call is additive: if the server does not have it yet, the rest of the page still loads.
+  const [top, growing, declining, rates] = await Promise.all([
     getTopProducts({ from, to, limit: 10 }),
     getGrowingProducts({ limit: 10 }),
     getDecliningProducts({ limit: 10 }),
+    getProductRates({ from, to, limit: 15 }).catch(() => null),
   ]);
 
-  return { top, growing, declining };
+  return { top, growing, declining, rates };
 }
 
 // Normalizes the three tabs' different real shapes into one row shape:
@@ -136,6 +138,51 @@ export default function ProductsAnalytics() {
               <AnalyticsNotice state="zero_result" message="Nothing in this category for the selected range." />
             ) : (
               <Table rowKey="itemName" rows={rows} columns={COLUMNS} />
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Sale vs Purchase Rate"
+              subtitle="Average rate per unit in the date range above (billed amount ÷ quantity, after discount, before tax)"
+            />
+            {!data.rates ? (
+              <AnalyticsNotice state="analytics_error" message="Rates are not available from the server yet. Restart the backend with the latest code." />
+            ) : !REAL_STATES.has(data.rates.state) ? (
+              <AnalyticsNotice state={data.rates.state} message={data.rates.message} />
+            ) : data.rates.data.rows.length === 0 ? (
+              <AnalyticsNotice state="zero_result" message="No sales or purchases in this range." />
+            ) : (
+              <>
+                <Table
+                  rowKey="product"
+                  rows={data.rates.data.rows}
+                  columns={[
+                    {
+                      key: "product",
+                      header: "Product",
+                      render: (r) => (
+                        <span>
+                          {r.product}
+                          {r.unitWarning && (
+                            <span title="Line rates differ more than 5x: the unit of measure may differ between vouchers" className="ml-1 text-warning-600">
+                              ⚠
+                            </span>
+                          )}
+                        </span>
+                      ),
+                    },
+                    { key: "saleRate", header: "Sold at (avg)", align: "right", render: (r) => (r.saleRate == null ? "—" : formatCurrency(r.saleRate)) },
+                    { key: "purchaseRate", header: "Bought at (avg)", align: "right", render: (r) => (r.purchaseRate == null ? "—" : formatCurrency(r.purchaseRate)) },
+                    { key: "rateGap", header: "Price gap", align: "right", render: (r) => (r.rateGap == null ? "—" : formatCurrency(r.rateGap)) },
+                    { key: "saleQty", header: "Sold Qty", align: "right", render: (r) => (r.saleQty ? r.saleQty : "—") },
+                  ]}
+                />
+                <p className="mt-3 text-[12px] text-ink-400">
+                  Price gap = average sale rate − average purchase rate of the same product in the same period. It is a price
+                  difference, not profit (no stock cost is used). {data.rates.data.disclosures?.[0]}
+                </p>
+              </>
             )}
           </Card>
 

@@ -54,6 +54,22 @@ export function getSalesTrend({ from, to } = {}) {
   return get("/analytics/sales/trend", from && to ? { from, to } : {});
 }
 
+// Discount given (entity "sales", by customer|product|month) or received (entity "purchase", by supplier|product|month).
+// Same calculation the Ask AI chat uses (backend/src/services/analytics/insights.js).
+export function getDiscountSummary({ from, to, period, entity, by, limit } = {}) {
+  return get("/analytics/discounts", { ...buildPeriodParams({ period, from, to }), entity, by, limit });
+}
+
+// Per product: average sale rate, average purchase rate and the gap between them (a price gap, not a profit).
+export function getProductRates({ from, to, period, limit, product } = {}) {
+  return get("/analytics/products/rates", { ...buildPeriodParams({ period, from, to }), limit, product });
+}
+
+// Per product: what each supplier charged per unit, and who is cheapest.
+export function getSupplierRates({ from, to, period, limit, product } = {}) {
+  return get("/analytics/purchases/supplier-rates", { ...buildPeriodParams({ period, from, to }), limit, product });
+}
+
 export function getCustomerCounts({ from, to, period } = {}) {
   return get("/analytics/sales/customer-counts", buildPeriodParams({ period, from, to }));
 }

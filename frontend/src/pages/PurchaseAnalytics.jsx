@@ -17,6 +17,8 @@ import {
   getPurchaseComparison,
   getTopSuppliers,
   getPurchaseTrend,
+  getSupplierRates,
+  getDiscountSummary,
 } from "../api/analytics";
 import { listPurchaseVouchers } from "../api/vouchers";
 import VoucherRegister from "../components/vouchers/VoucherRegister";
@@ -24,6 +26,7 @@ import VoucherRegister from "../components/vouchers/VoucherRegister";
 const TABS = [
   { key: "trend", label: "Trend" },
   { key: "suppliers", label: "Top Suppliers" },
+  { key: "rates", label: "Best Rates" },
   { key: "bills", label: "Bills" },
 ];
 
@@ -44,14 +47,18 @@ async function loadPurchaseAnalytics(range) {
   const from = toDateInputValue(range.from);
   const to = toDateInputValue(range.to);
 
-  const [summary, comparison, topSuppliers, trend] = await Promise.all([
+  // The rate and discount calls are additive: if the server does not have them yet, the rest of the page still loads.
+  const optional = (promise) => promise.catch(() => null);
+  const [summary, comparison, topSuppliers, trend, supplierRates, discountReceived] = await Promise.all([
     getPurchaseSummary({ from, to }),
     getPurchaseComparison(),
     getTopSuppliers({ from, to, limit: 10 }),
     getPurchaseTrend({ from, to }),
+    optional(getSupplierRates({ from, to, limit: 15 })),
+    optional(getDiscountSummary({ from, to, entity: "purchase" })),
   ]);
 
-  return { summary, comparison, topSuppliers, trend };
+  return { summary, comparison, topSuppliers, trend, supplierRates, discountReceived };
 }
 
 export default function PurchaseAnalytics() {
@@ -65,6 +72,8 @@ export default function PurchaseAnalytics() {
 
   const summaryReal = data && REAL_STATES.has(data.summary.state);
   const summaryStale = data?.summary.state === "stale_data";
+  const received = data?.discountReceived;
+  const receivedTotals = received && REAL_STATES.has(received.state) && received.data?.hasData ? received.data.totals : null;
 
   return (
     <div>
@@ -110,6 +119,14 @@ export default function PurchaseAnalytics() {
             </div>
           )}
 
+          {receivedTotals && (
+            <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <MiniStatCard label="List Value (before discount)" value={formatCompactCurrency(receivedTotals.grossAmount)} delta={null} />
+              <MiniStatCard label="Discount Received" value={formatCompactCurrency(receivedTotals.discountAmount)} delta={null} />
+              <MiniStatCard label="Avg Discount" value={`${receivedTotals.discountPct.toFixed(1)}%`} delta={null} />
+            </div>
+          )}
+
           <Tabs tabs={TABS} active={tab} onChange={setTab} />
 
           {tab === "trend" && (
@@ -144,6 +161,62 @@ export default function PurchaseAnalytics() {
                     { key: "orderCount", header: "Bills", align: "right" },
                   ]}
                 />
+              )}
+            </Card>
+          )}
+
+          {tab === "rates" && (
+            <Card>
+              <CardHeader
+                title="Best Purchase Rate by Product"
+                subtitle="Cheapest regular supplier per product (rate = billed amount ÷ quantity, after discount, before tax), scoped to the date range above"
+              />
+              {!data.supplierRates ? (
+                <AnalyticsNotice state="analytics_error" message="Supplier rates are not available from the server yet. Restart the backend with the latest code." />
+              ) : !REAL_STATES.has(data.supplierRates.state) ? (
+                <AnalyticsNotice state={data.supplierRates.state} message={data.supplierRates.message} />
+              ) : data.supplierRates.data.rows.length === 0 ? (
+                <AnalyticsNotice state="zero_result" message="No purchases in this range." />
+              ) : (
+                <>
+                  <Table
+                    rowKey="product"
+                    rows={data.supplierRates.data.rows}
+                    columns={[
+                      {
+                        key: "product",
+                        header: "Product",
+                        render: (r) => (
+                          <span>
+                            {r.product}
+                            {r.unitWarning && (
+                              <span title="Line rates differ more than 5x: the unit of measure may differ between bills" className="ml-1 text-warning-600">
+                                ⚠
+                              </span>
+                            )}
+                          </span>
+                        ),
+                      },
+                      { key: "bestSupplier", header: "Best Supplier" },
+                      { key: "bestRate", header: "Best Rate", align: "right", render: (r) => formatCurrency(r.bestRate) },
+                      { key: "avgRate", header: "Avg Rate", align: "right", render: (r) => formatCurrency(r.avgRate) },
+                      { key: "savingIfAllAtBest", header: "Saving if all at best", align: "right", render: (r) => formatCurrency(r.savingIfAllAtBest) },
+                      {
+                        key: "suppliers",
+                        header: "Suppliers (avg rate)",
+                        render: (r) =>
+                          r.suppliers
+                            .slice(0, 4)
+                            .map((s) => `${s.supplier} ${formatCurrency(s.avgRate)}${s.lowVolume ? "*" : ""}`)
+                            .join(" · "),
+                      },
+                    ]}
+                  />
+                  <p className="mt-3 text-[12px] text-ink-400">
+                    * a very small share of the volume (under 5%), so it is not treated as the best rate. "Saving if all at best" is
+                    indicative: it assumes the best supplier could supply the whole quantity. {data.supplierRates.data.disclosures?.[0]}
+                  </p>
+                </>
               )}
             </Card>
           )}

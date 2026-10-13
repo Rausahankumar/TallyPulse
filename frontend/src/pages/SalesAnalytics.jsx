@@ -18,6 +18,7 @@ import {
   getTopProducts,
   getTopCustomers,
   getSalesTrend,
+  getDiscountSummary,
 } from "../api/analytics";
 import { listSalesVouchers } from "../api/vouchers";
 import VoucherRegister from "../components/vouchers/VoucherRegister";
@@ -26,6 +27,7 @@ const TABS = [
   { key: "trend", label: "Trend" },
   { key: "customers", label: "Top Customers" },
   { key: "products", label: "Top Products" },
+  { key: "discounts", label: "Discounts" },
   { key: "invoices", label: "Invoices" },
 ];
 
@@ -50,15 +52,19 @@ async function loadSalesAnalytics(range) {
   const from = toDateInputValue(range.from);
   const to = toDateInputValue(range.to);
 
-  const [summary, comparison, topProducts, topCustomers, trend] = await Promise.all([
+  // The discount calls are additive: if the server does not have them yet (older backend), the rest of the page still loads.
+  const optional = (promise) => promise.catch(() => null);
+  const [summary, comparison, topProducts, topCustomers, trend, discountByCustomer, discountByProduct] = await Promise.all([
     getSalesSummary({ from, to }),
     getSalesComparison(),
     getTopProducts({ from, to, limit: 10 }),
     getTopCustomers({ from, to, limit: 10 }),
     getSalesTrend({ from, to }),
+    optional(getDiscountSummary({ from, to, by: "customer", limit: 10 })),
+    optional(getDiscountSummary({ from, to, by: "product", limit: 10 })),
   ]);
 
-  return { summary, comparison, topProducts, topCustomers, trend };
+  return { summary, comparison, topProducts, topCustomers, trend, discountByCustomer, discountByProduct };
 }
 
 export default function SalesAnalytics() {
@@ -75,6 +81,9 @@ export default function SalesAnalytics() {
 
   const summaryReal = data && REAL_STATES.has(data.summary.state);
   const summaryStale = data?.summary.state === "stale_data";
+  const discount = data?.discountByCustomer;
+  const discountReal = !!discount && REAL_STATES.has(discount.state) && discount.data?.hasData;
+  const discountTotals = discountReal ? discount.data.totals : null;
 
   return (
     <div>
@@ -117,6 +126,14 @@ export default function SalesAnalytics() {
                 }
                 delta={data.comparison.data?.growthPercentage ?? null}
               />
+            </div>
+          )}
+
+          {discountTotals && (
+            <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <MiniStatCard label="List Value (before discount)" value={formatCompactCurrency(discountTotals.grossAmount)} delta={null} />
+              <MiniStatCard label="Discount Given" value={formatCompactCurrency(discountTotals.discountAmount)} delta={null} />
+              <MiniStatCard label="Avg Discount" value={`${discountTotals.discountPct.toFixed(1)}%`} delta={null} />
             </div>
           )}
 
@@ -175,6 +192,40 @@ export default function SalesAnalytics() {
                 />
               )}
             </Card>
+          )}
+
+          {tab === "discounts" && (
+            <div className="space-y-4">
+              {[
+                ["by customer", data.discountByCustomer, "Customer"],
+                ["by product", data.discountByProduct, "Product"],
+              ].map(([title, envelope, label]) => (
+                <Card key={title}>
+                  <CardHeader title={`Discount ${title}`} subtitle="Largest discounts first, scoped to the date range above" />
+                  {!envelope ? (
+                    <AnalyticsNotice state="analytics_error" message="Discount figures are not available from the server yet. Restart the backend with the latest code." />
+                  ) : !REAL_STATES.has(envelope.state) ? (
+                    <AnalyticsNotice state={envelope.state} message={envelope.message} />
+                  ) : envelope.data.rows.length === 0 ? (
+                    <AnalyticsNotice state="zero_result" message="No discounted lines in this range." />
+                  ) : (
+                    <Table
+                      rowKey="key"
+                      rows={envelope.data.rows}
+                      columns={[
+                        { key: "rank", header: "#", render: (_, i) => i + 1 },
+                        { key: "key", header: label },
+                        { key: "grossAmount", header: "List Value", align: "right", render: (r) => formatCurrency(r.grossAmount) },
+                        { key: "discountAmount", header: "Discount", align: "right", render: (r) => formatCurrency(r.discountAmount) },
+                        { key: "discountPct", header: "Discount %", align: "right", render: (r) => `${r.discountPct.toFixed(1)}%` },
+                        { key: "discountedLines", header: "Discounted Lines", align: "right", render: (r) => formatNumber(r.discountedLines) },
+                      ]}
+                    />
+                  )}
+                </Card>
+              ))}
+              {discount?.data?.disclosures?.[0] && <p className="text-[12px] text-ink-400">{discount.data.disclosures[0]}</p>}
+            </div>
           )}
 
           {tab === "invoices" && (
