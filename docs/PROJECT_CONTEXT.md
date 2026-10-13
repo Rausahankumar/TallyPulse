@@ -65,6 +65,7 @@ Run git from the repository root (`D:\TallyPulse`), never from `backend/`. Confi
 - Cancelled vouchers are not stored. Deletions are found only by reconciliation, and deleted vouchers are marked, never removed.
 - Deleting Mongo docs by hand strands them, because the checkpoint stays ahead. Fix with `recoverMissingVouchers`, never with a checkpoint reset.
 - Master pattern: flat `Type: <Master>` collection with a minimal `Native Method` field list → `validateMasterOwnership` on the FULL raw list → tenant-scoped upsert keyed by GUID.
+- Test databases: `connectDB` refuses (in test mode, i.e. any `verify-*.js`) anything but a loopback host and a database named `tallypulse_ci*` or `tallypulse_test*`.
 - Ledger masters: the AlterID filter works, but deletions are invisible, so a periodic full refresh is required (about 0.5 s for about 2k ledgers). `CreatedDate` is present.
 - With two companies open, Tally answers for the SELECTED one. Every ingest must pass the ownership check.
 - Restart the backend (`node server.js`) after code changes.

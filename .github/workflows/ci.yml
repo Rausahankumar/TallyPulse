@@ -140,6 +140,7 @@ jobs:
             verify-sales-mapper.js \
             verify-migrate-voucher-total-amount.js \
             verify-security-audit.js \
+            verify-db-connection-guard.js \
             verify-company-identity.js \
             verify-company-ownership.js \
             verify-multi-company.js \
