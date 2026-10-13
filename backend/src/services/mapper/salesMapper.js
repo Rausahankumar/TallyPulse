@@ -66,6 +66,8 @@ function mapTallySale(parsedVoucher, context = {}) {
       amount: toNumber(item.amount, 0),
       discountPercentage: toNumber(item.discountPercentage, 0),
       discountAmount: toNumber(item.discountAmount, 0),
+      // Already normalised by the parser (gstFields.parseVoucherLineGst); passed through untouched.
+      ...(item.gst && typeof item.gst === 'object' ? { gst: item.gst } : {}),
     };
   });
 

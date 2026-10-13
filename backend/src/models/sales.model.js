@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { voucherLineGstSchema } = require("./gstSchemas");
 
 const salesSchema = new mongoose.Schema(
   {
@@ -74,6 +75,14 @@ const salesSchema = new mongoose.Schema(
         discountAmount: {
           type: Number,
           default: 0,
+        },
+
+        // GST fields this voucher line carried when it was posted (HSN, taxability,
+        // rate rows). Optional: absent on lines synced before this existed. Never
+        // recomputed from the Stock Item master, never used in an amount calculation.
+        gst: {
+          type: voucherLineGstSchema,
+          default: undefined,
         },
       },
     ],

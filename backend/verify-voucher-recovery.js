@@ -28,7 +28,7 @@ const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 const { recoverMissingVouchers } = require("./src/services/sync/voucherRecovery");
 const { runSyncForCompanyModule } = require("./src/services/sync/tallySyncWorker");
 const { processSinglePurchaseVoucher } = require("./src/services/import/tallyPurchaseImport");
-const { getPendingVoucherAlterIds, getVouchersByAlterIds } = require("./src/services/odbc/odbcService");
+const { getPendingVoucherAlterIds, getVouchersByAlterIds, getPurchaseVouchersSinceAlterId } = require("./src/services/odbc/odbcService");
 const { clearVoucherTypeClassificationCache } = require("./src/services/tally/voucherTypeClassifier");
 
 const T1 = "verify-recovery-tenant";
@@ -181,10 +181,18 @@ async function main() {
       filterOf("RTS Recovery Vouchers Collection") === '($AlterID = 10 OR $AlterID = 20 OR $AlterID = 30) AND ($VoucherTypeName = "Purchase" OR $VoucherTypeName = "CK Purchase")',
       filterOf("RTS Recovery Vouchers Collection")
     );
+    // The recovery fetch must ask for exactly the field set the incremental fetch asks for (that is what makes it parser-compatible).
+    // Both now also ask for inventoryentries.computedigst (the computed GST group), so compare them to each other, not to a literal.
+    await getPurchaseVouchersSinceAlterId({ afterAlterId: 0, baseUrl: stub.url, voucherTypeNames: ["Purchase", "CK Purchase"] });
+    const nativeMethodOf = (id) => {
+      const attrs = Object.assign({}, ...stub.recorded[id].tdlmessage[0].definitions[0].attributes);
+      return attrs["Native Method"];
+    };
     check(
       "fetch-by-AlterIDs requests the same full field set as the incremental fetch (parser-compatible)",
-      JSON.stringify(stub.recorded["RTS Recovery Vouchers Collection"]).includes("inventoryentries.* , ledgerentries.*") &&
-        JSON.stringify(stub.recorded["RTS Recovery Vouchers Collection"]).includes("IsCancelled")
+      nativeMethodOf("RTS Recovery Vouchers Collection") === nativeMethodOf("RTS Purchase AlterID Collection") &&
+        nativeMethodOf("RTS Recovery Vouchers Collection").includes("inventoryentries.* , inventoryentries.computedigst , ledgerentries.*") &&
+        nativeMethodOf("RTS Recovery Vouchers Collection").includes("IsCancelled")
     );
     const bad = [[], [1.5], [0], ["7"], Array.from({ length: 201 }, (_, i) => i + 1), undefined];
     let allRejected = true;

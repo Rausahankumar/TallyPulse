@@ -544,7 +544,7 @@ const UNSUPPORTED_CAPABILITIES = [
     unlocks: "a combined sales-and-returns calculation on a before-tax basis, return rate, product-group returns",
   },
   { id: "profit_margin", reason: "No cost/COGS data is available.", unlocks: "cost data (later phase)" },
-  { id: "discount_analysis", reason: "Line discounts are not captured (stored discount fields are always zero).", unlocks: "parser change (later phase)" },
+  { id: "discount_analysis", reason: "Discounts cannot be queried yet: they are stored per item line only for recently synced vouchers (older vouchers read zero until back-filled), and no discount metric exists.", unlocks: "a discount metric after the back-fill (later phase)" },
   { id: "cancelled_invoices", reason: "Cancelled vouchers are not reliably stored, so their counts would be wrong.", unlocks: "sync change (later phase)" },
   { id: "sales_by_region_or_salesperson", reason: "State, region, customer group and salesperson are not stored in this phase.", unlocks: "party master (later phase)" },
   { id: "cross_entity_comparison", reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
@@ -628,15 +628,6 @@ function computeFingerprint(catalog = CATALOG) {
 
 // ---------- accessors ----------
 
-function getEntity(id) {
-  return ENTITIES[id] || null;
-}
-function getMetric(id) {
-  return METRICS[id] || null;
-}
-function getDimension(id) {
-  return DIMENSIONS[id] || null;
-}
 function metricsForEntity(entityId) {
   return Object.values(METRICS).filter((m) => m.entities.includes(entityId));
 }
@@ -698,9 +689,6 @@ module.exports = {
   PARITY_ORACLES,
   QUERY_RULES,
   computeFingerprint,
-  getEntity,
-  getMetric,
-  getDimension,
   metricsForEntity,
   dimensionsForEntity,
   metricRefs,

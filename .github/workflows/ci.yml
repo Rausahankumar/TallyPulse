@@ -154,6 +154,8 @@ jobs:
             verify-month-boundary-dates.js \
             verify-timezone-boundaries.js \
             verify-stock-item-master.js \
+            verify-stock-item-gst.js \
+            verify-voucher-line-details.js \
             verify-stock-group-analytics.js \
             verify-ledger-master.js \
             verify-adjustment-note.js \
