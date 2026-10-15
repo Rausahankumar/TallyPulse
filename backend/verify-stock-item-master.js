@@ -12,6 +12,9 @@
  *   - tenant-aware persistence into StockItemMaster, including the
  *     same item name existing under two different tenants without
  *     collision
+ *   - the periodic refresh (tallySyncWorker.js): only new or changed items
+ *     are written, an unchanged list writes nothing and keeps the answer cache
+ *     valid, a moved / renamed item updates its own document
  *
  * Synthetic fixtures only, built to the EXACT shape confirmed live in
  * this project's own Tally-verification investigation
@@ -30,6 +33,7 @@ const connectDB = require("./src/config/db");
 const StockItemMaster = require("./src/models/stockItemMaster.model");
 const { parseStockItemMasterList, findUnusableStockItemEntries, refreshStockItemMasters } = require("./src/services/tally/stockItemMaster");
 const { validateMasterOwnership } = require("./src/services/tally/companyOwnership");
+const { getTenantVersion } = require("./src/services/query/dataVersion");
 
 let pass = 0;
 let fail = 0;
@@ -221,6 +225,40 @@ async function runPersistenceTests() {
   check("persist-idempotent", "re-running the refresh with identical data does not create duplicate documents",
     docsAAfterRerun.length, 2);
   check("persist-rerun-ok", "the re-run itself reports success", resultARerun.ok, true);
+
+  console.log("\n=== 7b. A periodic refresh writes only what changed (tallySyncWorker.js runs it every few hours) ===");
+  const stamp = (docs) => JSON.stringify(docs.map((d) => [String(d._id), d.itemName, d.stockGroupName, d.syncedAt]).sort());
+  check("rerun-writes-nothing", "an identical re-run writes nothing (written 0) and reports both items as unchanged", [resultARerun.written, resultARerun.unchanged], [0, 2]);
+  check("rerun-leaves-documents-alone", "the stored documents are exactly as they were (same ids, same syncedAt): nothing was rewritten", stamp(docsAAfterRerun), stamp(docsA));
+  const versionBefore = await getTenantVersion(TENANT_A);
+  const again = await refreshStockItemMasters({ tenantId: TENANT_A, companyGuid: COMPANY_A_GUID, fetcher: fakeFetcherA });
+  check("rerun-keeps-answer-cache", "an unchanged refresh does not bump the tenant data version, so cached answers stay valid", [again.written, await getTenantVersion(TENANT_A)], [0, versionBefore]);
+
+  const fakeFetcherA2 = async () => tallyResponse([
+    stockItemRecord({ name: "Shared Item Name", parent: "Group Gamma", guid: `${COMPANY_A_GUID}-10000001` }), // moved to another Stock Group in Tally
+    stockItemRecord({ name: "Brand New Item", parent: "Group Beta", guid: `${COMPANY_A_GUID}-10000003` }), // created in Tally
+    // "Only In Tenant A" (...0002) is no longer in Tally's list
+  ]);
+  const changed = await refreshStockItemMasters({ tenantId: TENANT_A, companyGuid: COMPANY_A_GUID, fetcher: fakeFetcherA2 });
+  const docsAfterChange = await StockItemMaster.find({ tenantId: TENANT_A }).lean();
+  const movedDoc = docsAfterChange.find((d) => d.itemName === "Shared Item Name");
+  check("changes-are-written", "a moved item and a new item are written (2), nothing is reported unchanged", [changed.ok, changed.written, changed.unchanged], [true, 2, 0]);
+  check("moved-item-updates-its-own-document", "the moved item kept its own document (same _id) with the new group, no duplicate", [docsAfterChange.filter((d) => d.itemName === "Shared Item Name").length, movedDoc.stockGroupName, String(movedDoc._id) === String(sharedDocA._id)], [1, "Group Gamma", true]);
+  check("new-item-added", "the new item was added", docsAfterChange.some((d) => d.itemName === "Brand New Item" && d.stockGroupName === "Group Beta"), true);
+  check("item-gone-from-tally-is-kept", "an item that is no longer in Tally's list is not deleted (masters are only added to or updated)", docsAfterChange.some((d) => d.itemName === "Only In Tenant A"), true);
+  const fakeFetcherA3 = async () => tallyResponse([
+    stockItemRecord({ name: "Shared Item Name", parent: "Group Gamma", guid: `${COMPANY_A_GUID}-10000001` }), // as already stored
+    stockItemRecord({ name: "Brand New Item", parent: "Group Alpha", guid: `${COMPANY_A_GUID}-10000003` }), // moved again
+  ]);
+  const partial = await refreshStockItemMasters({ tenantId: TENANT_A, companyGuid: COMPANY_A_GUID, fetcher: fakeFetcherA3 });
+  check("only-the-changed-item-is-written", "of two items only the one that changed is written (1 written, 1 unchanged)", [partial.written, partial.unchanged], [1, 1]);
+  const renamed = async () => tallyResponse([stockItemRecord({ name: "Shared Item Renamed", parent: "Group Gamma", guid: `${COMPANY_A_GUID}-10000001` })]);
+  const renamedResult = await refreshStockItemMasters({ tenantId: TENANT_A, companyGuid: COMPANY_A_GUID, fetcher: renamed });
+  check("renamed-item-updates-its-own-document", "an item renamed in Tally updates the same document (identity is the GUID, not the name)",
+    [renamedResult.written, (await StockItemMaster.find({ tenantId: TENANT_A, tallyGuid: `${COMPANY_A_GUID}-10000001` }).lean()).map((d) => [d.itemName, String(d._id) === String(sharedDocA._id)])], [1, [["Shared Item Renamed", true]]]);
+  // put tenant A's fixture back the way the later sections expect it
+  await refreshStockItemMasters({ tenantId: TENANT_A, companyGuid: COMPANY_A_GUID, fetcher: fakeFetcherA });
+  await StockItemMaster.deleteMany({ tenantId: TENANT_A, tallyGuid: `${COMPANY_A_GUID}-10000003` });
 
   console.log("\n=== Fail-closed: foreign-company response never writes/clears anything ===");
 

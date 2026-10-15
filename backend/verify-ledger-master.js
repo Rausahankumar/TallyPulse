@@ -158,6 +158,16 @@ const lm = (tenantId, name, created, extra = {}) => ({
 
     r = await refreshLedgerMasters({ tenantId: T1, companyGuid: CG, ...fetchOk(GROUPS, LEDGERS) });
     check("unchanged list -> no writes", r.ok && r.unchanged === true && r.written === 0);
+    // The worker refreshes periodically; the answers report the NEWEST syncedAt as "ledger master last refreshed on ...". An
+    // unchanged refresh must therefore still record that the list was just verified, on ONE document, not rewrite them all.
+    const syncedOf = async () => (await LedgerMaster.find({ tenantId: T1 }, { syncedAt: 1 }).sort({ _id: 1 }).lean()).map((d) => d.syncedAt.getTime());
+    const syncedBefore = await syncedOf();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    r = await refreshLedgerMasters({ tenantId: T1, companyGuid: CG, ...fetchOk(GROUPS, LEDGERS) });
+    const syncedAfter = await syncedOf();
+    check("unchanged refresh still reports no writes", r.ok && r.unchanged === true && r.written === 0 && r.removed === 0);
+    check("unchanged refresh: exactly ONE document's syncedAt moved forward", syncedAfter.filter((t, i) => t !== syncedBefore[i]).length === 1 && syncedAfter.every((t, i) => t >= syncedBefore[i]));
+    check("unchanged refresh: the newest syncedAt is now the check time (a quiet master is not reported as old)", Math.max(...syncedAfter) === r.resolvedAt.getTime() && Math.max(...syncedAfter) > Math.max(...syncedBefore));
     r = await refreshLedgerMasters({ tenantId: T1, companyGuid: CG, force: true, ...fetchOk(GROUPS, LEDGERS) });
     check("--force rewrites an unchanged list", r.ok && r.unchanged === false);
 

@@ -73,9 +73,9 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 - `src/services/tally/adjustmentNoteClassifier.js` (76 lines, 2 functions)
 - `src/services/tally/companyOwnership.js` (222 lines, 7 functions)
-- `src/services/tally/ledgerMaster.js` (237 lines, 12 functions)
+- `src/services/tally/ledgerMaster.js` (243 lines, 12 functions)
 - `src/services/tally/stockItemGst.js` (350 lines, 11 functions)
-- `src/services/tally/stockItemMaster.js` (180 lines, 4 functions)
+- `src/services/tally/stockItemMaster.js` (191 lines, 4 functions)
 - `src/services/tally/voucherTypeClassifier.js` (394 lines, 7 functions)
 
 **8. Parser**
@@ -97,7 +97,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/sync/reconciliation.js` (254 lines, 3 functions)
 - `src/services/sync/reconciliationWorker.js` (360 lines, 10 functions)
 - `src/services/sync/selfHeal.js` (186 lines, 2 functions)
-- `src/services/sync/tallySyncWorker.js` (662 lines, 9 functions)
+- `src/services/sync/tallySyncWorker.js` (767 lines, 12 functions)
 - `src/services/sync/voucherLineBackfill.js` (280 lines, 10 functions)
 - `src/services/sync/voucherPersistence.js` (287 lines, 1 functions)
 - `src/services/sync/voucherRecovery.js` (383 lines, 5 functions)
@@ -715,7 +715,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls in this file: `guidText()`, `classifyGuid()`, `shortGuid()`
 
 ## `src/services/tally/ledgerMaster.js`
-**Used by:** (entry file / run directly)
+**Used by:** `src/services/sync/tallySyncWorker.js`
 
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/tally/companyOwnership.js`, `src/services/parser/tallyParser.js`, `src/models/ledgerMaster.model.js`
 
@@ -753,7 +753,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`refreshLedgerMasters()`** _(async)_ — line 128
   - Purpose: Fetch this tenant's Ledger (and Group) masters from Tally, verify company ownership of BOTH lists, and only then upsert into LedgerMaster. @param {Object} params @param {string} params.tenantId - the app's own tenant id (never from Tally). @param {string} params.companyGuid - trusted, from the Company record.
   - Calls in this file: `parseGroupMasterList()`, `parseLedgerMasterList()`, `derivePartyRole()`, `deriveAccountRole()`, `buildFailureResult()`, `parsePayload()`
-  - Calls other files: `src/services/tally/companyOwnership.js → validateMasterOwnership()`, `src/models/ledgerMaster.model.js → find()`, `src/models/ledgerMaster.model.js → bulkWrite()`, `src/models/ledgerMaster.model.js → updateMany()`
+  - Calls other files: `src/services/tally/companyOwnership.js → validateMasterOwnership()`, `src/models/ledgerMaster.model.js → find()`, `src/models/ledgerMaster.model.js → updateOne()`, `src/models/ledgerMaster.model.js → bulkWrite()`, `src/models/ledgerMaster.model.js → updateMany()`
 
 ## `src/services/tally/stockItemGst.js`
 **Used by:** `src/services/tally/stockItemMaster.js`
@@ -793,7 +793,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/services/tally/companyOwnership.js → validateMasterOwnership()`, `src/services/odbc/odbcService.js → isSafeStockGroupNameForFormula()`, `src/models/stockItemMaster.model.js → find()`, `src/models/stockItemMaster.model.js → bulkWrite()`
 
 ## `src/services/tally/stockItemMaster.js`
-**Used by:** (entry file / run directly)
+**Used by:** `src/services/sync/tallySyncWorker.js`
 
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/stockItemGst.js`, `src/models/stockItemMaster.model.js`
 
@@ -811,7 +811,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`refreshStockItemMasters()`** _(async)_ — line 84
   - Purpose: Fetch this tenant's Stock Item masters from Tally, verify company ownership, and (only if verification passes) upsert them into StockItemMaster. Fails closed: any fetch/parse/ownership problem leaves whatever StockItemMaster data already exists completely untouched - never partially written, never cleared, never guessed.
   - Calls in this file: `parseStockItemMasterList()`, `findUnusableStockItemEntries()`, `buildFailureResult()`
-  - Calls other files: `src/services/tally/voucherTypeClassifier.js → parseVoucherTypeMasterList()`, `src/services/tally/companyOwnership.js → validateMasterOwnership()`, `src/services/tally/stockItemGst.js → refreshStockItemGst()`, `src/models/stockItemMaster.model.js → bulkWrite()`
+  - Calls other files: `src/services/tally/voucherTypeClassifier.js → parseVoucherTypeMasterList()`, `src/services/tally/companyOwnership.js → validateMasterOwnership()`, `src/services/tally/stockItemGst.js → refreshStockItemGst()`, `src/models/stockItemMaster.model.js → find()`, `src/models/stockItemMaster.model.js → bulkWrite()`
 
 ## `src/services/tally/voucherTypeClassifier.js`
 **Used by:** `src/controllers/odbcController.js`, `src/services/tally/stockItemMaster.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/tallySyncWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallySalesImport.js`
@@ -1131,35 +1131,42 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/sync/tallySyncWorker.js`
 **Used by:** `server.js`
 
-**Imports:** `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/models/company.js`, `src/models/syncCheckpoint.model.js`
+**Imports:** `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/ledgerMaster.js`, `src/models/company.js`, `src/models/syncCheckpoint.model.js`
 
-**Exports:** `startTallySyncWorker`, `stopTallySyncWorker`, `runSyncForAllCompanies`, `runSyncForCompanyModule`, `SALES_SYNC_MODULE`, `PURCHASE_SYNC_MODULE`, `CREDIT_NOTE_SYNC_MODULE`, `DEBIT_NOTE_SYNC_MODULE`
+**Exports:** `startTallySyncWorker`, `stopTallySyncWorker`, `runSyncForAllCompanies`, `runSyncForCompanyModule`, `runMasterRefreshForCompany`, `resolveMasterRefreshMs`, `SALES_SYNC_MODULE`, `PURCHASE_SYNC_MODULE`, `CREDIT_NOTE_SYNC_MODULE`, `DEBIT_NOTE_SYNC_MODULE`
 
-- **`resolveTallyBaseUrl()`** — line 126
+- **`resolveMasterRefreshMs()`** — line 138
   - Purpose: (no comment in code — see name and calls below)
-- **`ensureCheckpointExists()`** _(async)_ — line 136
+- **`resolveTallyBaseUrl()`** — line 152
+  - Purpose: (no comment in code — see name and calls below)
+- **`ensureCheckpointExists()`** _(async)_ — line 162
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`acquireLock()`** _(async)_ — line 157
+- **`acquireLock()`** _(async)_ — line 183
   - Purpose: Atomically acquire the per-{company, voucher type} lock. Returns the checkpoint doc if acquired, or null if another run currently holds a non-stale lock (in which case this tick simply skips that combination).
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`releaseLock()`** _(async)_ — line 178
+- **`releaseLock()`** _(async)_ — line 204
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`runSyncForCompanyModule()`** _(async)_ — line 208
+- **`runSyncForCompanyModule()`** _(async)_ — line 234
   - Purpose: Runs one incremental sync pass for a single {company, sync module} combination. Never throws — failures are recorded on the checkpoint and returned in the result so the caller can log them and move on.
   - Calls in this file: `resolveTallyBaseUrl()`, `ensureCheckpointExists()`, `acquireLock()`, `releaseLock()`
   - Calls other files: `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → computeBatchWindow()`, `src/services/sync/batchWindow.js → findMissingAlterIds()`, `src/services/import/tallySalesImport.js → extractVoucherCollection()`, `src/services/auth/tallyCompanyGuard.js → verifyOpenTallyCompany()`, `src/services/tally/companyOwnership.js → assertBatchOwnership()`, `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`
-- **`runSyncForAllCompanies()`** _(async)_ — line 544
+- **`runMasterRefreshForCompany()`** _(async)_ — line 579
+  - Purpose: Refreshes one company's Stock Item and Ledger masters when they are due (see MASTER_REFRESH_MS). Never throws. - The open-company guard runs first (one light read): if another company is open or Tally is unreachable nothing is requested and the refresh stays due, so the next tick looks again. Both refreshes also verify the GUID ownership of everything Tally returns, and fail closed (they write nothing, and never clea
+  - Calls in this file: `resolveTallyBaseUrl()`
+- **`logMasterRefresh()`** — line 610
   - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `runSyncForCompanyModule()`
+- **`runSyncForAllCompanies()`** _(async)_ — line 631
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `runSyncForCompanyModule()`, `logMasterRefresh()`
   - Calls other files: `src/models/company.js → find()`
-- **`buildCronExpression()`** — line 606
+- **`buildCronExpression()`** — line 709
   - Purpose: (no comment in code — see name and calls below)
-- **`startTallySyncWorker()`** — line 614
+- **`startTallySyncWorker()`** — line 717
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `runSyncForAllCompanies()`, `buildCronExpression()`
-- **`stopTallySyncWorker()`** — line 645
+- **`stopTallySyncWorker()`** — line 748
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/sync/voucherLineBackfill.js`

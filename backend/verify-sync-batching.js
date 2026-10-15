@@ -18,7 +18,10 @@
  *
  * Sections: UNIT (batch math), QUERY (odbcService request bodies against
  * the stub), WORKER (drain / small backlog / failure / probe failure /
- * lock / multi-company / legacy module).
+ * lock / multi-company / legacy module), MASTERS (the slow, per-company
+ * Stock Item + Ledger master refresh that runs after the voucher modules:
+ * when it is due, the open-company guard, one request at a time, retry
+ * after a failure, never throws, runs inside the all-companies tick).
  *
  * Run: node verify-sync-batching.js
  */
@@ -31,7 +34,8 @@ const connectDB = require("./src/config/db");
 const Purchase = require("./src/models/purchase.model");
 const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 const { computeBatchWindow, resolveBatchSize, findMissingAlterIds, DEFAULT_BATCH_SIZE } = require("./src/services/sync/batchWindow");
-const { runSyncForCompanyModule } = require("./src/services/sync/tallySyncWorker");
+const { runSyncForCompanyModule, runSyncForAllCompanies, runMasterRefreshForCompany, resolveMasterRefreshMs } = require("./src/services/sync/tallySyncWorker");
+const Company = require("./src/models/company");
 const { processSinglePurchaseVoucher } = require("./src/services/import/tallyPurchaseImport");
 const {
   getSalesVouchersSinceAlterId,
@@ -406,6 +410,144 @@ async function workerTests(stub) {
   }
 }
 
+// ==================== MASTERS ====================
+// Stock Item + Ledger masters are refreshed by the same worker, per company, on a slow cadence, AFTER that company's voucher modules.
+async function masterTests(stub) {
+  const H = 3600 * 1000;
+  const MIN = 60 * 1000;
+  const T0 = 1_800_000_000_000; // an arbitrary fixed "now"
+  let seq = 0;
+  // port 9: nothing may ever be sent there, the Tally calls below are injected. A fresh company per scenario (the schedule is per company GUID).
+  const mkCompany = () => ({ tenantId: `verify-masters-tenant-${++seq}`, companyGuid: `verify-masters-guid-${seq}`, tallyConnection: { baseUrl: "http://127.0.0.1:9" } });
+  const scenario = (o = {}) => {
+    const log = [];
+    const stockArgs = [];
+    const ledgerArgs = [];
+    const deps = {
+      verifyCompany: async () => { log.push("guard"); return o.guard || { ok: true, reason: "ok" }; },
+      refreshStockItems: async (p) => { log.push("stock"); stockArgs.push(p); if (o.stockThrows) throw new Error("boom stock"); return o.stock || { ok: true, totalFetched: 3, written: 1, unchanged: 2 }; },
+      refreshLedgers: async (p) => { log.push("ledgers"); ledgerArgs.push(p); return o.ledgers || { ok: true, totalFetched: 4, written: 0, removed: 0, unchanged: true }; },
+    };
+    return { log, stockArgs, ledgerArgs, deps };
+  };
+  const go = (company, s, at, extra = {}) => runMasterRefreshForCompany(company, { now: T0 + at, intervalMs: 6 * H, deps: s.deps, ...extra });
+
+  console.log("\n=== MASTERS: when a refresh is due, and what it asks Tally ===");
+  {
+    const c = mkCompany();
+    const s = scenario();
+    const r = await go(c, s, 0);
+    check("the first tick refreshes both masters, one request at a time, in order: guard, Stock Items, Ledgers", r.ok === true && s.log.join(",") === "guard,stock,ledgers", s.log.join(","));
+    const url = c.tallyConnection.baseUrl;
+    check("each refresh gets this company's own tenantId, GUID and Tally URL; Stock Item GST history is NOT part of it",
+      JSON.stringify([s.stockArgs[0], s.ledgerArgs[0]]) === JSON.stringify([{ tenantId: c.tenantId, companyGuid: c.companyGuid, baseUrl: url, includeGst: false }, { tenantId: c.tenantId, companyGuid: c.companyGuid, baseUrl: url }]));
+    const r2 = await go(c, s, 1 * H);
+    check("one hour later nothing is due: no request at all", r2.skipped === true && r2.reason === "not_due" && s.log.length === 3);
+    const r3 = await go(c, s, 6 * H - 1);
+    check("still not due one millisecond before the 6th hour", r3.skipped === true && s.log.length === 3);
+    const r4 = await go(c, s, 6 * H);
+    check("due again at 6 hours", r4.ok === true && s.log.length === 6);
+    const r5 = await go(c, s, 6 * H + MIN, { force: true });
+    check("force refreshes even when it is not due", r5.ok === true && s.log.length === 9);
+  }
+
+  console.log("\n=== MASTERS: the open-company guard ===");
+  {
+    const c = mkCompany();
+    const mismatch = scenario({ guard: { ok: false, reason: "mismatch" } });
+    const r = await go(c, mismatch, 0);
+    check("another company open in Tally: nothing is requested, skipped", r.skipped === true && r.reason === "mismatch" && mismatch.log.join(",") === "guard");
+    const r2 = await go(c, scenario(), 1 * MIN);
+    check("...and it stays due: the next tick that finds the right company open refreshes at once", r2.ok === true);
+    const down = scenario({ guard: { ok: false, reason: "unreachable" } });
+    const r3 = await go(mkCompany(), down, 0);
+    check("Tally unreachable: skipped, no master request", r3.skipped === true && r3.reason === "unreachable" && down.log.join(",") === "guard");
+  }
+
+  console.log("\n=== MASTERS: failures never escape and retry soon, not on every tick ===");
+  {
+    const c = mkCompany();
+    const s = scenario({ stock: { ok: false, reason: "Tally returned zero Stock Items" } });
+    const r = await go(c, s, 0);
+    check("a failed Stock Item refresh is reported, and the Ledger refresh still gets its turn", r.ok === false && s.log.join(",") === "guard,stock,ledgers", s.log.join(","));
+    const r2 = await go(c, s, 29 * MIN);
+    check("after a failure the retry waits 30 minutes (not every 60 s tick)", r2.skipped === true && r2.reason === "not_due" && s.log.length === 3);
+    const r3 = await go(c, s, 31 * MIN);
+    check("...and tries again after that", r3.ok === false && s.log.length === 6);
+    check("a failed Ledger refresh also counts as a failure", (await go(mkCompany(), scenario({ ledgers: { ok: false, reason: "Refusing refresh" } }), 0)).ok === false);
+
+    const t = mkCompany();
+    const st = scenario({ stockThrows: true });
+    const rt = await go(t, st, 0);
+    check("an exception inside a refresh never escapes: it is reported (ok false, with its message)", rt.ok === false && /boom stock/.test(rt.error) && st.log.join(",") === "guard,stock", JSON.stringify(rt));
+    const early = await go(t, st, 20 * MIN);
+    const later = await go(t, st, 31 * MIN);
+    check("...and is retried after 30 minutes", early.skipped === true && later.ok === false && st.log.length === 4);
+
+    const q = mkCompany();
+    const sq = scenario({ stock: { ok: false, reason: "x" } });
+    await go(q, sq, 0, { intervalMs: 10 * MIN });
+    const a = await go(q, sq, 9 * MIN, { intervalMs: 10 * MIN });
+    const b = await go(q, sq, 11 * MIN, { intervalMs: 10 * MIN });
+    check("the retry delay never exceeds a short refresh interval (10 min interval: not due at 9, due at 11)", a.skipped === true && b.ok === false);
+  }
+
+  console.log("\n=== MASTERS: switching it off, and the setting ===");
+  {
+    const s = scenario();
+    const r = await go(mkCompany(), s, 0, { intervalMs: 0 });
+    check("interval 0 switches the periodic refresh off: no request", r.skipped === true && r.reason === "disabled" && s.log.length === 0);
+    check("TALLY_MASTER_REFRESH_HOURS: default 6 h, 0 = off, fractions allowed, junk and negatives fall back to the default",
+      JSON.stringify([resolveMasterRefreshMs(undefined), resolveMasterRefreshMs(""), resolveMasterRefreshMs("0"), resolveMasterRefreshMs("1.5"), resolveMasterRefreshMs("abc"), resolveMasterRefreshMs("-3")]),
+      JSON.stringify([6 * H, 6 * H, 0, 1.5 * H, 6 * H, 6 * H]));
+  }
+
+  console.log("\n=== MASTERS: inside the all-companies tick ===");
+  await Company.deleteMany({ companyGuid: { $in: [G1, G2] } });
+  await Company.create([
+    { companyName: "Verify Masters A", companyGuid: G1, tenantId: T1, tallyConnection: { baseUrl: stub.url } },
+    { companyName: "Verify Masters B", companyGuid: G2, tenantId: T2, tallyConnection: { baseUrl: stub.url } },
+  ]);
+  try {
+    await cleanup();
+    clearVoucherTypeClassificationCache(G1);
+    const order = [];
+    const seen = [];
+    let active = 0;
+    let maxActive = 0;
+    const { mod } = makeModule(makeBacklog(3));
+    const orderedMod = { ...mod, fetchVouchersSinceAlterId: async (a) => { order.push("vouchers"); return mod.fetchVouchersSinceAlterId(a); } };
+    const masterRefresh = async (company) => {
+      if (company.companyGuid !== G1 && company.companyGuid !== G2) return { skipped: true }; // a company left by another suite: not ours
+      order.push(`masters:${company.companyGuid}`);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      seen.push(company.companyGuid);
+      if (company.companyGuid === G1) throw new Error("master refresh exploded");
+      return { ok: true, stockItems: { totalFetched: 1, written: 0, unchanged: 1 }, ledgers: { totalFetched: 1, written: 0, removed: 0, unchanged: true } };
+    };
+    await runSyncForAllCompanies({ intervalSeconds: 60, modules: [orderedMod], masterRefresh });
+    check("a company's vouchers are synced BEFORE its masters are refreshed", order.indexOf("vouchers") >= 0 && order.indexOf("vouchers") < order.indexOf(`masters:${G1}`), order.join(","));
+    check("the voucher sync of the open company was not affected by the master step", (await Purchase.countDocuments({ tenantId: T1 })) === 3);
+    check("every active company gets its master step, even after the first company's refresh threw", seen.includes(G1) && seen.includes(G2), seen.join(","));
+    check("one company at a time: never two master refreshes at once", maxActive === 1, String(maxActive));
+    const again = [];
+    await runSyncForAllCompanies({ intervalSeconds: 60, modules: [], masterRefresh: async (c) => { if (c.companyGuid === G1 || c.companyGuid === G2) again.push(c.companyGuid); return { skipped: true }; } });
+    check("an exception in the master step does not wedge the worker: the next tick still runs", again.length === 2, again.join(","));
+
+    // the real wiring (no injected master step): the open company's Stock Items, then Ledgers and Groups are requested; GST history is not
+    for (const id of ["RTS StockItem Master Collection", "RTS Ledger Master Collection", "RTS Group Master Collection", "RTS StockItem GST Collection"]) delete stub.recorded[id];
+    await runSyncForAllCompanies({ intervalSeconds: 60, modules: [] });
+    check("default wiring: the real refresh asks Tally for Stock Items, Ledgers and Groups of the open company", ["RTS StockItem Master Collection", "RTS Ledger Master Collection", "RTS Group Master Collection"].every((id) => stub.recorded[id]), Object.keys(stub.recorded).join(" | "));
+    check("default wiring: Stock Item GST history is not requested by the periodic refresh", stub.recorded["RTS StockItem GST Collection"] === undefined);
+  } finally {
+    await Company.deleteMany({ companyGuid: { $in: [G1, G2] } });
+    await cleanup();
+  }
+}
+
 async function main() {
   await connectDB();
   await cleanup();
@@ -414,6 +556,7 @@ async function main() {
     unitTests();
     await queryTests(stub);
     await workerTests(stub);
+    await masterTests(stub);
   } finally {
     stub.server.close();
     await cleanup();
