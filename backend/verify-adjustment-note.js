@@ -26,7 +26,7 @@ const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 
 const { parseAdjustmentNoteVoucher } = require("./src/services/parser/adjustmentNoteParser");
 const { mapAdjustmentNote } = require("./src/services/mapper/adjustmentNoteMapper");
-const { classifyAdjustmentNote, resolveAccountRoles } = require("./src/services/tally/adjustmentNoteClassifier");
+const { classifyAdjustmentNote, resolveAccountRoles, reclassifyAdjustmentNotes } = require("./src/services/tally/adjustmentNoteClassifier");
 const { createAdjustmentNotePersistence } = require("./src/services/sync/adjustmentNotePersistence");
 const { runSyncForCompanyModule, CREDIT_NOTE_SYNC_MODULE, DEBIT_NOTE_SYNC_MODULE } = require("./src/services/sync/tallySyncWorker");
 const { clearVoucherTypeClassificationCache } = require("./src/services/tally/voucherTypeClassifier");
@@ -47,8 +47,11 @@ const T2 = "TEST-TENANT-adj-note-2";
 const G1 = "gggggggg-1111-2222-3333-444444444444";
 const G2 = "gggggggg-5555-6666-7777-888888888888";
 
+const T3 = "verify-adjnote-reclassify-tenant";
+const T3_OTHER = "verify-adjnote-reclassify-other";
+
 async function cleanup() {
-  const ids = { $in: [T1, T2] };
+  const ids = { $in: [T1, T2, T3, T3_OTHER] };
   await Promise.all([AdjustmentNote.deleteMany({ tenantId: ids }), LedgerMaster.deleteMany({ tenantId: ids }), SyncCheckpoint.deleteMany({ tenantId: ids })]);
 }
 
@@ -209,6 +212,82 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
     await LedgerMaster.insertMany([{ tenantId: T2, companyGuid: G1, ledgerGuid: `${G1}-t2-la1`, name: "Sales Return AC", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() }]);
     r = await processCredit(sameGuidOtherTenant, T2, G1);
     check("the same tallyGuid under a DIFFERENT tenant does not collide", r.status === "created" && (await AdjustmentNote.countDocuments({ tallyGuid: `${G1}-note10` })) === 2);
+
+    // ============================================================ RECLASSIFY
+    section("RECLASSIFY: notes stored while the Ledger master was empty are upgraded to returns (upgrade only, no Tally)");
+    {
+      await LedgerMaster.insertMany([
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r1`, name: "Sales Return AC", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r2`, name: "Purchase Return AC", parentGroup: "Purchase Accounts", partyRole: "other", accountRole: "purchase_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r3`, name: "Freight Ledger", parentGroup: "Indirect Expenses", partyRole: "other", accountRole: "other", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r4`, name: "Dup Ledger", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r5`, name: "Dup Ledger", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+      ]);
+      const mk = (n, noteType, classification, ledgers, extra = {}) => ({
+        tenantId: T3, companyGuid: G1, tallyGuid: `${G1}-rc${n}`, tallyAlterId: 9000 + n, voucherStatus: "active",
+        header: { voucherNo: `RC${n}`, voucherDate: new Date("2025-09-10T00:00:00Z"), voucherType: noteType === "credit" ? "Credit Note" : "Debit Note", voucherTotalAmount: 100, narration: "", partyName: "Party" },
+        noteType, classification, inventory: ledgers.map((l) => ({ itemName: "Item", quantity: 1, rate: 1, amount: -1, accountingAllocationLedger: l })), ledgers: [], ...extra,
+      });
+      const stored = async () => Object.fromEntries((await AdjustmentNote.find({ tenantId: T3 }).lean()).map((d) => [d.header.voucherNo, d.classification]));
+      const noRoles = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("with no notes at all the re-check is a quiet no-op", noRoles.ok && noRoles.scanned === 0 && noRoles.upgrades === 0);
+
+      await AdjustmentNote.insertMany([
+        mk(1, "credit", "value_adjustment", ["Sales Return AC"]), // a sales return stored before the master knew the role
+        mk(2, "debit", "value_adjustment", ["Purchase Return AC"]), // a purchase return, same
+        mk(3, "credit", "value_adjustment", ["Freight Ledger"]), // really a value adjustment
+        mk(4, "credit", "value_adjustment", ["Sales Return AC", "Freight Ledger"]), // mixed lines: never a partial return
+        mk(5, "debit", "value_adjustment", ["Sales Return AC"]), // wrong role for a debit note
+        mk(6, "credit", "value_adjustment", [null]), // no resolvable ledger: no evidence
+        mk(7, "credit", "value_adjustment", ["Dup Ledger"]), // ambiguous ledger name resolves to other
+        mk(8, "credit", "unclassified", []), // no inventory lines: never touched
+        mk(9, "credit", "sales_return", ["Freight Ledger"]), // already stored as a return: never downgraded
+        mk(10, "credit", "value_adjustment", ["Sales Return AC"], { voucherStatus: "cancelled" }), // status does not matter to the rule
+        mk(11, "credit", "value_adjustment", ["No Such Ledger"]), // a ledger the master does not know
+      ]);
+      await AdjustmentNote.insertMany([{ ...mk(12, "credit", "value_adjustment", ["Sales Return AC"]), tenantId: T3_OTHER }]);
+      const before = await stored();
+
+      const dry = await reclassifyAdjustmentNotes({ tenantId: T3 });
+      check("dry run (the default): counts the upgrades but writes nothing", dry.ok && dry.applied === false && dry.upgrades === 3 && JSON.stringify(await stored()) === JSON.stringify(before), JSON.stringify(dry));
+      const wet = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      const after = await stored();
+      check("apply: exactly the three provable returns are upgraded (credit+Sales, debit+Purchase, and the cancelled one)", wet.upgrades === 3 && wet.scanned === 9 && after.RC1 === "sales_return" && after.RC2 === "purchase_return" && after.RC10 === "sales_return", JSON.stringify([wet, after]));
+      check("transitions are reported", JSON.stringify(wet.byTransition) === JSON.stringify({ "value_adjustment->sales_return": 2, "value_adjustment->purchase_return": 1 }), JSON.stringify(wet.byTransition));
+      check("everything without proof stays value_adjustment (freight, mixed, wrong role, no ledger, ambiguous name, unknown ledger)", ["RC3", "RC4", "RC5", "RC6", "RC7", "RC11"].every((k) => after[k] === "value_adjustment"), JSON.stringify(after));
+      check("unclassified and an already-stored return are never touched", after.RC8 === "unclassified" && after.RC9 === "sales_return");
+      check("another tenant's note is never touched", (await AdjustmentNote.findOne({ tenantId: T3_OTHER }).lean()).classification === "value_adjustment");
+      const again = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("running it again changes nothing (idempotent)", again.upgrades === 0 && JSON.stringify(await stored()) === JSON.stringify(after));
+
+      // a ledger deleted from Tally later must not rewrite history: the stored return stays
+      await LedgerMaster.updateOne({ tenantId: T3, name: "Sales Return AC" }, { $set: { removedAt: new Date() } });
+      const gone = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("a ledger marked removed later does NOT downgrade stored returns", gone.upgrades === 0 && (await stored()).RC1 === "sales_return");
+      await LedgerMaster.updateOne({ tenantId: T3, name: "Sales Return AC" }, { $set: { removedAt: null } });
+
+      // a note whose ledger is later corrected becomes provable; tiny batches page by _id and still reach every note
+      await AdjustmentNote.updateOne({ tenantId: T3, "header.voucherNo": "RC3" }, { $set: { "inventory.0.accountingAllocationLedger": "Sales Return AC" } });
+      const raced = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true, batchSize: 1 });
+      check("small batches (paging by _id) reach every note; the freshly provable one is upgraded", raced.upgrades === 1 && (await stored()).RC3 === "sales_return" && raced.scanned >= 5, JSON.stringify(raced));
+      // a note changed by someone else between the read and the write is not overwritten (the write is conditional on value_adjustment)
+      await AdjustmentNote.insertMany([mk(13, "credit", "value_adjustment", ["Sales Return AC"])]);
+      const realFind = LedgerMaster.find;
+      LedgerMaster.find = function patchedFind(...a) {
+        LedgerMaster.find = realFind;
+        const q = realFind.apply(this, a);
+        return { lean: async () => { const docs = await q.lean(); await AdjustmentNote.updateOne({ tenantId: T3, "header.voucherNo": "RC13" }, { $set: { classification: "purchase_return" } }); return docs; } };
+      };
+      try {
+        await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      } finally {
+        LedgerMaster.find = realFind;
+      }
+      check("a note changed concurrently (after it was read) is not overwritten by the upgrade", (await stored()).RC13 === "purchase_return", JSON.stringify((await stored()).RC13));
+      const noTenant = await reclassifyAdjustmentNotes({ apply: true });
+      check("no tenantId -> refused, nothing written", noTenant.ok === false && noTenant.upgrades === 0);
+      await AdjustmentNote.deleteMany({ tenantId: { $in: [T3, T3_OTHER] } });
+    }
 
     // ============================================================ SYNC / SECURITY
     section("SYNC/SECURITY: runSyncForCompanyModule against a Tally-shaped stub (real worker code path)");

@@ -452,6 +452,24 @@ section("7. DSL: rejections (security + validity)");
   rejects("list mode with groupBy", { ...listBase, groupBy: [{ dim: "customer" }] });
   rejects("list mode with compare", { ...listBase, compare: { mode: "like_for_like" } });
   rejects("list mode with having", { ...listBase, having: [{ metric: "invoiceAmount", op: "gt", value: 1 }] });
+
+  // new_in_period: its only legal value is "period". The planner model sometimes sends an EMPTY value with it, which used to make the whole
+  // plan invalid ("New customers in November 2025" failed on that alone); a blank value is corrected, any other value is still refused.
+  const newParty = (value, dim = "customer") => withKey({ period: { kind: "custom", from: "2025-11-01", to: "2025-11-30" }, groupBy: [{ dim }], filters: [{ dim, op: "new_in_period", value }] });
+  for (const blank of ["", "   ", [], null]) {
+    const r = parseQueryPlan(newParty(blank));
+    check(`new_in_period with the blank value ${JSON.stringify(blank)} is corrected to "period"`, r.ok && r.plan.filters[0].value === "period" && r.plan.filters[0].op === "new_in_period" && r.plan.filters[0].dim === "customer", r.ok ? JSON.stringify(r.plan.filters) : JSON.stringify(r.errors));
+  }
+  for (const wrong of ["november", "Acme", ["period"], ["x", "y"], 5]) rejects(`new_in_period with the non-blank value ${JSON.stringify(wrong)} is still refused (never guessed at)`, newParty(wrong));
+  const given = newParty("");
+  parseQueryPlan(given);
+  check("the caller's plan object is not mutated by the correction", given.filters[0].value === "");
+  check("new_in_period on a supplier is corrected the same way", parseQueryPlan(newParty("", "supplier")).ok);
+  rejects("new_in_period is still refused on a dimension that does not allow it (product)", newParty("", "product"));
+  rejects("new_in_period is still refused on a date dimension", newParty("", "date"));
+  rejects("an empty value is still refused for eq_ci", withKey({ filters: [{ dim: "customer", op: "eq_ci", value: "" }] }));
+  rejects("an array is still refused for eq_ci", withKey({ filters: [{ dim: "customer", op: "eq_ci", value: ["a"] }] }));
+  check("a plan without new_in_period parses exactly as before", same(parseQueryPlan(withKey({ filters: [{ dim: "customer", op: "eq_ci", value: "Acme" }] })).plan.filters, [{ dim: "customer", op: "eq_ci", value: "Acme" }]));
 }
 
 // ------------------------------------------------------------------

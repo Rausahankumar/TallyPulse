@@ -38,6 +38,7 @@ const { tryAnswerWithQueryEngine: realTryAnswer, getTenantResolver } = require("
 // P-SF: the engine now reads ONE tenant date context per turn. Synthetic (fake-resolver) turns have no database,
 // so they get a fixed one (latest voucher 2025-12-08 = the fake freshness date; history from 2024-04-01).
 const { buildDateContext } = require("./src/services/analytics/referenceDate");
+const { fmtDay } = require("./src/services/analytics/coverage");
 const SYNTH_DATES = buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } }, new Date(2025, 11, 8, 18));
 const tryAnswerWithQueryEngine = (a) => realTryAnswer(a && a.deps && a.deps.resolveEntity && !a.deps.getDateContext ? { ...a, deps: { ...a.deps, getDateContext: async () => SYNTH_DATES } } : a);
 const { formatQueryAnswer, formatNonAnswer, fmtMoney } = require("./src/services/query/answerFormatter");
@@ -280,6 +281,13 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     eng = engine(okScalar());
     r = await turn("what about ghost traders?", { deps: { plannerClient: p, execute: eng } });
     check("C11. a name the tenant does not have is refused (entity re-verification), never executed", r.handled === true && eng.calls.length === 0 && r.structured.details.queryEngine.code === "planner_entity_not_resolved");
+    // the same refusal offers the closest stored names when the resolver can suggest them (through the telemetry wrapper too)
+    const suggesting = Object.assign((a) => fakeResolver(a), { suggest: async () => [{ dim: "customer", value: "Ghost Traders Co" }, { dim: "customer", value: "Ghost & Sons" }, { dim: "customer", value: "Gost Traders" }] });
+    p = planner(() => planFor({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Traders" }] }));
+    eng = engine(okScalar());
+    r = await turn("what about ghost traders?", { deps: { plannerClient: p, execute: eng, resolveEntity: suggesting } });
+    check("C11b. the refusal says what the closest stored names are (\"did you mean\"), still without running anything", r.handled === true && eng.calls.length === 0 && r.structured.details.queryEngine.code === "planner_entity_not_resolved" && /did not match a known customer\. Did you mean "Ghost Traders Co", "Ghost & Sons" or "Gost Traders"\?$/.test(r.structured.answer), r.structured.answer);
+    check("C11c. without suggestions the text is the old one", /Please check the name and try again\.$/.test((await turn("what about ghost traders?", { deps: { plannerClient: planner(() => planFor({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Traders" }] })), execute: engine(okScalar()) } })).structured.answer));
     p = planner(() => new Error("API down"));
     r = await turn("and by product?", { deps: { plannerClient: p, execute: engine(okScalar()) } });
     check("C12. a planner failure on a follow-up is an honest answer, never a second Claude call", r.handled === true && r.structured.details.queryEngine.status === "planner_failed");
@@ -325,6 +333,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const zero = engine(okScalar({ totals: { values: { invoiceAmount: 0, invoiceCount: 0 } } }));
     r = await ask("total sales last month", { plannerClient: P(), execute: zero });
     check("zero result: says so plainly, state zero_result", r.handled && /No matching records/.test(r.structured.answer) && r.structured.details.toolCalls[0].state === "zero_result");
+    check("zero result: the chat passes the company's latest voucher date, so the user sees how far the data goes", r.structured.answer.includes(`No matching records were found for this question. The latest voucher in this company is dated ${fmtDay(SYNTH_DATES.latestVoucher)}.`), r.structured.answer);
 
     for (const [label, args] of [["missing context", { context: null, userMessage: "sales last month" }], ["no tenantId", { context: {}, userMessage: "sales last month" }], ["non-string tenantId", { context: { tenantId: { $ne: "" } }, userMessage: "sales last month" }], ["non-string message", { context: CTX, userMessage: { q: 1 } }], ["numeric message", { context: CTX, userMessage: 42 }]]) {
       const r2 = await tryAnswerWithQueryEngine({ ...args, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
@@ -378,7 +387,21 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
 
     const cmp = okScalar({ comparison: { mode: "custom", label: "Custom comparison range" }, totals: { values: { invoiceAmount: 200, invoiceCount: 4 }, comparison: { invoiceAmount: { previous: 100, delta: 100, deltaPct: 100 }, invoiceCount: { previous: 4, delta: 0, deltaPct: 0 } } } });
     f = formatQueryAnswer({ plan: planOf({ compare: { mode: "custom", period: { kind: "custom", from: "2025-07-01", to: "2025-07-31" } } }), result: cmp });
-    check("comparison line: previous, signed change, percent, comparison period", /Compared with 2025-07-01 to 2025-07-31: previous ₹100\.00, change \+₹100\.00 \(\+100\.0%\)/.test(f.text), f.text);
+    check("comparison line: previous, signed change, percent, comparison period (a whole month is named)", /Compared with July 2025: previous ₹100\.00, change \+₹100\.00 \(\+100\.0%\)/.test(f.text), f.text);
+    // period wording: whole calendar months by name, everything else as the dates given
+    const head = (from, to, res = okScalar()) => formatQueryAnswer({ plan: planOf({ period: { kind: "custom", from, to } }), result: res }).text.split("\n")[0];
+    check("a whole calendar month is named, not shown as two ISO dates", /Sales — August 2025$/.test(head("2025-08-01", "2025-08-31")) && /February 2024$/.test(head("2024-02-01", "2024-02-29")), head("2025-08-01", "2025-08-31"));
+    check("several whole months are named at both ends", /April 2025 to June 2025$/.test(head("2025-04-01", "2025-06-30")) && /December 2025 to February 2026$/.test(head("2025-12-01", "2026-02-28")));
+    check("a partial month, a single day and a range that ends mid-month keep the exact dates", /2025-08-05 to 2025-08-31$/.test(head("2025-08-05", "2025-08-31")) && /2025-08-01 to 2025-08-30$/.test(head("2025-08-01", "2025-08-30")) && /Sales — 2025-08-15$/.test(head("2025-08-15", "2025-08-15")));
+    check("the 1st-to-the-1st of a month is not a whole month", /2025-08-01$/.test(head("2025-08-01", "2025-08-01")));
+    const assumed = formatQueryAnswer({ plan: pl, result: okScalar(), plannerAssumptions: ["Compared by invoiceAmount.delta and invoiceCount; amounts are lineAmount.previous", "Used purchaseAmount for suppliers"] });
+    check("internal metric ids in the model's interpretation lines are shown by their label", /Interpretation \(AI-assisted\): Compared by invoice amount change and invoice count; amounts are line amount \(pre-tax\) \(previous period\)/.test(assumed.text) && /Used purchase amount for suppliers/.test(assumed.text) && !/invoiceAmount|invoiceCount|lineAmount|purchaseAmount/.test(assumed.text), assumed.text);
+    check("text that only looks like an id is left alone", /Interpretation \(AI-assisted\): myinvoiceAmountX and invoiceAmounts/.test(formatQueryAnswer({ plan: pl, result: okScalar(), plannerAssumptions: ["myinvoiceAmountX and invoiceAmounts"] }).text));
+    const none = okScalar({ totals: { values: { invoiceAmount: 0, invoiceCount: 0 } } });
+    const emptyWith = formatQueryAnswer({ plan: pl, result: none, dataThrough: new Date("2025-12-08T00:00:00") });
+    check("an empty result tells the user how far the company's vouchers go", emptyWith.zero === true && /No matching records were found for this question. The latest voucher in this company is dated 8 Dec 2025.$/m.test(emptyWith.text), emptyWith.text);
+    check("...and without that date the old sentence is unchanged", /No matching records were found for this question.$/m.test(formatQueryAnswer({ plan: pl, result: none }).text));
+    check("a non-empty answer never gets that sentence", !/latest voucher/.test(formatQueryAnswer({ plan: pl, result: okScalar(), dataThrough: new Date("2025-12-08T00:00:00") }).text));
     const cmpNull = okScalar({ comparison: { mode: "like_for_like", label: "x" }, totals: { values: { invoiceAmount: 200, invoiceCount: 4 }, comparison: { invoiceAmount: { previous: 0, delta: 200, deltaPct: null } } } });
     f = formatQueryAnswer({ plan: planOf({ compare: { mode: "like_for_like" } }), result: cmpNull });
     check("deltaPct null renders n/a, never NaN/Infinity", /n\/a/.test(f.text) && !/NaN|Infinity|undefined|null/.test(f.text));

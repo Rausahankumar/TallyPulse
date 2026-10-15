@@ -238,6 +238,17 @@ function fail(errors) {
   return { ok: false, errors };
 }
 
+// new_in_period has exactly one legal value, "period" (the rule is "created inside the query's own period"). The planner model
+// sometimes sends an EMPTY value with it (nothing to say), which made the whole plan invalid ("New customers in November 2025" failed
+// on that alone). A blank value carries no meaning, so it is set to "period" here. Any other value (a name, a month, a number) is NOT
+// guessed at: it is still refused. Works on a copy; every other check (dimension, operator, the rest of the plan) is unchanged.
+function normalizeNewPartyFilters(raw) {
+  const isBlank = (v) => v === undefined || v === null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
+  const isNewParty = (f) => f !== null && typeof f === "object" && f.op === "new_in_period" && isBlank(f.value);
+  if (!Array.isArray(raw.filters) || !raw.filters.some(isNewParty)) return raw;
+  return { ...raw, filters: raw.filters.map((f) => (isNewParty(f) ? { ...f, value: "period" } : f)) };
+}
+
 /**
  * Structural validation of a candidate plan (an object - never a string).
  * Returns {ok:true, plan} with defaults applied, or
@@ -264,7 +275,7 @@ function parseQueryPlan(raw) {
     return fail([{ path: forbidden, code: "forbidden_key", message: `Key "${forbidden.split(".").pop()}" is not allowed in a query plan.` }]);
   }
 
-  const result = queryPlanSchema.safeParse(raw);
+  const result = queryPlanSchema.safeParse(normalizeNewPartyFilters(raw));
   if (!result.success) return fail(flattenIssues(result.error.issues));
 
   const plan = result.data;

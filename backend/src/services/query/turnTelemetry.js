@@ -45,7 +45,7 @@ function newTurnMetrics() {
 /** Pass-through resolver wrapper: same arguments, same result, same error - only timed and counted. */
 function timeResolver(resolveEntity, tm) {
   if (typeof resolveEntity !== "function") return resolveEntity;
-  return async (arg) => {
+  const timed = async (arg) => {
     const t0 = now();
     tm.resolverCalled = true;
     tm.resolverCalls += 1;
@@ -60,6 +60,9 @@ function timeResolver(resolveEntity, tm) {
       tm.resolverLatencyMs += now() - t0;
     }
   };
+  // the "did you mean" lookup of the same resolver is passed through unchanged (it only runs after a name failed to resolve)
+  if (typeof resolveEntity.suggest === "function") timed.suggest = resolveEntity.suggest;
+  return timed;
 }
 
 /** Answer-cache deps with the engine call timed (same functions, arguments and results). */

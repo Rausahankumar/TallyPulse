@@ -146,6 +146,12 @@ function plannerFailureMessage(planned) {
   }
   if (planned.code === "planner_entity_check_failed") return LOOKUP_UNAVAILABLE_MESSAGE;
   if (planned.code === "planner_entity_not_resolved") {
+    const names = Array.isArray(planned.suggestions) ? planned.suggestions : [];
+    if (names.length) {
+      const quoted = names.map((n) => `"${n}"`);
+      const list = quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}` : quoted[0];
+      return `${planned.reason} Did you mean ${list}?`;
+    }
     return `${planned.reason} Please check the name and try again.`;
   }
   return "I couldn't turn this question into a query I can run safely. Please rephrase it, for example by naming the period and whether it is about sales or purchases.";
@@ -346,7 +352,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { warnings: [], freshness, meta: { ...meta, status: "execution_failed", code: code || "failed", cache: cache && cache.status } }) };
     }
 
-    const formatted = formatQueryAnswer({ plan, result, definitionNotes, plannerAssumptions, contextNotes });
+    const formatted = formatQueryAnswer({ plan, result, definitionNotes, plannerAssumptions, contextNotes, dataThrough: dc && dc.latestVoucher ? dc.latestVoucher : null });
     const warnings = [...contextNotes.filter((n) => n.warn).map((n) => n.message), ...formatted.warnings];
     if (freshness.state !== "fresh") warnings.push(freshness.message);
     const state = freshness.state !== "fresh" ? FRESH_TO_STATE[freshness.state] : formatted.zero ? "zero_result" : "valid_data";
