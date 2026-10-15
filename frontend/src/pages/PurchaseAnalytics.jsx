@@ -201,20 +201,38 @@ export default function PurchaseAnalytics() {
                       { key: "bestRate", header: "Best Rate", align: "right", render: (r) => formatCurrency(r.bestRate) },
                       { key: "avgRate", header: "Avg Rate", align: "right", render: (r) => formatCurrency(r.avgRate) },
                       { key: "savingIfAllAtBest", header: "Saving if all at best", align: "right", render: (r) => formatCurrency(r.savingIfAllAtBest) },
+                      { key: "saleRate", header: "Sold at (avg)", align: "right", render: (r) => (r.saleRate == null ? "—" : formatCurrency(r.saleRate)) },
+                      {
+                        key: "bestUnitMargin",
+                        header: "Margin at best",
+                        align: "right",
+                        render: (r) =>
+                          r.bestUnitMargin == null ? (
+                            "—"
+                          ) : (
+                            <span className={r.bestUnitMargin >= 0 ? "text-success-600" : "text-danger-600"}>
+                              {formatCurrency(r.bestUnitMargin)} ({r.bestMarginPct}%)
+                            </span>
+                          ),
+                      },
                       {
                         key: "suppliers",
-                        header: "Suppliers (avg rate)",
+                        header: "Suppliers (avg rate, margin per unit)",
                         render: (r) =>
                           r.suppliers
                             .slice(0, 4)
-                            .map((s) => `${s.supplier} ${formatCurrency(s.avgRate)}${s.lowVolume ? "*" : ""}`)
+                            .map(
+                              (s) =>
+                                `${s.supplier} ${formatCurrency(s.avgRate)}${s.unitMargin == null ? "" : ` (${s.unitMargin >= 0 ? "+" : ""}${formatCurrency(s.unitMargin)})`}${s.lowVolume ? "*" : ""}`
+                            )
                             .join(" · "),
                       },
                     ]}
                   />
                   <p className="mt-3 text-[12px] text-ink-400">
                     * a very small share of the volume (under 5%), so it is not treated as the best rate. "Saving if all at best" is
-                    indicative: it assumes the best supplier could supply the whole quantity. {data.supplierRates.data.disclosures?.[0]}
+                    indicative: it assumes the best supplier could supply the whole quantity. {data.supplierRates.data.disclosures?.[0]}{" "}
+                    {data.supplierRates.data.disclosures?.[1]}
                   </p>
                 </>
               )}

@@ -65,6 +65,17 @@ export function getProductRates({ from, to, period, limit, product } = {}) {
   return get("/analytics/products/rates", { ...buildPeriodParams({ period, from, to }), limit, product });
 }
 
+// Per product sold: average sale rate vs average purchase cost, margin per unit, margin % and indicative profit (not Tally stock valuation).
+// sortBy: "profit" | "marginPct"; order: "desc" | "asc".
+export function getProductMargin({ from, to, period, limit, sortBy, order } = {}) {
+  return get("/analytics/products/margin", { ...buildPeriodParams({ period, from, to }), limit, sortBy, order });
+}
+
+// One product, month by month: quantity bought and sold, net movement and its running total (a movement, not a stock balance).
+export function getProductTrend({ product, from, to } = {}) {
+  return get("/analytics/products/trend", { product, ...(from && to ? { from, to } : {}) });
+}
+
 // Per product: what each supplier charged per unit, and who is cheapest.
 export function getSupplierRates({ from, to, period, limit, product } = {}) {
   return get("/analytics/purchases/supplier-rates", { ...buildPeriodParams({ period, from, to }), limit, product });

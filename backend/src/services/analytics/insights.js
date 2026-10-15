@@ -19,6 +19,11 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 //   - rate (net)             = billed value / quantity       (what was really paid per unit)
 // No unit of measure is stored, so a rate assumes the same unit on every line of a product; `rateSpread` (highest line
 // rate / lowest, sales and purchases measured separately) flags products where that is doubtful.
+//   - indicative margin (productMargin, and per supplier in supplierRates) = average sale rate - average purchase cost per
+//     unit. The cost is the same-period average purchase rate, else the 12 months before the period (`costSource`). It is not
+//     Tally's stock valuation (no opening / closing stock, no valuation method), so it is a direction, not accounting profit.
+//   - product trend (productTrend) = quantity bought and sold per month and the net movement (bought - sold) with its running
+//     total from the first month shown. It is a movement, never a stock balance.
 // --------------------------------------------------
 
 const MIN_BILLED_TO_LIST = 0.05;
@@ -31,7 +36,19 @@ const DISCOUNT_NOTE =
 const RATE_NOTE =
   "Rates are billed amount ÷ quantity (after discount, before tax). No unit of measure is stored, so a rate assumes the same unit on every voucher line of a product; a product whose sale line rates (or purchase line rates) differ among themselves by more than 5× is flagged.";
 
+const MARGIN_NOTE =
+  "Indicative margin = average sale rate − average purchase cost, per unit, both after discount and before tax. The cost is the quantity-weighted average purchase rate of the same product in the same period, or, when nothing was bought in the period, in the 12 months before it. It is NOT Tally's stock valuation: opening and closing stock, the valuation method (FIFO / average), stock journals and returns are not used. Treat it as a direction, not as accounting profit. A product whose line rates differ among themselves by more than 5× is flagged: its unit of measure may differ between vouchers.";
+const TREND_NOTE =
+  "Quantity bought and sold per month, from Sales and Purchase vouchers (free goods count as quantity). Net movement = bought − sold; the running total starts at zero in the first month shown. It is a movement, not a stock balance: opening stock, stock journals, returns and Tally's closing stock are not in these vouchers.";
+const SUPPLIER_MARGIN_NOTE =
+  "Margin per unit if the product were bought only from this supplier at its average rate and sold at the average sale rate of the same period (both after discount, before tax). Indicative: it assumes the supplier could supply it all at that rate.";
+const EARLIER_COST_DAYS = 365;
+const MARGIN_SORTS = { profit: "indicativeProfit", marginPct: "marginPct" };
+const MAX_TREND_MONTHS = 120;
+
 const round2 = (n) => (Number.isFinite(n) ? Math.round((n + Number.EPSILON) * 100) / 100 : null);
+// Calendar-day arithmetic on the local-midnight Dates the period engine produces (buildVoucherMatchStage reads the local day).
+const daysBefore = (date, n) => new Date(date.getFullYear(), date.getMonth(), date.getDate() - n);
 const clampLimit = (limit, fallback = 10) => {
   const n = Number.parseInt(limit, 10);
   return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_LIMIT) : fallback;
@@ -125,29 +142,32 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   };
 }
 
+// One side (sales or purchases) per product: priced lines only (a rate needs a billed amount), quantity-weighted.
+function sideTotals(Model, match, productMatch = []) {
+  return Model.aggregate([
+    { $match: match },
+    { $unwind: "$inventory" },
+    ...productMatch,
+    LINE_STAGE,
+    { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
+    {
+      $group: {
+        _id: "$inventory.itemName",
+        qty: { $sum: "$inventory.quantity" },
+        billed: { $sum: "$_net" },
+        gross: { $sum: { $cond: ["$_hasList", "$_gross", "$_net"] } },
+        minRate: { $min: { $divide: ["$_net", "$inventory.quantity"] } },
+        maxRate: { $max: { $divide: ["$_net", "$inventory.quantity"] } },
+      },
+    },
+  ]);
+}
+
 // Per-product sale and purchase rates for the period, side by side.
 async function ratesByProduct(tenantId, period, { limit = 10, product = null } = {}) {
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const productMatch = product ? [{ $match: { "inventory.itemName": { $regex: `^${escapeRegex(product)}$`, $options: "i" } } }] : [];
-  const side = (Model) =>
-    Model.aggregate([
-      { $match: match },
-      { $unwind: "$inventory" },
-      ...productMatch,
-      LINE_STAGE,
-      { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
-      {
-        $group: {
-          _id: "$inventory.itemName",
-          qty: { $sum: "$inventory.quantity" },
-          billed: { $sum: "$_net" },
-          gross: { $sum: { $cond: ["$_hasList", "$_gross", "$_net"] } },
-          minRate: { $min: { $divide: ["$_net", "$inventory.quantity"] } },
-          maxRate: { $max: { $divide: ["$_net", "$inventory.quantity"] } },
-        },
-      },
-    ]);
-  const [sales, purchases] = await Promise.all([side(Sale), side(Purchase)]);
+  const [sales, purchases] = await Promise.all([sideTotals(Sale, match, productMatch), sideTotals(Purchase, match, productMatch)]);
 
   const byName = new Map();
   const slot = (name) => {
@@ -186,6 +206,156 @@ async function ratesByProduct(tenantId, period, { limit = 10, product = null } =
     });
 
   return { rows, period: { from: period.from, to: period.to, label: period.label || null }, hasData: rows.length > 0, disclosures: [RATE_NOTE] };
+}
+
+/**
+ * Indicative margin per product sold in the period: average sale rate vs average purchase cost (see MARGIN_NOTE).
+ * @param {{sortBy?: "profit"|"marginPct", order?: "desc"|"asc", limit?: number}} [options]
+ */
+async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", order = "desc" } = {}) {
+  if (!MARGIN_SORTS[sortBy]) throw Object.assign(new Error(`Unknown sort "${sortBy}". Expected one of: ${Object.keys(MARGIN_SORTS).join(", ")}.`), { status: 400 });
+  if (order !== "asc" && order !== "desc") throw Object.assign(new Error('Invalid "order". Expected asc or desc.'), { status: 400 });
+
+  const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+  const earlierMatch = buildVoucherMatchStage({ tenantId, from: daysBefore(period.from, EARLIER_COST_DAYS), to: daysBefore(period.from, 1) });
+  const [sales, purchases, earlier] = await Promise.all([sideTotals(Sale, match), sideTotals(Purchase, match), sideTotals(Purchase, earlierMatch)]);
+  const purchaseBy = new Map(purchases.map((p) => [p._id, p]));
+  const earlierBy = new Map(earlier.map((p) => [p._id, p]));
+
+  const all = sales.map((s) => {
+    const saleRate = s.billed / s.qty;
+    let cost = purchaseBy.get(s._id) || null;
+    let costSource = cost ? "period" : null;
+    if (!cost && earlierBy.has(s._id)) { cost = earlierBy.get(s._id); costSource = "earlier"; }
+    const costRate = cost ? cost.billed / cost.qty : null;
+    const unitMargin = costRate !== null ? saleRate - costRate : null;
+    const spread = Math.max(s.minRate > 0 ? s.maxRate / s.minRate : 1, cost && cost.minRate > 0 ? cost.maxRate / cost.minRate : 1);
+    return {
+      product: s._id, soldQty: s.qty, saleAmount: s.billed, saleRate, costRate, costSource, unitMargin, spread,
+      marginPct: unitMargin !== null && saleRate > 0 ? (unitMargin / saleRate) * 100 : null,
+      indicativeProfit: unitMargin !== null ? unitMargin * s.qty : null,
+    };
+  });
+
+  // products with no cost always come last, whatever the order asked for
+  const key = MARGIN_SORTS[sortBy], dir = order === "asc" ? 1 : -1;
+  const ranked = all.slice().sort((a, b) => {
+    if ((a[key] === null) !== (b[key] === null)) return a[key] === null ? 1 : -1;
+    if (a[key] !== null && a[key] !== b[key]) return (a[key] - b[key]) * dir;
+    return b.saleAmount - a.saleAmount || (a.product < b.product ? -1 : 1);
+  });
+
+  const costed = all.filter((r) => r.indicativeProfit !== null);
+  const costedSale = costed.reduce((sum, r) => sum + r.saleAmount, 0);
+  const profit = costed.reduce((sum, r) => sum + r.indicativeProfit, 0);
+  const summary = {
+    products: all.length,
+    costedProducts: costed.length,
+    withoutCost: all.length - costed.length,
+    belowCost: costed.filter((r) => r.unitMargin < 0).length,
+    saleAmount: round2(all.reduce((sum, r) => sum + r.saleAmount, 0)),
+    costedSaleAmount: round2(costedSale),
+    indicativeProfit: round2(profit),
+    marginPct: costedSale > 0 ? round2((profit / costedSale) * 100) : null,
+  };
+
+  const rows = ranked.slice(0, clampLimit(limit)).map((r) => ({
+    product: r.product,
+    soldQty: round2(r.soldQty),
+    saleAmount: round2(r.saleAmount),
+    saleRate: round2(r.saleRate),
+    costRate: round2(r.costRate),
+    costSource: r.costSource,
+    unitMargin: round2(r.unitMargin),
+    marginPct: round2(r.marginPct),
+    indicativeProfit: round2(r.indicativeProfit),
+    belowCost: r.unitMargin !== null && r.unitMargin < 0,
+    rateSpread: round2(r.spread),
+    unitWarning: r.spread > UNIT_WARNING_SPREAD,
+  }));
+
+  return { rows, summary, sortBy, order, period: { from: period.from, to: period.to, label: period.label || null }, hasData: all.length > 0, disclosures: [MARGIN_NOTE] };
+}
+
+/**
+ * Month-by-month quantity bought and sold for ONE product, with the net movement (bought − sold) and its running total.
+ * Months with no voucher between the first and the last active month are shown with zeros. See TREND_NOTE.
+ */
+async function productTrend(tenantId, period, { product } = {}) {
+  if (typeof product !== "string" || !product.trim()) throw Object.assign(new Error('"product" is required.'), { status: 400 });
+  const wanted = product.trim();
+  const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+  const side = (Model) =>
+    Model.aggregate([
+      { $match: match },
+      { $unwind: "$inventory" },
+      { $match: { "inventory.itemName": { $regex: `^${escapeRegex(wanted)}$`, $options: "i" }, "inventory.quantity": { $gt: 0 } } },
+      { $addFields: { _net: { $abs: "$inventory.amount" } } },
+      {
+        $group: {
+          _id: { $dateTrunc: { date: "$header.voucherDate", unit: "month", timezone: "UTC" } },
+          name: { $max: "$inventory.itemName" },
+          qty: { $sum: "$inventory.quantity" },
+          amount: { $sum: "$_net" },
+          // a rate needs a billed amount: free goods count as quantity but not as a priced unit
+          pricedQty: { $sum: { $cond: [{ $gt: ["$_net", 0] }, "$inventory.quantity", 0] } },
+          vouchers: { $addToSet: "$_id" },
+        },
+      },
+    ]);
+  const [sales, purchases] = await Promise.all([side(Sale), side(Purchase)]);
+
+  const byMonth = new Map();
+  let displayName = null;
+  const absorb = (rows, kind) => {
+    for (const r of rows) {
+      const month = r._id.toISOString().slice(0, 7);
+      const slot = byMonth.get(month) || { month };
+      slot[kind] = { qty: r.qty, amount: r.amount, pricedQty: r.pricedQty, vouchers: r.vouchers.length };
+      byMonth.set(month, slot);
+      displayName = displayName || r.name;
+    }
+  };
+  absorb(sales, "sale");
+  absorb(purchases, "purchase");
+
+  // every month from the first to the last one with activity, gaps as zeros
+  const months = [...byMonth.keys()].sort();
+  const filled = [];
+  if (months.length) {
+    const [y0, m0] = months[0].split("-").map(Number);
+    const last = months[months.length - 1];
+    for (let i = 0; i < MAX_TREND_MONTHS; i += 1) {
+      const d = new Date(Date.UTC(y0, m0 - 1 + i, 1));
+      const key = d.toISOString().slice(0, 7);
+      filled.push(byMonth.get(key) || { month: key });
+      if (key === last) break;
+    }
+  }
+
+  const rate = (side) => (side && side.pricedQty > 0 ? round2(side.amount / side.pricedQty) : null);
+  let running = 0;
+  const rows = filled.map((m) => {
+    const sold = m.sale ? m.sale.qty : 0, bought = m.purchase ? m.purchase.qty : 0;
+    running += bought - sold;
+    return {
+      month: m.month,
+      saleQty: round2(sold), saleAmount: round2(m.sale ? m.sale.amount : 0), saleRate: rate(m.sale), saleVouchers: m.sale ? m.sale.vouchers : 0,
+      purchaseQty: round2(bought), purchaseAmount: round2(m.purchase ? m.purchase.amount : 0), purchaseRate: rate(m.purchase), purchaseVouchers: m.purchase ? m.purchase.vouchers : 0,
+      netQty: round2(bought - sold),
+      cumulativeNetQty: round2(running),
+    };
+  });
+
+  const sum = (f) => rows.reduce((total, r) => total + f(r), 0);
+  const total = (kind) => [...byMonth.values()].reduce((acc, m) => (m[kind] ? { amount: acc.amount + m[kind].amount, pricedQty: acc.pricedQty + m[kind].pricedQty } : acc), { amount: 0, pricedQty: 0 });
+  const totals = {
+    saleQty: round2(sum((r) => r.saleQty)), saleAmount: round2(sum((r) => r.saleAmount)), saleRate: rate(total("sale")),
+    purchaseQty: round2(sum((r) => r.purchaseQty)), purchaseAmount: round2(sum((r) => r.purchaseAmount)), purchaseRate: rate(total("purchase")),
+    netQty: round2(sum((r) => r.netQty)),
+  };
+
+  return { product: displayName || wanted, rows, totals, period: { from: period.from, to: period.to, label: period.label || null }, hasData: rows.length > 0, disclosures: [TREND_NOTE] };
 }
 
 // What each supplier charged per unit for the same product, and who is cheapest.
@@ -236,44 +406,67 @@ async function supplierRates(tenantId, period, { product = null, limit = 10 } = 
     });
   }
 
-  const out = [...items.values()]
+  const selected = [...items.values()]
     .sort((a, b) => b.totalBilled - a.totalBilled || (a.product < b.product ? -1 : 1))
-    .slice(0, clampLimit(limit))
-    .map((it) => {
-      const suppliers = it.suppliers.map((s) => ({ ...s, qtyShare: it.totalQty > 0 ? s.qty / it.totalQty : 0 }));
-      suppliers.sort((a, b) => a.avgRate - b.avgRate || (a.supplier < b.supplier ? -1 : 1));
-      // the cheapest supplier that actually supplies a meaningful share; a tiny one-off purchase is not "the best rate"
-      const best = suppliers.find((s) => s.qtyShare >= LOW_VOLUME_SHARE) || suppliers[0];
-      const saving = suppliers.reduce((sum, s) => sum + Math.max(0, s.avgRate - best.avgRate) * s.qty, 0);
-      const spread = it.minRate > 0 ? it.maxRate / it.minRate : 1;
-      return {
-        product: it.product,
-        totalQty: round2(it.totalQty),
-        avgRate: round2(it.totalBilled / it.totalQty),
-        bestSupplier: best.supplier,
-        bestRate: round2(best.avgRate),
-        // what would have been saved if every unit had been bought at the best supplier's average rate (indicative: assumes they could supply it all)
-        savingIfAllAtBest: round2(saving),
-        supplierCount: suppliers.length,
-        rateSpread: round2(spread),
-        unitWarning: spread > UNIT_WARNING_SPREAD,
-        suppliers: suppliers.slice(0, 8).map((s) => ({
-          supplier: s.supplier,
-          qty: round2(s.qty),
-          avgRate: round2(s.avgRate),
-          avgListRate: round2(s.avgListRate),
-          minRate: round2(s.minRate),
-          lastRate: round2(s.lastRate),
-          lastDate: s.lastDate ? s.lastDate.toISOString().slice(0, 10) : null,
-          purchases: s.purchases,
-          qtyShare: round2(s.qtyShare * 100),
-          lowVolume: s.qtyShare < LOW_VOLUME_SHARE,
-          isBest: s.supplier === best.supplier,
-        })),
-      };
-    });
+    .slice(0, clampLimit(limit));
 
-  return { rows: out, period: { from: period.from, to: period.to, label: period.label || null }, hasData: out.length > 0, disclosures: [RATE_NOTE] };
+  // average sale rate of the SAME products in the SAME period, to show what each supplier's rate would leave per unit
+  const soldRows = selected.length
+    ? await Sale.aggregate([
+        { $match: match },
+        { $unwind: "$inventory" },
+        { $match: { "inventory.itemName": { $in: selected.map((it) => it.product) } } },
+        LINE_STAGE,
+        { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
+        { $group: { _id: "$inventory.itemName", qty: { $sum: "$inventory.quantity" }, billed: { $sum: "$_net" } } },
+      ])
+    : [];
+  const saleRateBy = new Map(soldRows.map((r) => [r._id, r.billed / r.qty]));
+
+  const out = selected.map((it) => {
+    const suppliers = it.suppliers.map((s) => ({ ...s, qtyShare: it.totalQty > 0 ? s.qty / it.totalQty : 0 }));
+    suppliers.sort((a, b) => a.avgRate - b.avgRate || (a.supplier < b.supplier ? -1 : 1));
+    // the cheapest supplier that actually supplies a meaningful share; a tiny one-off purchase is not "the best rate"
+    const best = suppliers.find((s) => s.qtyShare >= LOW_VOLUME_SHARE) || suppliers[0];
+    const saving = suppliers.reduce((sum, s) => sum + Math.max(0, s.avgRate - best.avgRate) * s.qty, 0);
+    const spread = it.minRate > 0 ? it.maxRate / it.minRate : 1;
+    const saleRate = saleRateBy.has(it.product) ? saleRateBy.get(it.product) : null;
+    const marginOf = (rate) => (saleRate !== null ? round2(saleRate - rate) : null);
+    const marginPctOf = (rate) => (saleRate !== null && saleRate > 0 ? round2(((saleRate - rate) / saleRate) * 100) : null);
+    return {
+      product: it.product,
+      totalQty: round2(it.totalQty),
+      avgRate: round2(it.totalBilled / it.totalQty),
+      bestSupplier: best.supplier,
+      bestRate: round2(best.avgRate),
+      // what would have been saved if every unit had been bought at the best supplier's average rate (indicative: assumes they could supply it all)
+      savingIfAllAtBest: round2(saving),
+      supplierCount: suppliers.length,
+      rateSpread: round2(spread),
+      unitWarning: spread > UNIT_WARNING_SPREAD,
+      // null when the product was not sold in the period
+      saleRate: round2(saleRate),
+      bestUnitMargin: marginOf(best.avgRate),
+      bestMarginPct: marginPctOf(best.avgRate),
+      suppliers: suppliers.slice(0, 8).map((s) => ({
+        supplier: s.supplier,
+        qty: round2(s.qty),
+        avgRate: round2(s.avgRate),
+        avgListRate: round2(s.avgListRate),
+        minRate: round2(s.minRate),
+        lastRate: round2(s.lastRate),
+        lastDate: s.lastDate ? s.lastDate.toISOString().slice(0, 10) : null,
+        purchases: s.purchases,
+        qtyShare: round2(s.qtyShare * 100),
+        lowVolume: s.qtyShare < LOW_VOLUME_SHARE,
+        isBest: s.supplier === best.supplier,
+        unitMargin: marginOf(s.avgRate),
+        marginPct: marginPctOf(s.avgRate),
+      })),
+    };
+  });
+
+  return { rows: out, period: { from: period.from, to: period.to, label: period.label || null }, hasData: out.length > 0, disclosures: [RATE_NOTE, SUPPLIER_MARGIN_NOTE] };
 }
 
-module.exports = { discountSummary, ratesByProduct, supplierRates, MIN_BILLED_TO_LIST, DISCOUNT_NOTE, RATE_NOTE };
+module.exports = { discountSummary, ratesByProduct, productMargin, productTrend, supplierRates, MIN_BILLED_TO_LIST, DISCOUNT_NOTE, RATE_NOTE, MARGIN_NOTE, TREND_NOTE, SUPPLIER_MARGIN_NOTE };

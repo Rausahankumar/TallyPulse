@@ -4,6 +4,8 @@ const { activeCompanyContext } = require("../services/auth/companyContext");
 const {
   getDiscountSummary,
   getProductRates,
+  getProductMargin,
+  getProductTrend,
   getSupplierRates,
   getSalesSummary,
   getSalesComparison,
@@ -42,6 +44,8 @@ router.get("/purchases/top-suppliers", getTopSuppliers);
 router.get("/purchases/trend", getPurchaseTrend);
 router.get("/discounts", getDiscountSummary);
 router.get("/products/rates", getProductRates);
+router.get("/products/margin", getProductMargin);
+router.get("/products/trend", getProductTrend);
 router.get("/purchases/supplier-rates", getSupplierRates);
 
 module.exports = router;
