@@ -142,6 +142,7 @@ jobs:
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
             verify-sales-import.js \
+            verify-sales-sync-worker.js \
             verify-migrate-voucher-total-amount.js \
             verify-security-audit.js \
             verify-db-connection-guard.js \
