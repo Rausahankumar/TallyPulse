@@ -382,7 +382,9 @@ function parseTallyVoucher(voucher) {
   // for the backfill of historical documents already stored with the old,
   // wrong total.
   const partyLedgerTotal = computePartyLedgerTotal(parsedLedgers, partyName);
-  const voucherTotalAmount = partyLedgerTotal !== null ? partyLedgerTotal : (inventoryTotal || ledgerTotal || 0);
+  // The fallback is a magnitude like the party-ledger path (net, then absolute): a Purchase's items arrive NEGATIVE, and
+  // a stored voucher total is always absolute (purchaseAmount sums it as-is), so a signed subtotal would read as -total.
+  const voucherTotalAmount = partyLedgerTotal !== null ? partyLedgerTotal : (Math.abs(inventoryTotal) || ledgerTotal || 0);
 
   // Sync-identity fields. These are read directly off the raw voucher and
   // never throw, regardless of whether the header/inventory/ledger fields

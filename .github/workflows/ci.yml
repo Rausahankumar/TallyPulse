@@ -141,6 +141,7 @@ jobs:
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
+            verify-purchase-mapper.js \
             verify-sales-import.js \
             verify-sales-sync-worker.js \
             verify-migrate-voucher-total-amount.js \
