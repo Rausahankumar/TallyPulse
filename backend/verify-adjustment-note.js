@@ -86,7 +86,8 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
         ispartyledger: true,
         billallocations: agstRef ? [{ name: agstRef, billtype: "Agst Ref", amount: String(partyLedgerAmount) }] : [{ name: "", billtype: "New Ref", amount: String(partyLedgerAmount) }],
       },
-      { ledgername: lines[0].accountLedger, amount: String(-partyLedgerAmount), isdeemedpositive: { type: "Logical", value: partyLedgerAmount < 0 }, ispartyledger: false },
+      // The counter-ledger entry needs a line to name it; a sparse fixture (lines: []) has none, so it gets only the party entry.
+      ...(lines.length ? [{ ledgername: lines[0].accountLedger, amount: String(-partyLedgerAmount), isdeemedpositive: { type: "Logical", value: partyLedgerAmount < 0 }, ispartyledger: false }] : []),
     ],
   };
 }
