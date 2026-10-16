@@ -15,8 +15,10 @@ const LedgerMaster = require("../../models/ledgerMaster.model");
 // value_adjustment: anything else with readable inventory (no evidence, or
 //                   mixed/contradicting evidence) - the safe default, never
 //                   a guessed return.
-// unclassified:     no inventory lines at all (a pure ledger adjustment) -
-//                   still queryable, but never counted as any return.
+// unclassified:     no inventory lines at all (a pure ledger adjustment), or a
+//                   cancelled/deleted voucher (set at store time and when a
+//                   note is cancelled) - still queryable, but never counted as
+//                   any return.
 // --------------------------------------------------
 
 const NOTE_ROLE = { credit: "sales_accounts", debit: "purchase_accounts" };
@@ -93,7 +95,8 @@ async function reclassifyAdjustmentNotes({ tenantId, apply = false, batchSize = 
 
   let afterId = null;
   for (;;) {
-    const filter = { tenantId, classification: "value_adjustment", "inventory.0": { $exists: true } };
+    // Only active vouchers: cancelled/deleted notes are never counted as returns (analytics and the query engine count active only).
+    const filter = { tenantId, voucherStatus: "active", classification: "value_adjustment", "inventory.0": { $exists: true } };
     if (afterId) filter._id = { $gt: afterId };
     const page = await AdjustmentNote.find(filter, { noteType: 1, "inventory.accountingAllocationLedger": 1 }).sort({ _id: 1 }).limit(batchSize).lean();
     if (!page.length) break;

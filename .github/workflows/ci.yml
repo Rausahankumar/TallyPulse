@@ -134,7 +134,10 @@ jobs:
       # against them locally.
       - name: Run self-contained verify-*.js suites
         run: |
-          set -e
+          failed=0
+          # Suites whose real-data sections (WE FOUR tenant) skip in CI. Their DB parts run; the skipped
+          # sections are reported as PARTIAL. Any other SKIP in a suite fails the job.
+          PARTIAL="verify-query-chat.js verify-query-engine.js verify-query-planner.js verify-comparison-period-capability.js verify-growth-comparison-capability.js verify-return-analytics.js verify-return-ranking.js verify-stock-group-analytics.js"
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
@@ -182,7 +185,27 @@ jobs:
             verify-nlu-eval.js \
             verify-openrouter-eval.js \
             verify-planner-digest.js ; do
+            if [ "$f" = "verify-query-parity.js" ]; then
+              echo "NOT RUN (real-data gated, needs the WE FOUR tenant): $f"
+              continue
+            fi
             echo "::group::$f"
-            node "$f"
+            out=$(mktemp)
+            rc=0
+            node "$f" >"$out" 2>&1 || rc=$?
+            cat "$out"
             echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL $f (exit $rc)"
+              failed=1
+            elif grep -qE '^[[:space:]]*SKIP' "$out"; then
+              case " $PARTIAL " in
+                *" $f "*) echo "PARTIAL $f (real-data sections skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))" ;;
+                *) echo "FAIL $f (a required check was skipped)"; failed=1 ;;
+              esac
+            else
+              echo "PASS $f"
+            fi
+            rm -f "$out"
           done
+          exit $failed
