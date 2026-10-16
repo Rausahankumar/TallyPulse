@@ -245,39 +245,39 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
     const purRetRole = await LedgerMaster.findOne({ tenantId: T1, name: "Purchase Return AC", removedAt: null }).lean();
     check("precondition: T1's 'Sales Return AC' is a sales_accounts ledger in the master", salesRetRole && salesRetRole.accountRole === "sales_accounts", JSON.stringify(salesRetRole && salesRetRole.accountRole));
     check("precondition: T1's 'Purchase Return AC' is a purchase_accounts ledger in the master", purRetRole && purRetRole.accountRole === "purchase_accounts", JSON.stringify(purRetRole && purRetRole.accountRole));
-    const cnDeletedFull = rawNote({ i: 30, alter: 630, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    const cnDeletedFull = rawNote({ i: 40, alter: 630, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
     r = await processCredit(cnDeletedFull, T1, G1);
-    const cn30 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note30` }).lean();
+    const cn30 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note40` }).lean();
     check("a deleted Credit Note is stored with voucherStatus deleted and is NOT sales_return", r.status === "created" && cn30 && cn30.voucherStatus === "deleted" && cn30.classification !== "sales_return" && cn30.classification === "unclassified", JSON.stringify(cn30 && { v: cn30.voucherStatus, c: cn30.classification }));
 
-    const dnDeletedFull = rawNote({ i: 31, alter: 631, noteType: "debit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Purchase Return AC" }] });
+    const dnDeletedFull = rawNote({ i: 41, alter: 631, noteType: "debit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Purchase Return AC" }] });
     r = await processDebit(dnDeletedFull, T1, G1);
-    const dn31 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note31` }).lean();
+    const dn31 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note41` }).lean();
     check("a deleted Debit Note is stored with voucherStatus deleted and is NOT sales_return", r.status === "created" && dn31 && dn31.voucherStatus === "deleted" && dn31.classification !== "sales_return" && dn31.classification === "unclassified", JSON.stringify(dn31 && { v: dn31.voucherStatus, c: dn31.classification }));
 
     // An active stored note that is later deleted (update path): one voucher, lifecycle "deleted", classification unclassified, alter 633.
-    const cnActiveThenDeleted = rawNote({ i: 32, alter: 632, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    const cnActiveThenDeleted = rawNote({ i: 42, alter: 632, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
     r = await processCredit(cnActiveThenDeleted, T1, G1);
-    const before32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note32` }).lean();
+    const before32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note42` }).lean();
     check("an active note is stored before it is deleted", r.status === "created" && before32.voucherStatus === "active");
-    r = await processCredit(rawNote({ i: 32, alter: 633, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] }), T1, G1);
-    const after32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note32` }).lean();
-    check("the stored active note becomes deleted: exactly one voucher, voucherStatus deleted, classification unclassified, tallyAlterId 633", r.status === "updated" && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note32` })) === 1 && after32.voucherStatus === "deleted" && after32.classification === "unclassified" && after32.tallyAlterId === 633, JSON.stringify({ status: r.status, v: after32.voucherStatus, c: after32.classification, a: after32.tallyAlterId }));
+    r = await processCredit(rawNote({ i: 42, alter: 633, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] }), T1, G1);
+    const after32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note42` }).lean();
+    check("the stored active note becomes deleted: exactly one voucher, voucherStatus deleted, classification unclassified, tallyAlterId 633", r.status === "updated" && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note42` })) === 1 && after32.voucherStatus === "deleted" && after32.classification === "unclassified" && after32.tallyAlterId === 633, JSON.stringify({ status: r.status, v: after32.voucherStatus, c: after32.classification, a: after32.tallyAlterId }));
 
     // Sparse deleted-voucher tombstone of a stored return: existing fields must survive; only lifecycle changes.
-    const baseDel = rawNote({ i: 33, alter: 634, noteType: "credit", lines: [{ itemName: "Item A", quantity: 7, rate: 100, amount: -700, accountLedger: "Sales Return AC" }] });
+    const baseDel = rawNote({ i: 43, alter: 634, noteType: "credit", lines: [{ itemName: "Item A", quantity: 7, rate: 100, amount: -700, accountLedger: "Sales Return AC" }] });
     await processCredit(baseDel, T_ISO, G1);
-    const isoDelBefore = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note33` }).lean();
+    const isoDelBefore = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note43` }).lean();
     r = await processCredit(baseDel, T1, G1);
     check("the base note for the sparse deleted tombstone is stored", r.status === "created");
-    const delBefore = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note33` }).lean();
-    const sparseDeleted = { ...rawNote({ i: 33, alter: 635, noteType: "credit", deleted: true, lines: [] }), partyname: "", partyledgername: "", ledgerentries: [] };
+    const delBefore = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note43` }).lean();
+    const sparseDeleted = { ...rawNote({ i: 43, alter: 635, noteType: "credit", deleted: true, lines: [] }), partyname: "", partyledgername: "", ledgerentries: [] };
     r = await processCredit(sparseDeleted, T1, G1);
-    const delAfter = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note33` }).lean();
+    const delAfter = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note43` }).lean();
     check("the sparse deleted tombstone reports an update (not a creation)", r.updated === true && r.created === false, JSON.stringify({ created: r.created, updated: r.updated }));
     check("the sparse deleted tombstone: voucherStatus deleted, classification unclassified, tallyAlterId 635", delAfter && delAfter.voucherStatus === "deleted" && delAfter.classification === "unclassified" && delAfter.tallyAlterId === 635, JSON.stringify(delAfter && { v: delAfter.voucherStatus, c: delAfter.classification, a: delAfter.tallyAlterId }));
-    check("the sparse deleted tombstone keeps voucherNo, voucherTotalAmount, inventory and one voucher", delAfter && delAfter.header.voucherNo === delBefore.header.voucherNo && delAfter.header.voucherTotalAmount === delBefore.header.voucherTotalAmount && JSON.stringify(delAfter.inventory) === JSON.stringify(delBefore.inventory) && delAfter.inventory.length === 1 && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note33` })) === 1);
-    const isoDelAfter = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note33` }).lean();
+    check("the sparse deleted tombstone keeps voucherNo, voucherTotalAmount, inventory and one voucher", delAfter && delAfter.header.voucherNo === delBefore.header.voucherNo && delAfter.header.voucherTotalAmount === delBefore.header.voucherTotalAmount && JSON.stringify(delAfter.inventory) === JSON.stringify(delBefore.inventory) && delAfter.inventory.length === 1 && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note43` })) === 1);
+    const isoDelAfter = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note43` }).lean();
     check("tenant isolation: a deleted voucher for T1 does not change the same GUID under another tenant", !!isoDelAfter && isoDelAfter.voucherStatus === "active" && isoDelAfter.classification === isoDelBefore.classification && isoDelAfter.tallyAlterId === isoDelBefore.tallyAlterId && JSON.stringify(isoDelAfter.inventory) === JSON.stringify(isoDelBefore.inventory), JSON.stringify(isoDelAfter && { v: isoDelAfter.voucherStatus, c: isoDelAfter.classification, a: isoDelAfter.tallyAlterId }));
 
     // Reclassification after the cancellations, in apply mode: cancelled notes must not be upgraded to a return.
