@@ -159,6 +159,7 @@ jobs:
             verify-query-engine.js \
             verify-query-cache.js \
             verify-query-parity.js \
+            verify-query-parity-synthetic.js \
             verify-entity-resolver.js \
             verify-query-planner.js \
             verify-query-chat.js \

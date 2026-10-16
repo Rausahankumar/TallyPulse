@@ -864,37 +864,31 @@ async function runTenant(tenant, { extended }) {
   }
 }
 
-// ================================================================== main
+// ================================================================== the run (shared)
 
-(async () => {
-  await connectDB();
+// Runs the whole parity suite for one large tenant (extended) and an optional second tenant (cross-tenant isolation) and
+// prints the summary. Returns the number of failed cases. Used by the real-data run below (WE FOUR + a second real
+// tenant) and by verify-query-parity-synthetic.js (two synthetic tenants in the isolated CI database). Cases unchanged.
+async function runParity({ big, other }) {
+  let failedCount = 0;
   try {
-    const companies = await Company.find({ isActive: true }).lean();
-    const we = companies.find((c) => c.companyName === "WE FOUR");
-    const other = companies.find((c) => c.companyName !== "WE FOUR" && c.tenantId !== (we && we.tenantId));
-    if (!we) {
-      console.log("  SKIPPED - the parity suite compares the engine with the existing analytics on the real WE FOUR tenant, which is not present in this database.");
-      await mongoose.disconnect();
-      process.exit(0);
-    }
-
-    await runTenant({ tenantId: we.tenantId, name: "WE FOUR" }, { extended: true });
+    await runTenant(big, { extended: true });
     if (other) {
-      await runTenant({ tenantId: other.tenantId, name: other.companyName }, { extended: false });
+      await runTenant(other, { extended: false });
 
       // cross-tenant isolation under parity: each tenant's engine result equals its OWN oracle and differs from the other's
       currentTenantLabel = "cross-tenant";
       console.log("\n--- Cross-tenant isolation ---");
-      const refW = await getTenantReferenceDate(we.tenantId);
+      const refW = await getTenantReferenceDate(big.tenantId);
       const refO = await getTenantReferenceDate(other.tenantId);
       const plan = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "all_time" }, metrics: ["invoiceAmount", "invoiceCount"] };
-      const eW = await executeQuery(plan, { tenantId: we.tenantId, referenceDate: refW });
+      const eW = await executeQuery(plan, { tenantId: big.tenantId, referenceDate: refW });
       const eO = await executeQuery(plan, { tenantId: other.tenantId, referenceDate: refO });
-      const oW = await salesAnalytics.getSalesSummary(we.tenantId, { from: undefined, to: undefined });
+      const oW = await salesAnalytics.getSalesSummary(big.tenantId, { from: undefined, to: undefined });
       const oO = await salesAnalytics.getSalesSummary(other.tenantId, { from: undefined, to: undefined });
       assertCase("tenant_isolation", "each tenant's engine result equals its own oracle", close(eW.totals.values.invoiceAmount, oW.totalSales) && close(eO.totals.values.invoiceAmount, oO.totalSales) && eW.totals.values.invoiceCount === oW.orderCount && eO.totals.values.invoiceCount === oO.orderCount);
       assertCase("tenant_isolation", "the two tenants' results differ (no bleed-through)", eW.totals.values.invoiceCount !== eO.totals.values.invoiceCount && !close(eW.totals.values.invoiceAmount, eO.totals.values.invoiceAmount));
-      const customersW = await executeQuery({ ...plan, metrics: ["invoiceAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 100 }, { tenantId: we.tenantId, referenceDate: refW });
+      const customersW = await executeQuery({ ...plan, metrics: ["invoiceAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 100 }, { tenantId: big.tenantId, referenceDate: refW });
       const customersO = await executeQuery({ ...plan, metrics: ["invoiceAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 100 }, { tenantId: other.tenantId, referenceDate: refO });
       const namesW = new Set(customersW.rows.map((r) => r.key.customer));
       assertCase("tenant_isolation", "no customer name appears in both tenants' engine results", customersO.rows.every((r) => !namesW.has(r.key.customer)));
@@ -926,15 +920,43 @@ async function runTenant(tenant, { extended }) {
     console.log(`  Oracle kinds: ${oneLine(results.reduce((a, r) => ((a[r.oracle] = (a[r.oracle] || 0) + 1), a), {}))}`);
     console.log(`\n=== RESULT: ${pass} passed, ${failed.length} failed ===`);
     if (failed.length) failed.slice(0, 25).forEach((f) => console.log(`  FAILED [${f.tenant}] [${f.cap}] ${f.id}: ${f.detail}`));
-    await mongoose.disconnect();
-    process.exit(failed.length ? 1 : 0);
+    failedCount = failed.length;
   }
-})().catch(async (e) => {
-  console.error("PARITY SUITE CRASHED:", e);
-  try {
-    await mongoose.disconnect();
-  } catch {
-    /* ignore */
-  }
-  process.exit(1);
-});
+  return failedCount;
+}
+
+// ================================================================== main (real data)
+
+if (require.main === module) {
+  (async () => {
+    await connectDB();
+    let failedCount = 1;
+    try {
+      const companies = await Company.find({ isActive: true }).lean();
+      const we = companies.find((c) => c.companyName === "WE FOUR");
+      const other = companies.find((c) => c.companyName !== "WE FOUR" && c.tenantId !== (we && we.tenantId));
+      if (!we) {
+        console.log("  SKIPPED - the parity suite compares the engine with the existing analytics on the real WE FOUR tenant, which is not present in this database.");
+        await mongoose.disconnect();
+        process.exit(0);
+      }
+      failedCount = await runParity({
+        big: { tenantId: we.tenantId, name: "WE FOUR" },
+        other: other ? { tenantId: other.tenantId, name: other.companyName } : null,
+      });
+    } finally {
+      await mongoose.disconnect();
+    }
+    process.exit(failedCount ? 1 : 0);
+  })().catch(async (e) => {
+    console.error("PARITY SUITE CRASHED:", e);
+    try {
+      await mongoose.disconnect();
+    } catch {
+      /* ignore */
+    }
+    process.exit(1);
+  });
+}
+
+module.exports = { runParity };
