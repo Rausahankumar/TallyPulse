@@ -137,7 +137,7 @@ jobs:
           failed=0
           # Suites whose real-data sections (WE FOUR tenant) skip in CI. Their DB parts run; the skipped
           # sections are reported as PARTIAL. Any other SKIP in a suite fails the job.
-          PARTIAL="verify-query-chat.js verify-query-engine.js verify-query-planner.js verify-comparison-period-capability.js verify-growth-comparison-capability.js verify-return-analytics.js verify-return-ranking.js verify-stock-group-analytics.js"
+          PARTIAL="verify-query-chat.js verify-query-engine.js verify-query-planner.js verify-comparison-period-capability.js verify-growth-comparison-capability.js verify-return-analytics.js verify-return-ranking.js"
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
