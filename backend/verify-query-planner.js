@@ -980,6 +980,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
   // =============================================================== N. end to end with real engine + cache (read-only)
   section("N. planner -> validator -> real engine + answer cache (read-only, fake Claude)");
   const mongoose = require("mongoose");
+  let seededTenants = null;
   try {
     const connectDB = require("./src/config/db");
     await connectDB();
@@ -989,9 +990,46 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     const { getTenantVersion } = require("./src/services/query/dataVersion");
     const { executeQuery } = require("./src/services/query/execute");
     const companies = await Company.find({ isActive: true }).lean();
-    const we = companies.find((c) => c.companyName === "WE FOUR");
-    const other = companies.find((c) => c.tenantId !== (we && we.tenantId));
-    if (!we) throw Object.assign(new Error("WE FOUR not found"), { skip: true });
+    let we = companies.find((c) => c.companyName === "WE FOUR");
+    let other = companies.find((c) => c.tenantId !== (we && we.tenantId));
+    if (!we) {
+      // No WE FOUR here (always the case in the isolated CI database): run the same checks on two small synthetic tenants,
+      // seeded here and removed in `finally`. connectDB() above already passed the test-mode guard (loopback test database
+      // only). Tenant A's most frequent customer has a mixed-case name (canonicalisation), both tenants share one customer
+      // name, and one customer exists only in tenant B (cross-tenant refusal).
+      const SYN_A = "TEST-TENANT-planner-section-n-a";
+      const SYN_B = "TEST-TENANT-planner-section-n-b";
+      let seq = 0;
+      const synVoucher = (tenantId, party, amount) => {
+        seq += 1;
+        return {
+          tenantId,
+          tallyGuid: `syn-planner-n-${tenantId}-${seq}`,
+          tallyAlterId: seq,
+          voucherStatus: "active",
+          header: { voucherNo: `PN-${seq}`, voucherDate: new Date(Date.UTC(2025, 8, seq)), voucherType: "Sales", voucherTotalAmount: amount, narration: "", partyName: party },
+          inventory: [{ itemName: "Synthetic Widget", quantity: 1, rate: amount, amount }],
+          ledgers: [],
+        };
+      };
+      seededTenants = [SYN_A, SYN_B];
+      await Sale.deleteMany({ tenantId: { $in: seededTenants } });
+      await Sale.insertMany([
+        synVoucher(SYN_A, "Synthetic Mixed Case Traders", 100),
+        synVoucher(SYN_A, "Synthetic Mixed Case Traders", 200),
+        synVoucher(SYN_A, "Synthetic Mixed Case Traders", 300),
+        synVoucher(SYN_A, "Synthetic Mixed Case Traders", 400),
+        synVoucher(SYN_A, "Synthetic Shared Customer", 50),
+        synVoucher(SYN_A, "Synthetic Shared Customer", 60),
+        synVoucher(SYN_A, "Synthetic Other Buyer", 70),
+        synVoucher(SYN_B, "Synthetic Shared Customer", 500),
+        synVoucher(SYN_B, "Synthetic B-Only Store", 80),
+        synVoucher(SYN_B, "Synthetic B-Only Store", 90),
+      ]);
+      we = { tenantId: SYN_A };
+      other = { tenantId: SYN_B };
+      console.log("    no WE FOUR tenant in this database: running section N on two synthetic tenants (seeded here, removed afterwards)");
+    }
     const realResolver = createEntityResolver({ tenantId: we.tenantId });
     const cache = createAnswerCache();
     const run = (p, tenantId) => cache.run(p, { tenantId }, { execute: executeQuery, getVersion: getTenantVersion });
@@ -1039,6 +1077,14 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       check("section N ran", false, e.message);
     }
   } finally {
+    if (seededTenants) {
+      // only the two synthetic tenants' own vouchers
+      try {
+        await require("./src/models/sales.model").deleteMany({ tenantId: { $in: seededTenants } });
+      } catch (e) {
+        check("section N synthetic tenants are removed afterwards", false, e.message);
+      }
+    }
     await mongoose.disconnect().catch(() => {});
   }
 
