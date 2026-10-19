@@ -317,7 +317,7 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.LINE_ITEM_PRE_TAX,
     status: "supported",
-    description: "Pre-tax inventory line amount. Never reconciles to invoiceAmount/purchaseAmount - different basis.",
+    description: "Default for product sales/purchase value, incl. most sold/bikne; quantity only for product units/pieces. Pre-tax item line value; never adds up to invoice/purchase totals.",
     disclosures: [
       "Pre-tax line-item basis; does not reconcile to invoice totals.",
       "Item lines only: tax, freight/other charges and vouchers without item lines are not included, so it is not an invoice total before tax.",

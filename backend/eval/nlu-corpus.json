@@ -1732,7 +1732,7 @@
       "to": "2025-09-30"
      },
      "metrics": [
-      "quantity"
+      "lineAmount"
      ],
      "groupBy": [],
      "filters": [
@@ -3318,7 +3318,7 @@
       "kind": "previous_month"
      },
      "metrics": [
-      "quantity"
+      "lineAmount"
      ],
      "groupBy": [
       {
@@ -3328,7 +3328,7 @@
      "filters": [],
      "sort": [
       {
-       "by": "quantity",
+       "by": "lineAmount",
        "dir": "desc"
       }
      ],
