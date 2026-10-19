@@ -360,6 +360,13 @@ async function comparatorSelfTest() {
   const larger = clone(BASES.ranking);
   larger.limit = 10;
   check("limit: a LARGER limit is imprecise (acceptable, never exact); a smaller one is wrong", scored(larger, BASES.ranking).outcome === "plan_imprecise" && diffPlans(larger, BASES.ranking).every((d) => d.minor) && scored({ ...clone(BASES.ranking), limit: 2 }, BASES.ranking).outcome === "wrong_but_executable");
+  // A scalar aggregate (no groupBy) returns totals only and the engine never applies its limit, so any limit there is the same answer.
+  for (const [name, lim] of [["specificFy", 100], ["specificFy", 1], ["comparison", 100]]) {
+    const p = { ...clone(BASES[name]), limit: lim };
+    check(`limit: scalar aggregate "${name}" with limit ${lim} is still exactly correct (no limit diff)`, diffPlans(p, BASES[name]).length === 0 && scored(p, BASES[name]).outcome === "plan_correct", JSON.stringify(diffPlans(p, BASES[name])));
+  }
+  check("limit: a grouped date series keeps its limit difference (the rule is scalar-only)", fieldsOf(diffPlans({ ...clone(BASES.trend), limit: 50 }, BASES.trend)).includes("limit"));
+  check("limit: list mode keeps its limit difference (list returns rows)", fieldsOf(diffPlans({ ...clone(BASES.list), limit: 50 }, BASES.list)).includes("limit") && scored({ ...clone(BASES.list), limit: 50 }, BASES.list).outcome === "plan_imprecise");
 
   // ---- E1: the filter operator, case by case
   const withFilter = (op, value) => ({ ...clone(BASES.filtered), filters: [{ dim: "product", op, value }] });
