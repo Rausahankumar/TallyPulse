@@ -170,7 +170,7 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
-    description: "Total invoice value (party-ledger total, tax-inclusive) summed over active Sales vouchers.",
+    description: "Total sales: total invoice value (party-ledger total, tax-inclusive) summed over active Sales vouchers.",
     disclosures: [
       "Gross of returns: Credit/Debit Notes are stored separately and are never netted against this total.",
       "Tax-inclusive only when the party-ledger line of the voucher is found (exact, case-sensitive name match); otherwise the pre-tax item sum is stored.",
