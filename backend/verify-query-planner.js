@@ -418,6 +418,31 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     r = await run(plan({ period: { kind: "custom", from: "2025-11-01", to: "2025-11-30" }, metrics: ["invoiceCount"], groupBy: [{ dim: "customer" }], filters: [{ dim: "customer", op: "new_in_period", value: "" }] }), "How many new customers did we get in November 2025?");
     check("the model's real 'new customers' plan (empty new_in_period value, no sort) now runs", r.status === "supported" && r.plan.filters[0].value === "period" && eq(r.plan.sort, [{ by: "invoiceCount", dir: "desc" }]), `${r.status}/${r.code}`);
 
+    // ---- invoice-level amount grouped by product -> the product's line value (only when that is the ONLY validator error)
+    const hasValueNote = (res) => (res.definitionNotes || []).some((n) => n.code === "product_value_metric_applied");
+    // the plan the real model sent for "Least purchased product in August 2025" (live runs 2026-10-19)
+    const aug = { kind: "custom", from: "2025-08-01", to: "2025-08-31" };
+    r = await run(plan({ entity: "purchase", period: aug, metrics: ["purchaseAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "purchaseAmount", dir: "asc" }], limit: 1 }), "Least purchased product in August 2025");
+    check("purchaseAmount by product (least purchased) -> lineAmount, lowest first, limit kept, and the answer says why", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.sort, [{ by: "lineAmount", dir: "asc" }]) && r.plan.limit === 1 && r.plan.entity === "purchase" && hasValueNote(r) && r.definitionNotes.some((n) => /Purchase amount/.test(n.message)), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.metrics)}`);
+    r = await run(plan({ metrics: ["invoiceAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 5 }), "top 5 products last month");
+    check("invoiceAmount by product (sales) -> lineAmount, highest first, with the note", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.sort, [{ by: "lineAmount", dir: "desc" }]) && r.plan.limit === 5 && hasValueNote(r) && r.definitionNotes.some((n) => /Invoice amount/.test(n.message)), `${r.status}/${r.code}`);
+    r = await run(plan({ period: { kind: "previous_month" }, compare: { mode: "like_for_like" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "product" }], having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] }), "products whose sales fell last month");
+    check("derived references are renamed too: having/sort on invoiceAmount.delta -> lineAmount.delta, compare untouched", r.status === "supported" && eq(r.plan.having, [{ metric: "lineAmount.delta", op: "lt", value: 0 }]) && eq(r.plan.sort, [{ by: "lineAmount.delta", dir: "asc" }]) && r.plan.compare && r.plan.compare.mode === "like_for_like", `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.having)}`);
+    r = await run(plan({ metrics: ["invoiceCount"], groupBy: [{ dim: "product" }], sort: [{ by: "invoiceCount", dir: "desc" }] }), "invoices by product");
+    check("NOT repaired: an invoice COUNT by product has no line equivalent and stays invalid", r.status === "planner_failed" && r.code === "planner_invalid_plan" && !hasValueNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["invoiceAmount", "invoiceCount"], groupBy: [{ dim: "product" }], sort: [{ by: "invoiceAmount", dir: "desc" }] }), "products by sales and invoices");
+    check("NOT repaired: mixed metrics (amount + count) by product stay invalid", r.status === "planner_failed" && r.code === "planner_invalid_plan", `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["invoiceAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "customer", dir: "asc" }] }), "products by sales");
+    check("NOT repaired: the product error plus ANY second validator error stays invalid", r.status === "planner_failed" && r.code === "planner_invalid_plan" && !hasValueNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ entity: "sales_return", metrics: ["returnAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "returnAmount", dir: "desc" }] }), "returns by product");
+    check("NOT repaired: return entities are outside the rule (no line-value switch, no note)", r.status !== "supported" && !hasValueNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] }), "best selling products last month");
+    check("untouched: a lineAmount product ranking passes as sent, with no note", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && !hasValueNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "quantity", dir: "desc" }] }), "top products by quantity sold last month");
+    check("untouched: an explicit quantity product ranking stays quantity, with no note", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && !hasValueNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["invoiceAmount"], filters: [{ dim: "product", op: "eq_ci", value: "Maggi Noodles" }] }), "invoices containing Maggi Noodles last month");
+    check("untouched: invoiceAmount FILTERED by a product is valid (with its own warning) and is not switched", r.status === "supported" && eq(r.plan.metrics, ["invoiceAmount"]) && !hasValueNote(r), `${r.status}/${r.code}`);
+
     // what the user is told when the gate refuses (no Claude call in either case)
     const gateClient = fakeClaude(reply({ plan: plan({}) }));
     r = await planQuestion("sales | by customer", { claudeClient: gateClient });

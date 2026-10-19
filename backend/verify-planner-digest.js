@@ -17,6 +17,8 @@ const fs = require("fs");
 const path = require("path");
 const { planQuestion, getPlannerPrompt, buildCatalogDigest, PLANNER_TOOL_NAME, PLANNER_MAX_TOKENS } = require("./src/services/query/planner");
 const { CATALOG } = require("./src/services/query/semanticCatalog");
+const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
+const { validateQueryPlan } = require("./src/services/query/validator");
 const scoring = require("./eval/nluScoring");
 
 let pass = 0;
@@ -123,6 +125,31 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   lineCategory("top products", "top_products");
   const qty = scoring.corpus.rows.filter((r) => r.expected.plan && r.expected.plan.metrics.includes("quantity") && !r.previousPlan);
   check(`quantity questions: all ${qty.length} corpus plans use the quantity metric, which the prompt lists at line grain with the catalog's description`, qty.length >= 5 && grainOf("quantity") === "line" && metricInfo.quantity.meaning === CATALOG.metrics.quantity.description);
+  // Product questions default to VALUE (lineAmount, PROJECT_CONTEXT "product sales = pre-tax item value"); quantity only when the user
+  // asks for PRODUCT units: units, pieces, quantity, or a count of a product's items (how many <product>, kitne <pieces>). The rule reaches the
+  // model through the catalog description and is scoped to products, so other "how many" questions (invoices, customers, orders) are unaffected.
+  // These checks prove the prompt text and the corpus expectations agree - NOT what a live model does.
+  check("the prompt states that lineAmount is the default for product sales AND purchase value (incl. 'most sold' / Hinglish 'bikne') and quantity only for product units/pieces", /^Default for product sales\/purchase value, incl\. most sold\/bikne; quantity only for product units\/pieces\./.test((metricInfo.lineAmount || {}).meaning || ""), (metricInfo.lineAmount || {}).meaning);
+  check("product purchases have a line-value metric: lineAmount covers purchase (sign-flipped) while purchaseAmount is invoice-level and cannot be grouped by product", CATALOG.metrics.lineAmount.entities.includes("purchase") && CATALOG.metrics.lineAmount.aggregation.entitySign.purchase === -1 && CATALOG.metrics.purchaseAmount.grain === "voucher");
+  const PRODUCT_UNIT_WORDS = /\b(units?|pieces?|quantity|qty|how many|kitne)\b/i; // applied to product questions only
+  const isProductQuestion = (p) => !!p && ["sales", "purchase"].includes(p.entity) && [...(p.groupBy || []), ...(p.filters || [])].some((x) => x.dim === "product" || x.dim === "productGroup");
+  const productRows = scoring.corpus.rows.filter((r) => !r.previousPlan && isProductQuestion(r.expected.plan));
+  const unitMismatch = productRows.filter((r) => PRODUCT_UNIT_WORDS.test(r.question) !== r.expected.plan.metrics.includes("quantity"));
+  check(`product questions: all ${productRows.length} corpus plans use quantity exactly when the question asks for product units, otherwise the value metric`, productRows.length >= 40 && unitMismatch.length === 0, unitMismatch.map((r) => `${r.id} ${JSON.stringify(r.expected.plan.metrics)}`).join(", "));
+  const triggerCases = [["LED Bulb 9W kitne pieces bike August 2025 mein?", true], ["how many units of Steel Bolt 10mm did we sell last month", true], ["top 10 products by quantity sold in August 2025", true], ["best selling products last month", false], ["sabse zyada bikne wale 5 items last month", false], ["Steel Bolt 10mm kitna bika September 2025 mein?", false], ["Least purchased product in August 2025", false], ["sabse kam bikne wala product", false], ["kitne pieces kharide Steel Bolt 10mm ke", true]];
+  check("product-unit trigger words: Hinglish 'kitne pieces', 'units' and 'quantity' ask for units; 'best selling', 'sabse zyada bikne wale' and 'kitna bika' ask for value", triggerCases.every(([q, units]) => PRODUCT_UNIT_WORDS.test(q) === units), triggerCases.filter(([q, units]) => PRODUCT_UNIT_WORDS.test(q) !== units).map(([q]) => q).join(" | "));
+  const pinned = (id) => scoring.corpus.rows.find((r) => r.id === id).expected.plan;
+  const rankedBy = (id, metric, dir) => { const p = pinned(id); return p.metrics.includes(metric) && p.sort && p.sort[0] && p.sort[0].by === metric && p.sort[0].dir === dir && (p.groupBy || []).some((g) => g.dim === "product"); };
+  check("best-selling products (nl_0100) and the Hinglish most-sold items (nl_0107) are expected to rank by lineAmount, highest first, grouped by product", rankedBy("nl_0100", "lineAmount", "desc") && rankedBy("nl_0107", "lineAmount", "desc"));
+  check("least-selling product (nl_0111) is expected to rank by lineAmount, lowest first", rankedBy("nl_0111", "lineAmount", "asc"));
+  check("explicit units: top products by quantity sold (nl_0105) and highest quantity sold (nl_0106) are expected to rank by quantity, highest first", rankedBy("nl_0105", "quantity", "desc") && rankedBy("nl_0106", "quantity", "desc"));
+  check("explicit unit count for one product (nl_0053 'How many LED Bulb 9W') is expected to use quantity and keep its product filter", pinned("nl_0053").metrics.includes("quantity") && (pinned("nl_0053").filters || []).some((f) => f.dim === "product" && f.op === "eq_ci"));
+  const expectOf = (id) => scoring.corpus.rows.find((r) => r.id === id).expected;
+  check("least purchased product (nl_0080) is expected as entity purchase, lineAmount, lowest first, grouped by product (never the invoice-level purchaseAmount)", rankedBy("nl_0080", "lineAmount", "asc") && pinned("nl_0080").entity === "purchase" && !pinned("nl_0080").metrics.includes("purchaseAmount"));
+  const nonProductCounts = [["nl_0017", "invoiceCount"], ["nl_0019", "invoiceCount"], ["nl_0031", "purchaseInvoiceCount"]];
+  check("non-product counting: 'how many invoices' (nl_0017), 'kitne invoice' (nl_0019) and purchase invoices (nl_0031) keep their invoice-count metrics, never quantity", nonProductCounts.every(([id, m]) => { const e = expectOf(id); return e.status === "supported" && e.plan.metrics.length === 1 && e.plan.metrics[0] === m && !isProductQuestion(e.plan); }));
+  const refusedCounts = [["nl_0343", "decline"], ["nl_0348", "decline"], ["nl_0385", "clarify"], ["nl_0388", "clarify"], ["nl_0397", "clarify"]];
+  check("non-product counting: customers / distinct products are declined and order counts ask for clarification (nl_0343, nl_0348, nl_0385, nl_0388, nl_0397); none expects quantity", refusedCounts.every(([id, status]) => { const e = expectOf(id); return e.status === status && !e.plan; }));
   const rets = rows("returns");
   check(`return questions: all ${rets.length} corpus plans use a return entity and a return metric the prompt offers (returns are supported, not declined)`, rets.length === 7 && rets.every((r) => /_return$/.test(r.expected.plan.entity) && r.expected.plan.metrics.every((m) => metricInfo[m] && metricInfo[m].entities.includes(r.expected.plan.entity))) && rets.filter((r) => r.expected.plan.metrics.includes("returnAmount")).every((r) => r.expected.plan.metrics.every((m) => m === overall(r.expected.plan.entity))));
 
@@ -153,8 +180,12 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
     const ok = await run(row, row.expected.plan);
     check(`${label} ("${row.question}"): the correct line-grain plan is accepted and scored exact`, ok.scored.outcome === "plan_correct", ok.scored.outcome);
     const overallMetric = overall(row.expected.plan.entity);
-    const bad = await run(row, swap(row.expected.plan, "lineAmount", overallMetric));
-    check(`${label}: the voucher-grain amount grouped by product is rejected by the validator (the engine can never attribute an invoice total to a product)`, bad.scored.outcome === "validator_rejected", bad.scored.outcome);
+    const voucherPlan = swap(row.expected.plan, "lineAmount", overallMetric);
+    const parsedVoucher = parseQueryPlan(voucherPlan);
+    const direct = parsedVoucher.ok ? validateQueryPlan(parsedVoucher.plan, { referenceDate: scoring.REF_DATE }) : { ok: false, errors: [] };
+    check(`${label}: the voucher-grain amount grouped by product is rejected by the validator (the engine can never attribute an invoice total to a product)`, parsedVoucher.ok && !direct.ok && direct.errors.length > 0 && direct.errors.every((e) => e.code === "dimension_not_applicable_to_voucher_metric"), JSON.stringify(direct.errors));
+    const bad = await run(row, voucherPlan);
+    check(`${label}: the planner switches that plan to the product's line value and says so (product_value_metric_applied), so it is answered as the exact expected plan`, bad.planned.status === "supported" && bad.planned.plan.metrics[0] === "lineAmount" && (bad.planned.definitionNotes || []).some((n) => n.code === "product_value_metric_applied") && bad.scored.outcome === "plan_correct", `${bad.planned.status} ${bad.scored.outcome}`);
   }
   const qrow = pick("sales_by_product", (r) => r.expected.plan.metrics.includes("quantity") && !r.expected.plan.groupBy.length) || scoring.corpus.rows.find((r) => r.expected.plan && r.expected.plan.metrics.includes("quantity") && !r.previousPlan && !r.needsEngineCapability);
   const qok = await run(qrow, qrow.expected.plan);

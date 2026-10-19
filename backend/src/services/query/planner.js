@@ -173,6 +173,31 @@ function withDefaultSort(plan) {
   return { plan: { ...plan, sort: [{ by: plan.metrics[0], dir: "desc" }] }, note: { code: DEFAULT_SORT_NOTE_CODE, message: `No order was asked for, so the rows are ordered by ${label}, highest first.` } };
 }
 
+// An invoice-level amount cannot be split by product (validator rule dimension_not_applicable_to_voucher_metric). A product question
+// on sales or purchases means the product's pre-tax item value (PROJECT_CONTEXT, decided meanings), and the model sometimes picks the
+// invoice total instead ("least purchased product" -> purchaseAmount by product). When that is the ONLY thing wrong - every validator
+// error is this rule and every metric is the entity's invoice-level amount - the metric (and its sort/having references) is switched to
+// the entity's line value, and the answer says so. Counts, averages, mixed metrics, returns and any other error still fail the plan.
+const PRODUCT_VALUE_ERROR = "dimension_not_applicable_to_voucher_metric";
+const PRODUCT_VALUE_NOTE_CODE = "product_value_metric_applied";
+function catalogAmountMetric(entity, grain, amountBasis) {
+  return Object.values(CATALOG.metrics || {}).find((m) => m.status === "supported" && m.grain === grain && m.amountBasis === amountBasis && m.aggregation && m.aggregation.op === "sum" && m.entities.includes(entity)) || null;
+}
+function withProductValueMetric(plan) {
+  if (!plan || plan.mode !== "aggregate" || !["sales", "purchase"].includes(plan.entity) || !Array.isArray(plan.metrics) || !plan.metrics.length) return null;
+  const from = catalogAmountMetric(plan.entity, "voucher", CATALOG.amountBasis.VOUCHER_TOTAL_INCL_TAX);
+  const to = catalogAmountMetric(plan.entity, "line", CATALOG.amountBasis.LINE_ITEM_PRE_TAX);
+  if (!from || !to || !plan.metrics.every((m) => m === from.id)) return null;
+  const rename = (ref) => (ref === from.id ? to.id : typeof ref === "string" && ref.startsWith(`${from.id}.`) ? `${to.id}${ref.slice(from.id.length)}` : ref);
+  const fixed = {
+    ...plan,
+    metrics: [to.id],
+    sort: (plan.sort || []).map((s) => ({ ...s, by: rename(s.by) })),
+    having: (plan.having || []).map((h) => ({ ...h, metric: rename(h.metric) })),
+  };
+  return { plan: fixed, note: { code: PRODUCT_VALUE_NOTE_CODE, message: `${from.label} is an invoice total and cannot be split by product, so product values use ${to.label}: the pre-tax value of the items, which does not add up to invoice totals.` } };
+}
+
 const MONTH_FULL_NOTE = { code: "month_vs_complete_previous_month", message: 'This month so far is compared with the complete previous month (the product\'s standard month comparison). Ask for "same period last month" to compare the same days.' };
 
 const { CATALOG } = catalog;
@@ -475,6 +500,7 @@ async function planQuestionCore(question, options = {}) {
     let errors = null;
     let validation = null;
     let defaultSortNote = null;
+    let productValueNote = null;
     if (!parsed.ok) errors = (parsed.errors || []).map((e) => ({ code: e.code, path: e.path }));
     else {
       validation = validateQueryPlan(parsed.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
@@ -489,6 +515,17 @@ async function planQuestionCore(question, options = {}) {
         validation = revalidated;
         errors = null;
         defaultSortNote = fixed.note;
+      }
+    }
+    if (errors && parsed.ok && errors.every((e) => e.code === PRODUCT_VALUE_ERROR)) {
+      const fixed = withProductValueMetric(parsed.plan);
+      const reparsed = fixed ? parseQueryPlan(fixed.plan) : null;
+      const revalidated = reparsed && reparsed.ok ? validateQueryPlan(reparsed.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF }) : null;
+      if (revalidated && revalidated.ok) {
+        parsed = reparsed;
+        validation = revalidated;
+        errors = null;
+        productValueNote = fixed.note;
       }
     }
     if (errors) {
@@ -565,6 +602,7 @@ async function planQuestionCore(question, options = {}) {
     }
     const definitionNotes = revenue ? [REVENUE_ASSUMPTION] : [];
     if (defaultSortNote) definitionNotes.push(defaultSortNote);
+    if (productValueNote) definitionNotes.push(productValueNote);
     if (plan.period.kind === "current_month" && plan.compare && plan.compare.mode === "like_for_like" && !SAME_DAYS_WORDING.test(text)) {
       plan.compare = { mode: "full_previous" };
       validation = validateQueryPlan(plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
