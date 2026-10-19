@@ -1,5 +1,7 @@
 # TallyPulse code reference (auto-generated from the source)
 
+> **Snapshot, not maintained.** This file was last generated on 2026-10-15. Its generator (`gen_ref.js`) is not in the repository, so it cannot be regenerated and does not reflect later changes. For the current map of the code use [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), and check the source before relying on any detail here.
+
 Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har function kya karta hai (code ke apne comments se), aur wo kis dusri file ka kaun sa function call karta hai.
 
 > Ye file `gen_ref.js` se banai gayi hai. Comments code se uthaye gaye hain, isliye English me hain. Simple Hindi/Hinglish samjhane wala hissa alag file `CODE_WALKTHROUGH_HINGLISH.md` me hai.

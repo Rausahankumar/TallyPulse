@@ -10,5 +10,5 @@
    - No real tenant data in fixtures.
 5. **No new infrastructure without proof:** no Redis, queues, workers or abstractions unless it is proven the existing architecture cannot do it.
 6. **Keep the context file current:** update `docs/PROJECT_CONTEXT.md` (concisely) only when architecture, a data model, a semantic rule, a capability or a limitation changes. It must never hold logs, test counts or run state.
-7. **Git:** never commit, push or open PRs unless told to in the current session. Run git from `D:\TallyPulse`, never from `backend/`.
+7. **Git:** never commit, push or open PRs unless told to in the current session. Run git from the repository root (the folder that contains this file), never from `backend/`.
 8. **Final report:** use the headings ROOT CAUSE/RESULT, CHANGED, TESTED, COST (Tally calls, Claude calls) and STATUS. Then STOP: no unrelated work or suggestions.
