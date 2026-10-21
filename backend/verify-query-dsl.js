@@ -49,8 +49,8 @@ section("1. Catalog: required content (per the Phase 1 scope)");
   const salesMetrics = catalogModule.metricsForEntity("sales").map((m) => m.id).sort();
   const purchaseMetrics = catalogModule.metricsForEntity("purchase").map((m) => m.id).sort();
   check(
-    "sales metrics are exactly the requested set (+ lineCount, the one disclosed addition)",
-    same(salesMetrics, ["averageInvoiceValue", "invoiceAmount", "invoiceCount", "lineAmount", "lineCount", "quantity"]),
+    "sales metrics are exactly the requested set (+ lineCount, the one disclosed addition, + customerCount, the debtor-ledger distinct count)",
+    same(salesMetrics, ["averageInvoiceValue", "customerCount", "invoiceAmount", "invoiceCount", "lineAmount", "lineCount", "quantity"]),
     salesMetrics.join(",")
   );
   check(

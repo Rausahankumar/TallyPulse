@@ -215,6 +215,7 @@ async function liveSelfTest() {
     const client = fakeProvider(mode, () => current);
     const tally = {};
     const problems = [];
+    const yearGuarded = [];
     for (const row of rows) {
       current = row;
       const planned = await planQuestion(row.question, { claudeClient: client, resolveEntity: resolver, referenceDate: REF_DATE, maxRepairs: 0 });
@@ -222,10 +223,17 @@ async function liveSelfTest() {
       bump(tally, sc.outcome);
       const wantPlan = row.expected.status === "supported" && row.expected.plan;
       if (mode === "golden" && !["plan_correct", "correct_refusal", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome} ${planned.status}/${planned.code || ""}`);
-      if (mode === "mutated" && wantPlan && !["wrong_but_executable", "provider_failure", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome}`);
+      // A shifted custom range can move into a year the question never states (calendar 2025 -> Dec 2024..Nov 2025); the planner's year
+      // guard then refuses the invented year (year_missing). That is the guard working, so it is accepted - it is still never plan_correct.
+      const yearGuardRefusal = sc.outcome === "false_refusal" && planned.status === "needs_clarification" && planned.code === "year_missing" && planned.source === "date_guard";
+      if (mode === "mutated" && yearGuardRefusal) yearGuarded.push(row.id);
+      if (mode === "mutated" && wantPlan && !yearGuardRefusal && !["wrong_but_executable", "provider_failure", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome}`);
     }
     if (mode === "golden") check(`a perfect provider scores every non-gap row correct (${JSON.stringify(tally)})`, problems.length === 0, problems.slice(0, 6).join(" | "));
-    else check(`a provider that answers every question for the PREVIOUS period is caught as wrong_but_executable, never plan_correct (${JSON.stringify(tally)})`, problems.length === 0 && !tally.plan_correct, problems.slice(0, 6).join(" | "));
+    else {
+      check(`a provider that answers every question for the PREVIOUS period is caught as wrong_but_executable (or refused by the year guard when the shift invents an unstated year), never plan_correct (${JSON.stringify(tally)})`, problems.length === 0 && !tally.plan_correct, problems.slice(0, 6).join(" | "));
+      check(`year-guard refusals stay the exception, only on custom ranges (${yearGuarded.join(",") || "none"})`, yearGuarded.length <= 3 && yearGuarded.every((id) => { const r = rows.find((x) => x.id === id); return r.expected.plan.period.kind === "custom"; }), yearGuarded.join(","));
+    }
     console.log(`  ${mode}: ${JSON.stringify(tally)}`);
   }
 }

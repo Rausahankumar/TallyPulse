@@ -443,6 +443,113 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     r = await run(plan({ metrics: ["invoiceAmount"], filters: [{ dim: "product", op: "eq_ci", value: "Maggi Noodles" }] }), "invoices containing Maggi Noodles last month");
     check("untouched: invoiceAmount FILTERED by a product is valid (with its own warning) and is not switched", r.status === "supported" && eq(r.plan.metrics, ["invoiceAmount"]) && !hasValueNote(r), `${r.status}/${r.code}`);
 
+    // ---- "which products did we sell" -> ranked by value, not by name (only when the user did not ask for name order)
+    const hasSortNote = (res) => (res.definitionNotes || []).some((n) => n.code === "product_value_sort_applied");
+    const oct = { kind: "custom", from: "2025-10-01", to: "2025-10-31" };
+    // the plan the real model sent for nl_0060 (live runs 2026-10-19): products sorted by name
+    r = await run(plan({ period: oct, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }], limit: 100 }), "Which products did we sell in October 2025?");
+    check("nl_0060: a product breakdown sorted only by name -> lineAmount, highest first, limit kept, with the note", r.status === "supported" && eq(r.plan.sort, [{ by: "lineAmount", dir: "desc" }]) && r.plan.limit === 100 && hasSortNote(r) && r.definitionNotes.some((n) => /ranked by Line amount \(pre-tax\), highest first/.test(n.message)), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.sort)} ${JSON.stringify(r.definitionNotes)}`);
+    r = await run(plan({ entity: "purchase", metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "desc" }] }), "which products did we buy last month");
+    check("purchase side: same rule", r.status === "supported" && eq(r.plan.sort, [{ by: "lineAmount", dir: "desc" }]) && hasSortNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }] }), "which products did we sell last month, in units");
+    check("the sort repair keeps the model's metric: a units breakdown is ranked by quantity (the sort rule never switches the metric)", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && eq(r.plan.sort, [{ by: "quantity", dir: "desc" }]) && hasSortNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }] }), "which products did we sell last month");
+    check("no units wording: the value default switches quantity to lineAmount, then the sort repair ranks by it (both notes)", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.sort, [{ by: "lineAmount", dir: "desc" }]) && hasSortNote(r) && r.definitionNotes.some((n) => n.code === "product_value_default_applied"), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.metrics)}`);
+    for (const q of ["list the products we sold last month alphabetically", "products A to Z last month", "products sold last month by name", "product name-wise sales last month", "pichle mahine ke products naam se"]) {
+      r = await run(plan({ metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }] }), q);
+      check(`explicit name order is kept: "${q}"`, r.status === "supported" && eq(r.plan.sort, [{ by: "product", dir: "asc" }]) && !hasSortNote(r), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.sort)}`);
+    }
+    r = await run(plan({ metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "asc" }] }), "least selling products last month");
+    check("untouched: a metric sort (least selling) is never replaced", r.status === "supported" && eq(r.plan.sort, [{ by: "lineAmount", dir: "asc" }]) && !hasSortNote(r));
+    r = await run(plan({ groupBy: [{ dim: "customer" }], sort: [{ by: "customer", dir: "asc" }] }), "which customers bought last month");
+    check("untouched: a customer breakdown sorted by name (the rule is for products only)", r.status === "supported" && eq(r.plan.sort, [{ by: "customer", dir: "asc" }]) && !hasSortNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ compare: { mode: "full_previous" }, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }] }), "products this month vs last month");
+    check("untouched: a comparison is outside the rule", r.status === "supported" && eq(r.plan.sort, [{ by: "product", dir: "asc" }]) && !hasSortNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ entity: "sales_return", metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "product", dir: "asc" }] }), "returned products last month");
+    check("untouched: return entities are outside the rule", !hasSortNote(r), `${r.status}/${r.code}`);
+
+    // ---- "last year" with no basis -> previous financial year, and the answer says so
+    const hasFyNote = (res) => (res.definitionNotes || []).some((n) => n.code === "last_year_previous_fy");
+    const fyPlan = plan({ period: { kind: "previous_fy" } });
+    for (const q of ["sales last year", "previous year purchases", "pichle saal ki sales"]) {
+      r = await run(q === "previous year purchases" ? plan({ entity: "purchase", metrics: ["purchaseAmount"], period: { kind: "previous_fy" } }) : fyPlan, q);
+      check(`"${q}" planned as previous_fy -> the financial-year note`, r.status === "supported" && hasFyNote(r) && r.definitionNotes.some((n) => /previous financial year \(April to March\)/.test(n.message)), `${r.status}/${r.code} ${JSON.stringify(r.definitionNotes)}`);
+    }
+    for (const q of ["sales last financial year", "sales previous FY", "sales last fiscal year", "sales last calendar year"]) {
+      r = await run(fyPlan, q);
+      check(`no note when the basis is named: "${q}"`, r.status === "supported" && !hasFyNote(r), `${r.status}/${r.code}`);
+    }
+    r = await run(plan({ period: { kind: "same_month_last_year" } }), "sales for the same month last year");
+    check("no note when the period is not previous_fy (same month last year)", r.status === "supported" && !hasFyNote(r), `${r.status}/${r.code}`);
+    r = await run(fyPlan, "sales this year");
+    check("no note without 'last year' wording", r.status === "supported" && !hasFyNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ period: { kind: "custom", from: "2024-01-01", to: "2024-12-31" } }), "sales last year");
+    check("a calendar range with a year the user never wrote is still clarified by the year guard (the note never rescues it)", r.status === "needs_clarification" && r.code === "year_missing", `${r.status}/${r.code}`);
+
+    // ---- product questions default to sales value: a quantity-only product plan without units wording -> lineAmount (with its note)
+    const hasDefaultNote = (res) => (res.definitionNotes || []).some((n) => n.code === "product_value_default_applied");
+    const qtyTop5 = plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "quantity", dir: "desc" }], limit: 5 });
+    // the plan the real model sent for nl_0400 / nl_0107 (live runs 2026-10-19 and 2026-10-21)
+    for (const q of ["Sabse zyada bikne wale 5 items.", "sabse zyada bikne wale 5 items last month", "top 5 selling products last month", "best sellers last month", "kaun se 5 product sabse zyada bike"]) {
+      r = await run(qtyTop5, q);
+      check(`"${q}": quantity -> lineAmount, highest first, limit kept, with the note`, r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.sort, [{ by: "lineAmount", dir: "desc" }]) && r.plan.limit === 5 && hasDefaultNote(r) && r.definitionNotes.some((n) => /measured by sales value \(Line amount \(pre-tax\)\)/.test(n.message)), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.metrics)}`);
+    }
+    r = await run(plan({ entity: "purchase", metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "quantity", dir: "asc" }], limit: 1 }), "least purchased product last month");
+    check("purchase side: quantity -> lineAmount, lowest first", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.sort, [{ by: "lineAmount", dir: "asc" }]) && hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"], filters: [{ dim: "product", op: "eq_ci", value: "Maggi Noodles" }] }), "Maggi Noodles kitna bika last month");
+    check("a single product filtered ('kitna bika' = how much sold) -> lineAmount", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ compare: { mode: "full_previous" }, metrics: ["quantity"], groupBy: [{ dim: "product" }], having: [{ metric: "quantity.delta", op: "lt", value: 0 }], sort: [{ by: "quantity.delta", dir: "asc" }] }), "products whose sales fell this month");
+    check("derived references are renamed too: quantity.delta -> lineAmount.delta in having and sort", r.status === "supported" && eq(r.plan.having, [{ metric: "lineAmount.delta", op: "lt", value: 0 }]) && eq(r.plan.sort, [{ by: "lineAmount.delta", dir: "asc" }]), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.having)}`);
+    for (const q of ["How many units of each product did we sell?", "kitne pieces bike last month", "top 5 products by quantity sold last month", "top 5 products by qty last month", "how many Maggi Noodles did we sell last month", "kitne items bike last month"]) {
+      r = await run(q.includes("Maggi") ? plan({ metrics: ["quantity"], filters: [{ dim: "product", op: "eq_ci", value: "Maggi Noodles" }] }) : qtyTop5, q);
+      check(`units wording keeps quantity: "${q}"`, r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && !hasDefaultNote(r), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.metrics)}`);
+    }
+    r = await planQuestion("only top 5", { resolveEntity: resolver, previousPlan: qtyTop5, claudeClient: fakeClaude(reply({ plan: qtyTop5 })) });
+    check("follow-up of a units ranking ('only top 5') keeps quantity", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && !hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity", "lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] }), "products sold last month");
+    check("untouched: quantity next to lineAmount (the model asked for both)", r.status === "supported" && eq(r.plan.metrics, ["quantity", "lineAmount"]) && !hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"] }), "total quantity sold last month");
+    check("untouched: quantity with no product dimension", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && !hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ entity: "sales_return", metrics: ["returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnQuantity", dir: "desc" }] }), "most returned products last month");
+    check("untouched: return quantities", !hasDefaultNote(r) && (!r.plan || eq(r.plan.metrics, ["returnQuantity"])), `${r.status}/${r.code}`);
+
+    // ---- F1: a non-zero quantity THRESHOLD keeps quantity (renaming it would turn 50 units into Rs 50)
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], having: [{ metric: "quantity", op: "gt", value: 50 }], sort: [{ by: "quantity", dir: "desc" }] }), "products that sold more than 50 last month");
+    check("F1: having quantity gt 50 stays a quantity threshold (metric, having and sort unchanged, no note)", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && eq(r.plan.having, [{ metric: "quantity", op: "gt", value: 50 }]) && eq(r.plan.sort, [{ by: "quantity", dir: "desc" }]) && !hasDefaultNote(r), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.having)}`);
+    r = await run(plan({ period: { kind: "current_month" }, compare: { mode: "full_previous" }, metrics: ["quantity"], groupBy: [{ dim: "product" }], having: [{ metric: "quantity.delta", op: "lt", value: -10 }], sort: [{ by: "quantity.delta", dir: "asc" }] }), "products whose sales dropped by more than 10 this month");
+    check("F1: a negative non-zero threshold on quantity.delta stays a quantity threshold", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && eq(r.plan.having, [{ metric: "quantity.delta", op: "lt", value: -10 }]) && eq(r.plan.sort, [{ by: "quantity.delta", dir: "asc" }]) && !hasDefaultNote(r), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.having)}`);
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], having: [{ metric: "quantity", op: "gt", value: 0 }], sort: [{ by: "quantity", dir: "desc" }] }), "products that sold at all last month");
+    check("F1: a zero threshold (sold at all) means the same in value, so the eligible plan still switches to lineAmount", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && eq(r.plan.having, [{ metric: "lineAmount", op: "gt", value: 0 }]) && hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(qtyTop5, "top 5 selling products last month");
+    check("F1: an eligible product question without any quantity threshold still switches to lineAmount", r.status === "supported" && eq(r.plan.metrics, ["lineAmount"]) && hasDefaultNote(r), `${r.status}/${r.code}`);
+    r = await run(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }], having: [{ metric: "quantity", op: "gt", value: 50 }], sort: [{ by: "product", dir: "asc" }] }), "which products sold more than 50 last month");
+    check("F1: with the threshold kept, the product-sort repair still ranks by the plan's own metric (quantity, highest first)", r.status === "supported" && eq(r.plan.metrics, ["quantity"]) && eq(r.plan.sort, [{ by: "quantity", dir: "desc" }]) && (r.definitionNotes || []).some((n) => n.code === "product_value_sort_applied") && !hasDefaultNote(r), `${r.status}/${r.code} ${JSON.stringify(r.plan && r.plan.sort)}`);
+
+    // ---- counts the catalog cannot answer: suppliers and different products are refused, never answered with a nearby number
+    const supplierInvoices = plan({ entity: "purchase", metrics: ["purchaseInvoiceCount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "supplier", dir: "asc" }] });
+    for (const q of ["How many purchase suppliers did we have in September 2025?", "how many suppliers did we buy from last month", "kitne suppliers se kharida pichle mahine", "number of vendors last month", "supplier count last month", "suppliers ki ginti batao last month"]) {
+      r = await run(supplierInvoices, q);
+      check(`supplier count refused: "${q}"`, r.status === "unsupported" && r.code === "supplier_count_unsupported" && r.source === "term_guard" && !r.plan && /customers only/.test(r.reason), `${r.status}/${r.code}`);
+    }
+    const qtyTotal = plan({ metrics: ["quantity"] });
+    for (const q of ["How many products did we sell in September 2025?", "kitne products bike last month", "number of products sold last month", "how many different items did we sell last month", "how many unique products did we buy last month", "product count last month"]) {
+      r = await run(q.includes("buy") ? plan({ entity: "purchase", metrics: ["quantity"] }) : qtyTotal, q);
+      check(`different-product count refused: "${q}"`, r.status === "unsupported" && r.code === "distinct_product_count_unsupported" && !r.plan && /how many units did we sell/.test(r.reason), `${r.status}/${r.code}`);
+    }
+    const kept = [
+      ["how many purchase invoices did we get from suppliers last month", plan({ entity: "purchase", metrics: ["purchaseInvoiceCount"] })],
+      ["how many sales invoices were created last month", plan({ metrics: ["invoiceCount"] })],
+      ["how many customers bought from us last month", plan({ metrics: ["customerCount"] })],
+      ["how many units did we sell last month", qtyTotal],
+      ["how many products by quantity did we sell last month", qtyTotal],
+      ["how many items did we sell last month", qtyTotal],
+      ["top 5 suppliers last month", plan({ entity: "purchase", metrics: ["purchaseAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "purchaseAmount", dir: "desc" }], limit: 5 })],
+    ];
+    for (const [q, p] of kept) {
+      r = await run(p, q);
+      check(`not a refused count: "${q}"`, r.status === "supported" && !/count_unsupported/.test(r.code || ""), `${r.status}/${r.code}`);
+    }
+
     // what the user is told when the gate refuses (no Claude call in either case)
     const gateClient = fakeClaude(reply({ plan: plan({}) }));
     r = await planQuestion("sales | by customer", { claudeClient: gateClient });

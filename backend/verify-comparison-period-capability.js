@@ -358,7 +358,9 @@ function resolveCell(kind, mode, referenceDate) {
     const prompt = getPlannerPrompt();
     const system = prompt.system.map((b) => b.text).join("\n");
     check("the planner is never told today's / the tenant's reference date (no date context in its prompt)", !/reference date|today is|current date|20\d\d-\d\d-\d\d/i.test(system) && /YYYY-MM-DD/.test(system));
-    check("planner prompt lists every compare mode and every period kind except ytd", CATALOG.compare.modes.every((m) => system.includes(m)) && PERIOD_KINDS.filter((k) => k !== "ytd").every((k) => system.includes(k)) && !/\bytd\b/.test(system));
+    // The kinds and modes reach the model as the tool schema's enums (the system prompt no longer repeats them); the prompt rules ytd out.
+    const toolSchema = JSON.stringify(prompt.tool.input_schema);
+    check("every compare mode and period kind reaches the planner (tool schema enums), and the prompt rules ytd out", CATALOG.compare.modes.every((m) => toolSchema.includes(`"${m}"`)) && PERIOD_KINDS.every((k) => toolSchema.includes(`"${k}"`)) && /never ytd/.test(system));
     const fake = (input) => { const fn = async (req) => { fn.req = req; return { content: [{ type: "tool_use", id: "t1", name: PLANNER_TOOL_NAME, input }], usage: {} }; }; return fn; };
     const q = "Which customers grew over the last 6 months?";
     const invented = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "custom", from: "2025-03-01", to: "2025-08-31" }, metrics: ["invoiceAmount"], filters: [], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }], compare: { mode: "custom", period: { kind: "custom", from: "2024-09-01", to: "2025-02-28" } }, having: [{ metric: "invoiceAmount.delta", op: "gt", value: 0 }] };

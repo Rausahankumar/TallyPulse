@@ -8768,14 +8768,26 @@
   },
   {
    "id": "nl_0298",
-   "group": "ambiguous",
+   "group": "fy_yearly",
    "language": "english",
    "question": "sales last year",
    "previousPlan": null,
    "expected": {
-    "status": "clarify",
-    "plan": null,
-    "note": "'last year' is ambiguous: calendar or financial year"
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_fy"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "product decision: 'last year' with no basis = the previous financial year; the answer discloses it (last_year_previous_fy)"
    }
   },
   {
@@ -9540,11 +9552,24 @@
    "question": "How many customers bought from us in September 2025?",
    "previousPlan": null,
    "expected": {
-    "status": "decline",
-    "plan": null,
-    "note": "distinct customer count is not a catalog metric"
-   },
-   "needsEngineCapability": "distinctCount"
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-09-01",
+      "to": "2025-09-30"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "customerCount (Slice 3): distinct debtor-ledger customers; non-debtor, unmatched and ambiguous party names are excluded and disclosed"
+   }
   },
   {
    "id": "nl_0344",
@@ -11485,6 +11510,566 @@
     ]
    },
    "note": "D1 follow-up: an invoice count must not answer an order question"
+  },
+  {
+   "id": "nl_0398",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Which products did we sell?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "lineAmount"
+     ],
+     "groupBy": [
+      {
+       "dim": "product"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "lineAmount",
+       "dir": "desc"
+      }
+     ]
+    },
+    "note": "product list with no order asked = ranked by value (lineAmount desc); no period = all history (ranking convention)",
+    "alsoAccept": [
+     "clarify"
+    ]
+   }
+  },
+  {
+   "id": "nl_0399",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Top 5 products by sales value.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "lineAmount"
+     ],
+     "groupBy": [
+      {
+       "dim": "product"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "lineAmount",
+       "dir": "desc"
+      }
+     ],
+     "limit": 5
+    },
+    "note": "product sales value = lineAmount"
+   }
+  },
+  {
+   "id": "nl_0400",
+   "group": "planner_slices",
+   "language": "mixed",
+   "question": "Sabse zyada bikne wale 5 items.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "lineAmount"
+     ],
+     "groupBy": [
+      {
+       "dim": "product"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "lineAmount",
+       "dir": "desc"
+      }
+     ],
+     "limit": 5
+    },
+    "note": "Hinglish 'bikne wale' = product sales value (lineAmount), not quantity"
+   }
+  },
+  {
+   "id": "nl_0401",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Which products did we sell alphabetically?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "lineAmount"
+     ],
+     "groupBy": [
+      {
+       "dim": "product"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "product",
+       "dir": "asc"
+      }
+     ]
+    },
+    "note": "explicit name order is kept (product asc); the metric stays the value default",
+    "alsoAccept": [
+     "clarify"
+    ]
+   }
+  },
+  {
+   "id": "nl_0402",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Sales last year.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_fy"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "'last year' with no basis = previous financial year; the answer discloses it (last_year_previous_fy)"
+   }
+  },
+  {
+   "id": "nl_0403",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Sales in the previous financial year.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_fy"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "explicit financial year"
+   }
+  },
+  {
+   "id": "nl_0404",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Calendar-year sales for 2025.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-01-01",
+      "to": "2025-12-31"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "calendar year 2025 = January to December, never converted to a financial year"
+   }
+  },
+  {
+   "id": "nl_0405",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many customers did we have in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-09-01",
+      "to": "2025-09-30"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "customerCount (debtor-ledger customers with a sale), never an invoice count"
+   }
+  },
+  {
+   "id": "nl_0406",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many unique customers bought from us in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-09-01",
+      "to": "2025-09-30"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "customerCount"
+   }
+  },
+  {
+   "id": "nl_0407",
+   "group": "planner_slices",
+   "language": "mixed",
+   "question": "Kitne customers ne humse kharida in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-09-01",
+      "to": "2025-09-30"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "Hinglish customer count = customerCount"
+   }
+  },
+  {
+   "id": "nl_0408",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many customers purchased LED Bulb 9W in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "custom",
+      "from": "2025-09-01",
+      "to": "2025-09-30"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": [
+      {
+       "dim": "product",
+       "op": "eq_ci",
+       "value": "LED Bulb 9W"
+      }
+     ]
+    },
+    "note": "customers whose invoices contain the product = customerCount + product filter; asks about customers, not product units"
+   }
+  },
+  {
+   "id": "nl_0409",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Show customer count month by month.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [
+      {
+       "dim": "date",
+       "bucket": "month"
+      }
+     ],
+     "filters": []
+    },
+    "note": "customerCount by month; no period = all history (trend convention)",
+    "alsoAccept": [
+     "clarify"
+    ]
+   }
+  },
+  {
+   "id": "nl_0410",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Compare customer count this month vs last month.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "current_month"
+     },
+     "compare": {
+      "mode": "full_previous"
+     },
+     "metrics": [
+      "customerCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "decision 2: this month vs the complete previous month"
+   }
+  },
+  {
+   "id": "nl_0411",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many purchase suppliers did we have in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "decline",
+    "plan": null,
+    "note": "no supplier count exists (customerCount is sales-only): decline, never a sales-customer metric or a purchase invoice count",
+    "alsoAccept": [
+     "clarify"
+    ]
+   }
+  },
+  {
+   "id": "nl_0412",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many products did we sell in September 2025?",
+   "previousPlan": null,
+   "expected": {
+    "status": "decline",
+    "plan": null,
+    "note": "distinct product count is not a catalog metric (as nl_0348): decline, never quantity",
+    "alsoAccept": [
+     "clarify"
+    ]
+   }
+  },
+  {
+   "id": "nl_0413",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Total sales last month.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_month"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "regression control"
+   }
+  },
+  {
+   "id": "nl_0414",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Compare sales this month with last month.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "current_month"
+     },
+     "compare": {
+      "mode": "full_previous"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "regression control: decision 2 full previous month"
+   }
+  },
+  {
+   "id": "nl_0415",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "Show sales by customer.",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "invoiceAmount"
+     ],
+     "groupBy": [
+      {
+       "dim": "customer"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "invoiceAmount",
+       "dir": "desc"
+      }
+     ]
+    },
+    "note": "regression control (as nl_0037)"
+   }
+  },
+  {
+   "id": "nl_0416",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many sales invoices were created last month?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "previous_month"
+     },
+     "metrics": [
+      "invoiceCount"
+     ],
+     "groupBy": [],
+     "filters": []
+    },
+    "note": "regression control: invoices, never customers"
+   }
+  },
+  {
+   "id": "nl_0417",
+   "group": "planner_slices",
+   "language": "english",
+   "question": "How many units of each product did we sell?",
+   "previousPlan": null,
+   "expected": {
+    "status": "supported",
+    "plan": {
+     "v": 1,
+     "entity": "sales",
+     "mode": "aggregate",
+     "period": {
+      "kind": "all_time"
+     },
+     "metrics": [
+      "quantity"
+     ],
+     "groupBy": [
+      {
+       "dim": "product"
+      }
+     ],
+     "filters": [],
+     "sort": [
+      {
+       "by": "quantity",
+       "dir": "desc"
+      }
+     ]
+    },
+    "note": "explicit units = quantity"
+   }
   }
  ]
 }

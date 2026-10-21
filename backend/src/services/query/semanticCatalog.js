@@ -201,6 +201,24 @@ const METRICS = {
     description: "invoiceAmount / invoiceCount (0 when there are no invoices).",
     disclosures: [],
   },
+  // Distinct customers. The query engine collects each group's distinct header.partyName values; the executor then counts only the
+  // names that match EXACTLY ONE live ledger of this tenant's Ledger master, and that ledger is a debtor (Sundry Debtors). Cash, bank
+  // and other non-debtor ledgers, names with no ledger and names shared by more than one ledger are never counted, and are disclosed.
+  // A distinct count is not additive, so it is never summed across rows (totals come from their own query) and cannot be grouped by
+  // customer (always 1) or product/productGroup (a product-group roll-up adds rows).
+  customerCount: {
+    id: "customerCount",
+    label: "Customers",
+    entities: ["sales"],
+    grain: "voucher",
+    aggregation: { op: "distinct", path: "header.partyName", ledgerRole: "debtor" },
+    sign: "n/a",
+    amountBasis: null,
+    status: "supported",
+    notGroupableBy: ["customer", "product", "productGroup"],
+    description: "Distinct customers (debtor ledgers) with a Sales invoice; never by customer/product.",
+    disclosures: ["Counts only party names matching exactly one debtor ledger in the synced Ledger master."],
+  },
   purchaseAmount: {
     id: "purchaseAmount",
     label: "Purchase amount",
@@ -459,6 +477,7 @@ const LIMITS = {
   maxCompareGroups: 20000, // a comparison must hold both periods' groups in memory; beyond this it is refused, never silently truncated
   maxGroupItemNames: 5000, // item names a productGroup filter may resolve to
   maxRollupRows: 50000, // per-item rows a product-group roll-up may hold in memory; beyond this it is refused, never silently truncated
+  maxPartyNames: 20000, // distinct party names a customerCount answer may resolve against the Ledger master; beyond this it is refused
 };
 
 // Query complexity score = base + the sum of what the plan uses. A plan whose
@@ -501,6 +520,7 @@ const QUERY_RULES = [
   { code: "metric_not_applicable_to_entity", description: "Every metric/dimension must apply to the plan's entity (see METRICS/DIMENSIONS.entities)." },
   { code: "mixed_metric_grains", description: "Voucher-grain and line-grain metrics cannot share one plan (would double-count invoice totals across lines)." },
   { code: "dimension_not_applicable_to_voucher_metric", description: "Voucher-grain metrics cannot be grouped by product/productGroup: an invoice total cannot be attributed to a product without inventing an allocation." },
+  { code: "distinct_count_not_groupable", description: "A distinct count (customerCount) cannot be grouped by customer, product or productGroup: per row it is 1, or a roll-up would add it across rows." },
   { code: "compare_not_supported_with_date_groupby", description: "compare + groupBy:date is rejected: two different periods share no date buckets." },
   { code: "compare_mode_unsupported_for_period", description: "compare.mode must be supported for the period kind (COMPARISON_SUPPORT)." },
   { code: "derived_ref_requires_compare", description: "having/sort refs ending in .previous/.delta/.deltaPct require `compare`." },
@@ -647,6 +667,13 @@ function metricRefs() {
 // from them; the Phase 1B validator reads THIS, not hand-written rules.
 
 function compatibilityCell(metric, dim) {
+  if ((metric.notGroupableBy || []).includes(dim.id)) {
+    return {
+      status: "invalid",
+      code: "distinct_count_not_groupable",
+      reason: `${metric.label} is a distinct count: it cannot be grouped by ${dim.label.toLowerCase()} (a per-row count would be 1, or would be added across rows).`,
+    };
+  }
   if (!dim.grains.includes(metric.grain)) {
     return {
       status: "invalid",

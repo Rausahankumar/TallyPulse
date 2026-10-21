@@ -136,11 +136,25 @@ const mentionsOrders = (t) => {
 };
 const INVOICE_WORD_RE = /\binvoic\w*/; // invoice, invoices, invoiced: the user's own bridge from "orders" to what TallyPulse holds
 const ORDERS_REASON = "TallyPulse has no order data: its counts and averages are of sales or purchase invoices, not orders. If you mean invoices, ask for the number of invoices or the average invoice value.";
+
+// ---- Distinct counts the catalog has no metric for: suppliers and different products. Only customers can be counted (customerCount).
+// The model otherwise answers them with a nearby number (a purchase-invoice count per supplier, or units sold). Only a counting lead word
+// followed DIRECTLY by the noun (with at most two plain modifiers), so a party or item name in between never triggers it; an invoice question
+// ("how many invoices from suppliers") and an explicit units question ("how many units / pieces") are never refused. A plain "how many items"
+// stays an item count (units), per the product decision.
+const COUNT_LEAD = String.raw`(?:how\s+many|kitne|kitni|number\s+of|no\.?\s+of|count\s+of|total\s+number\s+of)`;
+const COUNT_MODIFIERS = String.raw`(?:(?:purchase|different|unique|distinct|active|total|our|alag)\s+){0,2}`;
+const SUPPLIER_COUNT_RE = new RegExp(String.raw`\b${COUNT_LEAD}\s+${COUNT_MODIFIERS}(?:suppliers?|vendors?|creditors?)\b|\b(?:suppliers?|vendors?)\s+(?:count|ki\s+ginti|ki\s+sankhya)\b`);
+const PRODUCT_COUNT_RE = new RegExp(String.raw`\b${COUNT_LEAD}\s+${COUNT_MODIFIERS}(?:products?|skus?|product\s+types?|types?\s+of\s+(?:products?|items?))\b|\b(?:different|unique|distinct)\s+(?:products?|items?)\b|\bproduct\s+count\b`);
+const EXPLICIT_UNITS_RE = /\b(?:units?|pieces?|quantity|qty|pcs)\b/;
+const SUPPLIER_COUNT_REASON = "TallyPulse cannot count suppliers yet: it counts customers only (sales parties on debtor ledgers). To see each supplier's purchases, ask for purchases by supplier.";
+const PRODUCT_COUNT_REASON = 'TallyPulse cannot count different products yet. For units sold, ask "how many units did we sell"; for each product\'s sales, ask for sales by product.';
 const catalogReason = (id) => ((catalog.CATALOG.unsupported || []).find((u) => u.id === id) || {}).reason || "This cannot be calculated.";
 const CATALOG_METRICS = catalog.CATALOG.metrics;
 
 /**
- * A refusal when the question uses a term the engine cannot calculate (D1-D3) and the model nevertheless produced a plan; else null.
+ * A refusal when the question uses a term the engine cannot calculate (D1-D3, or a supplier / different-product count) and the model
+ * nevertheless produced a plan; else null.
  * @param {string} question the user's question
  * @param {object} plan the plan the model produced (schema-parsed)
  * @param {object|null} [previousPlan] the previous turn's plan, for a follow-up that names no noun of its own
@@ -153,6 +167,8 @@ function uncalculableTermRefusal(question, plan, previousPlan = null) {
   const taxOffOnTotal = !definedRevenue && TAX_OFF_RE.test(t) && (carriesVoucherTotal(plan) || carriesVoucherTotal(previousPlan));
   if (INVOICE_SALES_TERMS.some((re) => re.test(t)) || taxOffOnTotal) return { status: "unsupported", route: "honest_response", source: "term_guard", code: "invoice_sales_unsupported", reason: catalogReason("tax_breakdown") };
   if (mentionsOrders(t) && !INVOICE_WORD_RE.test(t)) return { status: "needs_clarification", route: "honest_response", source: "term_guard", code: "orders_not_invoices", reason: ORDERS_REASON };
+  if (!INVOICE_WORD_RE.test(t) && SUPPLIER_COUNT_RE.test(t)) return { status: "unsupported", route: "honest_response", source: "term_guard", code: "supplier_count_unsupported", reason: SUPPLIER_COUNT_REASON };
+  if (!INVOICE_WORD_RE.test(t) && !EXPLICIT_UNITS_RE.test(t) && PRODUCT_COUNT_RE.test(t)) return { status: "unsupported", route: "honest_response", source: "term_guard", code: "distinct_product_count_unsupported", reason: PRODUCT_COUNT_REASON };
   return null;
 }
 
@@ -200,6 +216,52 @@ function withProductValueMetric(plan) {
 
 const MONTH_FULL_NOTE = { code: "month_vs_complete_previous_month", message: 'This month so far is compared with the complete previous month (the product\'s standard month comparison). Ask for "same period last month" to compare the same days.' };
 
+// "Last year" with no basis named is the previous FINANCIAL year (product decision). The plan's period is the model's; this only makes
+// the assumption a fixed line of the answer whenever the plan is previous_fy and the user wrote "last year" without naming a basis.
+const LAST_YEAR_WORDING = /\b(?:last|previous|prior|pichh?l[ae])\s+(?:year|yr|saal|sal)\b/i;
+const YEAR_BASIS_WORDING = /\b(?:financial|fiscal|fy|calendar)\b/i;
+const LAST_YEAR_FY_NOTE = { code: "last_year_previous_fy", message: '"Last year" is read as the previous financial year (April to March). For a calendar year, ask for it by its dates, for example "sales January to December 2024".' };
+const needsLastYearNote = (plan, text) => plan.period && plan.period.kind === "previous_fy" && LAST_YEAR_WORDING.test(text) && !YEAR_BASIS_WORDING.test(text);
+
+// "Which products did we sell?" ranks products by value (product decision), not by name. When a sales/purchase product breakdown is
+// sorted ONLY by the product name and the user did not ask for name order, the sort becomes the plan's value metric (lineAmount when
+// selected, else its first metric), highest first, and the answer says so. Explicit name order, comparisons and metric sorts are untouched.
+// Product questions default to the sales value (product decision, PROJECT_CONTEXT "decided meanings"): quantity only when the user asks
+// for units, pieces or an item count ("how many <product>", "kitne pieces"). The model sometimes picks quantity for "most sold" wording
+// (Hinglish "sabse zyada bikne wale": live runs 2026-10-19 and 2026-10-21). When a sales/purchase product plan's ONLY metric is quantity
+// and the question has none of those words, the metric (and its sort/having references) becomes lineAmount, and the answer says so.
+// A follow-up whose previous plan already counted units keeps quantity ("only top 5" after a units ranking). A plan with a NON-ZERO
+// threshold on quantity (having quantity gt 50, quantity.delta lt -10) keeps quantity too: the number is a count of units, and renaming
+// the metric would silently turn it into a rupee threshold. A zero threshold (quantity.delta lt 0 = "fell") means the same in units or
+// value (sold / grew / fell at all), so it does not block the switch.
+const PRODUCT_UNIT_WORDS = /\b(?:units?|pieces?|quantity|qty|pcs|how\s+many|kitne)\b/;
+const PRODUCT_VALUE_DEFAULT_NOTE_CODE = "product_value_default_applied";
+const isProductPlan = (plan) => ["sales", "purchase"].includes(plan.entity) && [...(plan.groupBy || []), ...(plan.filters || [])].some((x) => x.dim === "product" || x.dim === "productGroup");
+function withProductValueDefault(plan, text, previousPlan) {
+  if (!plan || plan.mode !== "aggregate" || !isProductPlan(plan) || PRODUCT_UNIT_WORDS.test(normalizeTerms(text))) return null;
+  if (!Array.isArray(plan.metrics) || plan.metrics.length !== 1 || plan.metrics[0] !== "quantity") return null;
+  if (previousPlan && (previousPlan.metrics || []).includes("quantity")) return null;
+  const quantityRef = (ref) => ref === "quantity" || (typeof ref === "string" && ref.startsWith("quantity."));
+  if ((plan.having || []).some((h) => quantityRef(h.metric) && h.value !== 0)) return null;
+  const rename = (ref) => (ref === "quantity" ? "lineAmount" : typeof ref === "string" && ref.startsWith("quantity.") ? `lineAmount${ref.slice("quantity".length)}` : ref);
+  const label = ((CATALOG.metrics || {}).lineAmount || {}).label || "lineAmount";
+  return {
+    plan: { ...plan, metrics: ["lineAmount"], sort: (plan.sort || []).map((s) => ({ ...s, by: rename(s.by) })), having: (plan.having || []).map((h) => ({ ...h, metric: rename(h.metric) })) },
+    note: { code: PRODUCT_VALUE_DEFAULT_NOTE_CODE, message: `Products are measured by sales value (${label}). Ask for units or pieces to see quantities instead.` },
+  };
+}
+
+const NAME_ORDER_WORDING =/\b(?:alphabetic(?:al(?:ly)?)?|a\s*(?:-|to)\s*z|z\s*(?:-|to)\s*a|by\s+(?:product\s+)?names?|name[- ]?wise|naam\s+se)\b/i;
+const PRODUCT_SORT_NOTE_CODE = "product_value_sort_applied";
+function withProductValueSort(plan, text) {
+  if (!plan || plan.mode !== "aggregate" || !["sales", "purchase"].includes(plan.entity) || plan.compare || NAME_ORDER_WORDING.test(text)) return null;
+  if (!Array.isArray(plan.groupBy) || plan.groupBy.length !== 1 || plan.groupBy[0].dim !== "product") return null;
+  if (!Array.isArray(plan.sort) || !plan.sort.length || !plan.sort.every((s) => s.by === "product") || !plan.metrics.length) return null;
+  const by = plan.metrics.includes("lineAmount") ? "lineAmount" : plan.metrics[0];
+  const label = ((CATALOG.metrics || {})[by] || {}).label || by;
+  return { plan: { ...plan, sort: [{ by, dir: "desc" }] }, note: { code: PRODUCT_SORT_NOTE_CODE, message: `Products are ranked by ${label}, highest first. Ask for them "alphabetically" to list them by name.` } };
+}
+
 const { CATALOG } = catalog;
 
 const PLANNER_TOOL_NAME = "submit_query_plan";
@@ -232,9 +294,9 @@ let memo = null;
 // Validator rules (catalog QUERY_RULES) the model cannot infer from the plan schema; their catalog text is sent as written.
 const NLU_RULE_CODES = ["high_cardinality_requires_sort", "list_mode_shape", "dimension_not_applicable_to_voucher_metric"];
 
-// A metric carries its catalog description when it is a summed amount or quantity: that is where the basis (tax-inclusive invoice
-// total vs pre-tax item value) matters. Counts and ratios are self-explanatory from their ids.
-const needsMeaning = (m) => !!(m.aggregation && m.aggregation.op === "sum");
+// A metric carries its catalog description when it is a summed amount or quantity (the basis - tax-inclusive invoice total vs pre-tax
+// item value - matters) or a distinct count (what is counted and how it cannot be grouped). Plain counts and ratios are self-explanatory.
+const needsMeaning = (m) => !!(m.aggregation && (m.aggregation.op === "sum" || m.aggregation.op === "distinct"));
 
 function buildCatalogDigest(cat = CATALOG) {
   const limits = cat.limits;
@@ -257,8 +319,9 @@ function buildCatalogDigest(cat = CATALOG) {
     `Entities: ${Object.values(cat.entities).map((e) => `${e.id} (${e.label}; party dimension: ${e.partyDimension})`).join(", ")}. One entity per plan.`,
     `Metrics [entities; grain] (voucher grain = one value per voucher, line grain = one value per item line):\n${metricLines.join("\n")}`,
     `Dimensions (groupBy, max ${limits.maxGroupBy}): ${dimLines.join("; ")}.`,
-    `Rules: never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare. Mode "list" returns individual invoices. ${rules.join(" ")}`,
-    `Period kinds: ${cat.periods.kinds.filter((k) => k !== "ytd").join(", ")}; custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. compare modes: ${cat.compare.modes.join(", ")} (custom needs a period). all_time cannot be compared. Financial year is April-March.`,
+    `Rules: never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare. Mode "list" returns individual invoices. ${rules.join(" ")} "Which products did we sell": sort by the value metric, desc; by name only if asked.`,
+    // The period kinds and compare modes are enums of the tool schema itself, so they are not listed again here; ytd stays unused.
+    'Period kinds: use the schema values, never ytd. custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25; custom compare needs a period. all_time cannot be compared. Financial year is April-March; "last year" alone = previous_fy.',
     "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + limits.maxLimit + ".",
     "Growth/decline between two periods (grew, increased, dropped, fell, vs): period = the LATER period, compare = custom EARLIER period, groupBy only the dimension asked, never a date groupBy, sort by metric.delta (desc most growth, asc biggest decline). For ALL items meeting a condition (customers above an amount) use having with limit " + limits.maxLimit + ".",
     '"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount (never invoiceAmount, invoiceCount or averageInvoiceValue). If a revenue question needs purchases or an invoice-level metric, decline.',
@@ -609,6 +672,27 @@ async function planQuestionCore(question, options = {}) {
       if (!validation.ok) return failed("planner_invalid_plan", "The plan was not valid after applying the month comparison rule.", usage);
       definitionNotes.push(MONTH_FULL_NOTE);
     }
+    const valueDefault = withProductValueDefault(plan, text, previous && previous.plan);
+    if (valueDefault) {
+      const checked = validateQueryPlan(valueDefault.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
+      const reparsed = checked.ok ? parseQueryPlan(valueDefault.plan) : null;
+      if (reparsed && reparsed.ok) {
+        plan = JSON.parse(JSON.stringify(reparsed.plan));
+        validation = checked;
+        definitionNotes.push(valueDefault.note);
+      }
+    }
+    const valueSort = withProductValueSort(plan, text);
+    if (valueSort) {
+      const sorted = validateQueryPlan(valueSort.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
+      const reparsed = sorted.ok ? parseQueryPlan(valueSort.plan) : null;
+      if (reparsed && reparsed.ok) {
+        plan = JSON.parse(JSON.stringify(reparsed.plan));
+        validation = sorted;
+        definitionNotes.push(valueSort.note);
+      }
+    }
+    if (needsLastYearNote(plan, text)) definitionNotes.push(LAST_YEAR_FY_NOTE);
 
     const plannerAssumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);
     return {
@@ -692,4 +776,5 @@ module.exports = {
   PLANNER_DEADLINE_MS,
   DECLINE_CODES,
   REVENUE_ASSUMPTION,
+  PRODUCT_UNIT_WORDS,
 };

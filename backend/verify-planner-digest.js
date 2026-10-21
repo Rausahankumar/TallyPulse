@@ -50,6 +50,62 @@ for (const [id, info] of Object.entries(metricInfo)) {
 }
 const overall = (entity) => (overallByEntity[entity] || [])[0];
 
+// Digest sections, recognised by how their line starts; metric lines belong to "metrics". Budgets are chars incl. the line break.
+const SECTION_PREFIXES = [
+  ["intro", "You translate "], ["entities", "Entities: "], ["metrics", "Metrics ["], ["dimensions", "Dimensions "], ["rules", "Rules: "],
+  ["periods", "Period kinds: "], ["refs", "having/sort "], ["growth", "Growth/decline "], ["revenue", '"Revenue" '], ["returns", "Returns: "],
+  ["names", "Copy "], ["decline", "If the question "],
+];
+// rules +100 (the product order clause) and periods -200 (the kind/mode lists moved to the schema enums) in the Slice 2 rebalance;
+// metrics +110 for the customerCount line (Slice 3).
+const SECTION_BUDGETS = { intro: 200, entities: 300, metrics: 1560, dimensions: 400, rules: 600, periods: 300, refs: 150, growth: 350, revenue: 250, returns: 400, names: 200, decline: 550 };
+
+// Every enum/const string in the tool schema's period and compare branches, as "period:<v>" / "compare:<v>".
+function enumValues(node, out = new Set()) {
+  if (Array.isArray(node)) node.forEach((x) => enumValues(x, out));
+  else if (node && typeof node === "object") {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "enum" && Array.isArray(v)) v.forEach((x) => typeof x === "string" && out.add(x));
+      else if (k === "const" && typeof v === "string") out.add(v);
+      else enumValues(v, out);
+    }
+  }
+  return out;
+}
+const kindValues = (planSchema) => enumValues(planSchema.properties.period.anyOf || planSchema.properties.period.oneOf || planSchema.properties.period);
+// The compare branch also carries a custom period; only its "mode" values count.
+const modeValues = (planSchema) => {
+  const out = new Set();
+  const walk = (n) => {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!n || typeof n !== "object") return;
+    if (n.properties && n.properties.mode) enumValues(n.properties.mode, out);
+    for (const [k, v] of Object.entries(n)) if (k !== "properties") walk(v);
+  };
+  walk(planSchema.properties.compare);
+  return out;
+};
+const wantedEnumValues = () => [...CATALOG.periods.kinds.map((k) => `period:${k}`), ...CATALOG.compare.modes.map((m) => `compare:${m}`)];
+const actualEnumValues = (planSchema) => [...[...kindValues(planSchema)].map((k) => `period:${k}`), ...[...modeValues(planSchema)].map((m) => `compare:${m}`)];
+const missingEnumValues = (planSchema) => wantedEnumValues().filter((v) => !actualEnumValues(planSchema).includes(v));
+const extraEnumValues = (planSchema) => actualEnumValues(planSchema).filter((v) => !wantedEnumValues().includes(v));
+function dropEnumValue(node, value) {
+  if (Array.isArray(node)) return node.forEach((x) => dropEnumValue(x, value));
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node.enum)) node.enum = node.enum.filter((x) => x !== value);
+  if (node.const === value) delete node.const;
+  for (const v of Object.values(node)) dropEnumValue(v, value);
+}
+function sectionSizes(digest) {
+  const out = {};
+  for (const l of digest.split("\n")) {
+    const hit = SECTION_PREFIXES.find(([, p]) => l.startsWith(p));
+    const id = hit ? hit[0] : /^\w+ \[[\w/]+; (voucher|line)\]/.test(l) ? "metrics" : "unbudgeted";
+    out[id] = (out[id] || 0) + l.length + 1;
+  }
+  return out;
+}
+
 (async () => {
   // ------------------------------------------------------------------------------------------ A. generated from the catalog
   section("A. the digest is generated from the catalog (single source of truth)");
@@ -58,7 +114,9 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   check("every supported metric is listed with its scope and grain, exactly as the catalog says", supported.every((m) => metricInfo[m.id] && metricInfo[m.id].grain === m.grain && metricInfo[m.id].entities.join("/") === m.entities.join("/")) && Object.keys(metricInfo).length === supported.length, Object.keys(metricInfo).join(","));
   const sums = supported.filter((m) => m.aggregation && m.aggregation.op === "sum");
   check("every summed amount/quantity carries the catalog's OWN description, word for word", sums.length >= 7 && sums.every((m) => metricInfo[m.id].meaning === m.description), sums.map((m) => m.id).join(","));
-  check("counts and ratios are listed by id and scope only (self-explanatory, saves tokens)", supported.filter((m) => !sums.includes(m)).every((m) => metricInfo[m.id].meaning === null));
+  const distincts = supported.filter((m) => m.aggregation && m.aggregation.op === "distinct");
+  check("plain counts and ratios are listed by id and scope only (self-explanatory, saves tokens)", supported.filter((m) => !sums.includes(m) && !distincts.includes(m)).every((m) => metricInfo[m.id].meaning === null));
+  check("a distinct count (customerCount) carries the catalog's OWN description: debtor ledgers, never grouped by customer/product", distincts.length === 1 && distincts[0].id === "customerCount" && metricInfo.customerCount.meaning === distincts[0].description && /debtor ledgers/.test(distincts[0].description) && /never by customer\/product/.test(distincts[0].description));
   check("each summed metric's description states its basis (tax-inclusive voucher total vs pre-tax item value), so the digest can rely on it", sums.filter((m) => m.amountBasis === CATALOG.amountBasis.VOUCHER_TOTAL_INCL_TAX).every((m) => /tax-inclusive/.test(m.description)) && sums.filter((m) => m.amountBasis === CATALOG.amountBasis.LINE_ITEM_PRE_TAX).every((m) => /pre-tax/i.test(m.description)));
   check("entities are described with the catalog's labels (so 'credit note' / 'debit note' vocabulary reaches the model)", lines.some((l) => l.startsWith("Entities:") && /sales_return \(Sales returns \(Credit Notes\)/.test(l) && /purchase_return \(Purchase returns \(Debit Notes\)/.test(l)));
   check("for each entity the prompt describes exactly ONE voucher-grain metric as tax-inclusive, and it is the overall amount: sales=invoiceAmount, purchase=purchaseAmount, returns=returnAmount", Object.keys(CATALOG.entities).every((e) => (overallByEntity[e] || []).length === 1) && overall("sales") === "invoiceAmount" && overall("purchase") === "purchaseAmount" && overall("sales_return") === "returnAmount" && overall("purchase_return") === "returnAmount", JSON.stringify(overallByEntity));
@@ -85,7 +143,18 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   const wire = JSON.stringify({ system: prompt.system, tools: [prompt.tool], messages: [{ role: "user", content: "show sales last month" }], max_tokens: PLANNER_MAX_TOKENS });
   check("no storage path in the whole request either (system + tool schema)", !INTERNAL.test(wire), (wire.match(INTERNAL) || [])[0]);
   check("catalog texts that reach the model carry no developer wording", sums.every((m) => !/see docs|existing analytics|matching/i.test(m.description)));
-  check("the date rule is intact: no reference date, YYYY-MM-DD documented, ytd hidden, every other period kind and compare mode listed", !/20\d\d-\d\d-\d\d|reference date|today is/i.test(text) && /YYYY-MM-DD/.test(text) && !/\bytd\b/.test(text) && CATALOG.periods.kinds.filter((k) => k !== "ytd").every((k) => text.includes(k)) && CATALOG.compare.modes.every((m) => text.includes(m)));
+  // Period kinds and compare modes reach the model as enums of the tool schema; the digest only points there (no second list) and keeps ytd unused.
+  check("the date rule is intact: no reference date, YYYY-MM-DD documented, the schema values are named as the source, ytd ruled out", !/20\d\d-\d\d-\d\d|reference date|today is/i.test(text) && /YYYY-MM-DD/.test(text) && /use the schema values, never ytd\./.test(text));
+  const planSchema = prompt.tool.input_schema.properties.plan;
+  check("the tool schema carries EVERY catalog period kind and compare mode as an enum/const value (nothing missing, nothing extra)", missingEnumValues(planSchema).length === 0 && extraEnumValues(planSchema).length === 0, JSON.stringify({ missing: missingEnumValues(planSchema), extra: extraEnumValues(planSchema) }));
+  check("the digest no longer repeats the period-kind or compare-mode lists", !["last_7_days", "same_month_last_year", "previous_quarter", "full_previous", "same_period_last_year"].some((v) => text.includes(v)));
+  for (const [where, value] of [["period", "previous_fy"], ["period", "custom"], ["compare", "like_for_like"], ["compare", "custom"]]) {
+    const broken = JSON.parse(JSON.stringify(planSchema));
+    dropEnumValue(broken.properties[where], value);
+    check(`negative: a schema without the ${where} value "${value}" is reported missing`, missingEnumValues(broken).includes(`${where}:${value}`), JSON.stringify(missingEnumValues(broken)));
+  }
+  check('the "last year" rule is stated: alone it means the previous financial year', /Financial year is April-March; "last year" alone = previous_fy\./.test(text));
+  check('the product order rule is stated: "which products did we sell" sorts by value, by name only if asked', /"Which products did we sell": sort by the value metric, desc; by name only if asked\./.test(text));
   check("the revenue rule is unchanged", /"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount \(never invoiceAmount, invoiceCount or averageInvoiceValue\)\. If a revenue question needs purchases or an invoice-level metric, decline\./.test(text));
 
   // ------------------------------------------------------------------------------------------ C. rules and declines
@@ -133,11 +202,24 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   check("product purchases have a line-value metric: lineAmount covers purchase (sign-flipped) while purchaseAmount is invoice-level and cannot be grouped by product", CATALOG.metrics.lineAmount.entities.includes("purchase") && CATALOG.metrics.lineAmount.aggregation.entitySign.purchase === -1 && CATALOG.metrics.purchaseAmount.grain === "voucher");
   const PRODUCT_UNIT_WORDS = /\b(units?|pieces?|quantity|qty|how many|kitne)\b/i; // applied to product questions only
   const isProductQuestion = (p) => !!p && ["sales", "purchase"].includes(p.entity) && [...(p.groupBy || []), ...(p.filters || [])].some((x) => x.dim === "product" || x.dim === "productGroup");
-  const productRows = scoring.corpus.rows.filter((r) => !r.previousPlan && isProductQuestion(r.expected.plan));
+  // "How many CUSTOMERS bought <product>" counts customers (customerCount + a product filter): its "how many" is about customers, not
+  // product units, so it is checked separately below instead of by the units rule.
+  const CUSTOMER_COUNT_WORDS = /\b(?:how many|kitne)\s+(?:unique\s+|distinct\s+)?customers?\b/i;
+  const countsCustomers = (r) => r.expected.plan.metrics.includes("customerCount") && CUSTOMER_COUNT_WORDS.test(r.question);
+  const productRows = scoring.corpus.rows.filter((r) => !r.previousPlan && isProductQuestion(r.expected.plan) && !countsCustomers(r));
   const unitMismatch = productRows.filter((r) => PRODUCT_UNIT_WORDS.test(r.question) !== r.expected.plan.metrics.includes("quantity"));
   check(`product questions: all ${productRows.length} corpus plans use quantity exactly when the question asks for product units, otherwise the value metric`, productRows.length >= 40 && unitMismatch.length === 0, unitMismatch.map((r) => `${r.id} ${JSON.stringify(r.expected.plan.metrics)}`).join(", "));
+  const customerProductRows = scoring.corpus.rows.filter((r) => !r.previousPlan && isProductQuestion(r.expected.plan) && countsCustomers(r));
+  check(`'how many customers bought <product>': all ${customerProductRows.length} corpus plans count customers (customerCount with a product filter), never quantity`, customerProductRows.length >= 1 && customerProductRows.every((r) => JSON.stringify(r.expected.plan.metrics) === JSON.stringify(["customerCount"]) && r.expected.plan.filters.some((f) => f.dim === "product")), customerProductRows.map((r) => r.id).join(","));
+  check("negative: the customer-count exclusion never applies to a units question", !CUSTOMER_COUNT_WORDS.test("how many units of Steel Bolt 10mm did we sell last month") && !CUSTOMER_COUNT_WORDS.test("LED Bulb 9W kitne pieces bike August 2025 mein?") && CUSTOMER_COUNT_WORDS.test("How many customers purchased LED Bulb 9W in September 2025?"));
   const triggerCases = [["LED Bulb 9W kitne pieces bike August 2025 mein?", true], ["how many units of Steel Bolt 10mm did we sell last month", true], ["top 10 products by quantity sold in August 2025", true], ["best selling products last month", false], ["sabse zyada bikne wale 5 items last month", false], ["Steel Bolt 10mm kitna bika September 2025 mein?", false], ["Least purchased product in August 2025", false], ["sabse kam bikne wala product", false], ["kitne pieces kharide Steel Bolt 10mm ke", true]];
   check("product-unit trigger words: Hinglish 'kitne pieces', 'units' and 'quantity' ask for units; 'best selling', 'sabse zyada bikne wale' and 'kitna bika' ask for value", triggerCases.every(([q, units]) => PRODUCT_UNIT_WORDS.test(q) === units), triggerCases.filter(([q, units]) => PRODUCT_UNIT_WORDS.test(q) !== units).map(([q]) => q).join(" | "));
+  // The planner's value-default repair uses its own copy of these words: it must classify every trigger case and every corpus product
+  // question exactly as this rule does, so the repair and the corpus expectations can never drift apart.
+  const plannerUnits = require("./src/services/query/planner").PRODUCT_UNIT_WORDS;
+  const unitText = (q) => q.toLowerCase().replace(/\s+/g, " ");
+  const drift = [...triggerCases.map(([q]) => q), ...productRows.map((r) => r.question)].filter((q) => plannerUnits.test(unitText(q)) !== PRODUCT_UNIT_WORDS.test(q));
+  check(`the planner's units words (value-default repair) agree with this rule on all ${triggerCases.length} trigger cases and ${productRows.length} corpus product questions`, plannerUnits instanceof RegExp && drift.length === 0, drift.join(" | "));
   const pinned = (id) => scoring.corpus.rows.find((r) => r.id === id).expected.plan;
   const rankedBy = (id, metric, dir) => { const p = pinned(id); return p.metrics.includes(metric) && p.sort && p.sort[0] && p.sort[0].by === metric && p.sort[0].dir === dir && (p.groupBy || []).some((g) => g.dim === "product"); };
   check("best-selling products (nl_0100) and the Hinglish most-sold items (nl_0107) are expected to rank by lineAmount, highest first, grouped by product", rankedBy("nl_0100", "lineAmount", "desc") && rankedBy("nl_0107", "lineAmount", "desc"));
@@ -148,8 +230,10 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   check("least purchased product (nl_0080) is expected as entity purchase, lineAmount, lowest first, grouped by product (never the invoice-level purchaseAmount)", rankedBy("nl_0080", "lineAmount", "asc") && pinned("nl_0080").entity === "purchase" && !pinned("nl_0080").metrics.includes("purchaseAmount"));
   const nonProductCounts = [["nl_0017", "invoiceCount"], ["nl_0019", "invoiceCount"], ["nl_0031", "purchaseInvoiceCount"]];
   check("non-product counting: 'how many invoices' (nl_0017), 'kitne invoice' (nl_0019) and purchase invoices (nl_0031) keep their invoice-count metrics, never quantity", nonProductCounts.every(([id, m]) => { const e = expectOf(id); return e.status === "supported" && e.plan.metrics.length === 1 && e.plan.metrics[0] === m && !isProductQuestion(e.plan); }));
-  const refusedCounts = [["nl_0343", "decline"], ["nl_0348", "decline"], ["nl_0385", "clarify"], ["nl_0388", "clarify"], ["nl_0397", "clarify"]];
-  check("non-product counting: customers / distinct products are declined and order counts ask for clarification (nl_0343, nl_0348, nl_0385, nl_0388, nl_0397); none expects quantity", refusedCounts.every(([id, status]) => { const e = expectOf(id); return e.status === status && !e.plan; }));
+  const refusedCounts = [["nl_0348", "decline"], ["nl_0385", "clarify"], ["nl_0388", "clarify"], ["nl_0397", "clarify"]];
+  check("non-product counting: distinct products are declined and order counts ask for clarification (nl_0348, nl_0385, nl_0388, nl_0397); none expects quantity", refusedCounts.every(([id, status]) => { const e = expectOf(id); return e.status === status && !e.plan; }));
+  const customers = expectOf("nl_0343");
+  check("'how many customers' (nl_0343) expects the debtor-ledger customerCount, never quantity or an invoice count", customers.status === "supported" && JSON.stringify(customers.plan.metrics) === JSON.stringify(["customerCount"]) && customers.plan.entity === "sales" && !customers.plan.groupBy.length);
   const rets = rows("returns");
   check(`return questions: all ${rets.length} corpus plans use a return entity and a return metric the prompt offers (returns are supported, not declined)`, rets.length === 7 && rets.every((r) => /_return$/.test(r.expected.plan.entity) && r.expected.plan.metrics.every((m) => metricInfo[m] && metricInfo[m].entities.includes(r.expected.plan.entity))) && rets.filter((r) => r.expected.plan.metrics.includes("returnAmount")).every((r) => r.expected.plan.metrics.every((m) => m === overall(r.expected.plan.entity))));
 
@@ -202,6 +286,20 @@ const overall = (entity) => (overallByEntity[entity] || [])[0];
   check(`system prompt ${text.length} chars (was ${OLD_SYSTEM_CHARS}; +${text.length - OLD_SYSTEM_CHARS}), under 5,000`, text.length < 5000);
   check(`whole request ${wire.length} chars (about ${Math.ceil(wire.length / 4)} tokens at 4 chars/token), under 12,000 chars`, wire.length < 12000);
   console.log(`  (info) catalog digest: ${text.length} chars, about ${Math.round(text.length / 3)} tokens at 3.0 chars/token (was ${OLD_SYSTEM_CHARS} chars, about ${Math.round(OLD_SYSTEM_CHARS / 3)}); whole request about ${Math.ceil(wire.length / 4)} tokens at 4 chars/token`);
+
+  // Per-section budgets (chars incl. the line break), so growth is a visible, deliberate decision per section and a new section
+  // cannot be added without a budget. The 5,000 total above is this test's own budget, not a provider limit; it still applies.
+  const sizes = sectionSizes(text);
+  const over = Object.entries(sizes).filter(([id, n]) => !(id in SECTION_BUDGETS) || n > SECTION_BUDGETS[id]);
+  check("every digest section has an explicit budget and stays within it", over.length === 0, over.map(([id, n]) => `${id} ${n}/${SECTION_BUDGETS[id] ?? "no budget"}`).join(", "));
+  check("every budgeted section is present in the digest (no stale budgets)", Object.keys(SECTION_BUDGETS).every((id) => sizes[id] > 0), Object.keys(SECTION_BUDGETS).filter((id) => !sizes[id]).join(","));
+  const bigCat = clone();
+  bigCat.metrics.lineAmount.description += " x".repeat(150);
+  const bigSizes = sectionSizes(buildCatalogDigest(bigCat));
+  check("negative: a 300-char longer metric description puts the metrics section over its budget", bigSizes.metrics > SECTION_BUDGETS.metrics, `${bigSizes.metrics}/${SECTION_BUDGETS.metrics}`);
+  const extra = sectionSizes(`${text}\nPlanning rules: a new section.`);
+  check("negative: a new unbudgeted section is reported as unbudgeted", extra.unbudgeted > 0 && !("unbudgeted" in SECTION_BUDGETS), JSON.stringify(extra.unbudgeted));
+  console.log(`  (info) section sizes: ${Object.entries(sizes).map(([id, n]) => `${id} ${n}/${SECTION_BUDGETS[id] ?? "-"}`).join(", ")}`);
 
   console.log(`\nverify-planner-digest: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
