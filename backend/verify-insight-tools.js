@@ -44,9 +44,12 @@ const TA = "TEST-TENANT-A-insight-tools";
 const TB = "TEST-TENANT-B-insight-tools";
 let n = 0;
 const V = (kind, tenant, date, party, lines) => ({ kind, tenant, date, party, lines });
-// A line: [item, quantity, rate, amount as Tally stores it (purchase amounts negative)]
+// A line: [item, quantity, rate, amount as Tally stores it (purchase amounts negative), discount % Tally states]. Stored as the sync
+// stores it: the parser's own verified discount amount (deriveDiscountAmount).
+const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
+const storedLine = ([itemName, quantity, rate, amount, pct = 0]) => ({ itemName, quantity, rate, amount, discountPercentage: pct, discountAmount: deriveDiscountAmount(pct, { quantity, rate, amount }) });
 const VOUCHERS = [
-  V("sale", TA, "2025-08-03", "Cust One", [["Item Alpha", 100, 20, 1800], ["Item Beta", 10, 100, 1000]]),
+  V("sale", TA, "2025-08-03", "Cust One", [["Item Alpha", 100, 20, 1800, 10], ["Item Beta", 10, 100, 1000]]), // Tally states the 10% discount
   V("sale", TA, "2025-08-18", "Cust Two", [["Item Alpha", 50, 20, 1000]]),
   V("sale", TA, "2025-09-04", "Cust One", [["Item Alpha", 20, 21, 420]]),
   V("sale", TB, "2025-08-05", "Cust B", [["Item Alpha", 7, 100, 700], ["Item Only B", 1, 10, 10]]),
@@ -73,7 +76,7 @@ async function main() {
       await Model.create({
         tenantId: v.tenant,
         header: { voucherNo: `IT-${n}`, voucherDate: new Date(`${v.date}T00:00:00Z`), voucherType: v.kind === "sale" ? "Invoice" : "Purchase", partyName: v.party, voucherTotalAmount: 1, narration: "" },
-        inventory: v.lines.map(([itemName, quantity, rate, amount]) => ({ itemName, quantity, rate, amount })),
+        inventory: v.lines.map(storedLine),
         ledgers: [],
         tallyGuid: `it-${v.tenant}-${n}`,
         tallyAlterId: n,
@@ -86,7 +89,7 @@ async function main() {
     check("list-ids", "five tools with stable ids", list.map((t) => t.id), ["discount_summary", "product_rates", "product_margin", "product_trend", "supplier_rates"]);
     check("list-ready", "readiness is explicit for every tool", list.map((t) => typeof t.ready), Array(5).fill("boolean"));
     check("list-margin-indicative", "the margin tool states it is indicative, not accounting profit", list.find((t) => t.id === "product_margin").limitations.some((l) => /not accounting profit/.test(l)), true);
-    check("list-descriptions", "the discount tool states its pre-tax list-minus-billed basis; the margin tool says it is not accounting profit", [list.find((t) => t.id === "discount_summary").description, list.find((t) => t.id === "product_margin").description], ["Discount given (sales) or received (purchases) in a period: list value (quantity × rate) minus the billed line amount, by customer/supplier, product or month. Pre-tax item values.", "Indicative margin per product sold in a period: average sale rate minus average purchase cost per unit. Not accounting profit."]);
+    check("list-descriptions", "the discount tool states its pre-tax list-minus-billed basis; the margin tool says it is not accounting profit", [list.find((t) => t.id === "discount_summary").description, list.find((t) => t.id === "product_margin").description], ["Discount given (sales) or received (purchases) in a period: the discount Tally records per item line (list value of the billed quantity minus the billed amount), by customer/supplier, product or month. Free goods are shown apart. Pre-tax item values.", "Indicative margin per product sold in a period: average sale rate minus average purchase cost per billed unit. sortBy marginPct ranks by margin %, profit by indicative rupees, unit margin × quantity. Not accounting profit."]);
     check("list-no-cause", "the discount, rates and margin tools state that figures alone do not explain a sales change", ["discount_summary", "product_rates", "product_margin"].every((id) => list.find((t) => t.id === id).limitations.some((l) => /do not explain a change in sales/.test(l))), true);
     const P = { period: { kind: "current_month" } };
     check("voucher-types", "every tool declares the vouchers it reads (the freshness gate's source)", [tools.insightToolVoucherTypes("discount_summary", P), tools.insightToolVoucherTypes("discount_summary", { ...P, entity: "purchase" }), tools.insightToolVoucherTypes("product_rates", P), tools.insightToolVoucherTypes("product_margin", P), tools.insightToolVoucherTypes("product_trend", { ...P, product: "x" }), tools.insightToolVoucherTypes("supplier_rates", { ...P, product: "x" })], [["Sales"], ["Purchase"], ["Sales", "Purchase"], ["Sales", "Purchase"], ["Sales", "Purchase"], ["Purchase"]]);

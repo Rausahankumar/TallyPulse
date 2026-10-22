@@ -50,7 +50,7 @@ const VOUCHERS = [
   [TA, "2025-09-12", "Gamma Mart", [["Item P2", 5, 100, 500]]],
   [TA, "2025-09-20", "Delta Corp", [["Item P3", 2, 100, 200]]],
   [TA, "2025-10-03", "Alpha Traders", [["Item P1", 1, 100, 100], ["Item P2", 3, 100, 300]]],
-  [TA, "2025-10-09", "Beta Stores", [["Item P1", 10, 80, 700]]], // list 800, billed 700: a 100 discount
+  [TA, "2025-10-09", "Beta Stores", [["Item P1", 10, 80, 700, 12.5]]], // list 800, billed 700: Tally states 12.5%, a 100 discount
   [TA, "2025-10-15", "Gamma Mart", [["Item P2", 6, 100, 600]]],
   // Delta Corp buys nothing in October
   [TB, "2025-10-04", "Alpha Traders", [["Item P9", 1, 99999, 99999]]], // another tenant, same customer name
@@ -61,6 +61,9 @@ const cleanup = async () => {
   await Promise.all([Sale.deleteMany({ tenantId: ids }), TenantDataVersion.deleteMany({ tenantId: ids })]);
 };
 
+// Stored as the sync stores a line [item, quantity, rate, amount, discount % Tally states]: with the parser's own verified discount.
+const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
+const storedLine = ([itemName, quantity, rate, amount, pct = 0]) => ({ itemName, quantity, rate, amount, discountPercentage: pct, discountAmount: deriveDiscountAmount(pct, { quantity, rate, amount }) });
 const OCT = { kind: "custom", from: "2025-10-01", to: "2025-10-31" };
 const VS_SEP = { mode: "custom", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" } };
 const q = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: OCT, metrics: ["invoiceAmount"], groupBy: [], filters: [], ...o });
@@ -90,7 +93,7 @@ async function main() {
       await Sale.create({
         tenantId,
         header: { voucherNo: `AP-${n}`, voucherDate: new Date(`${date}T00:00:00Z`), voucherType: "Invoice", partyName: party, voucherTotalAmount: lines.reduce((s, l) => s + l[3], 0), narration: "" },
-        inventory: lines.map(([itemName, quantity, rate, amount]) => ({ itemName, quantity, rate, amount })),
+        inventory: lines.map(storedLine),
         ledgers: [],
         tallyGuid: `ap-${tenantId}-${n}`,
         tallyAlterId: n,

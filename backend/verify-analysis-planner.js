@@ -50,6 +50,9 @@ const TA = "TEST-TENANT-A-analysis-planner";
 const TB = "TEST-TENANT-B-analysis-planner";
 const TC = "TEST-TENANT-C-analysis-planner";
 const REF = new Date(2025, 10, 5, 23, 59, 59, 999);
+// Stored as the sync stores a line [item, quantity, rate, amount, discount % Tally states]: with the parser's own verified discount.
+const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
+const storedLine = ([itemName, quantity, rate, amount, pct = 0]) => ({ itemName, quantity, rate, amount, discountPercentage: pct, discountAmount: deriveDiscountAmount(pct, { quantity, rate, amount }) });
 const OCT = { kind: "custom", from: "2025-10-01", to: "2025-10-31" };
 const VS_SEP = { mode: "custom", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" } };
 const q = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: OCT, metrics: ["invoiceAmount"], groupBy: [], filters: [], ...o });
@@ -99,15 +102,15 @@ const VOUCHERS = [
   ["sale", TA, "2025-09-12", "Gamma Mart", [["Item P2", 5, 100, 500]]],
   ["sale", TA, "2025-09-20", "Delta Corp", [["Item P3", 2, 100, 200]]],
   ["sale", TA, "2025-10-03", "Alpha Traders", [["Item P1", 1, 100, 100], ["Item P2", 3, 100, 300]]],
-  ["sale", TA, "2025-10-09", "Beta Stores", [["Item P1", 10, 80, 700]]],
+  ["sale", TA, "2025-10-09", "Beta Stores", [["Item P1", 10, 80, 700, 12.5]]], // Tally states 12.5%: a 100 discount
   ["sale", TA, "2025-10-15", "Gamma Mart", [["Item P2", 6, 100, 600]]],
   ["purchase", TA, "2025-09-02", "Sup One", [["Item P1", 10, 55, -550]]],
   ["purchase", TA, "2025-10-02", "Sup One", [["Item P1", 20, 60, -1200]]],
   ["sale", TB, "2025-10-04", "Alpha Traders", [["Item P9", 1, 99999, 99999]]],
   ["sale", TB, "2025-09-04", "Alpha Traders", [["Item P9", 1, 1, 1]]],
   // Tenant C: discount and margin data with one case for each conditional note (see section 7)
-  ["sale", TC, "2025-10-06", "Cust X", [["Item M1", 10, 100, 900], ["Item NoRate", 2, 0, 50], ["Item Odd", 100, 100, 100], ["Item M2", 5, 40, 200]]],
-  ["sale", TC, "2025-10-20", "Cust Y", [["Item M1", 1, 100, 10]]],
+  ["sale", TC, "2025-10-06", "Cust X", [["Item M1", 10, 100, 900, 10], ["Item NoRate", 2, 0, 50], ["Item Odd", 100, 100, 100], ["Item M2", 5, 40, 200]]], // Odd: 100 billed on 10,000 with no discount in Tally
+  ["sale", TC, "2025-10-20", "Cust Y", [["Item M1", 1, 100, 10, 90]]], // Tally states 90%
   ["purchase", TC, "2025-10-02", "Sup Z", [["Item M1", 20, 50, -1000]]],
   ["purchase", TC, "2025-03-10", "Sup Z", [["Item M2", 10, 30, -300]]], // within the 12 months before October: M2's earlier cost
 ];
@@ -228,7 +231,7 @@ async function main() {
       await (kind === "sale" ? Sale : Purchase).create({
         tenantId,
         header: { voucherNo: `APL-${n}`, voucherDate: new Date(`${date}T00:00:00Z`), voucherType: kind === "sale" ? "Invoice" : "Purchase", partyName: party, voucherTotalAmount: Math.abs(lines.reduce((s, l) => s + l[3], 0)), narration: "" },
-        inventory: lines.map(([itemName, quantity, rate, amount]) => ({ itemName, quantity, rate, amount })),
+        inventory: lines.map(storedLine),
         ledgers: [],
         tallyGuid: `apl-${tenantId}-${n}`,
         tallyAlterId: n,
@@ -294,21 +297,21 @@ async function main() {
     const A = out.structured.answer;
     check("dm-ran", "both insight steps answer", out.structured.details.queryEngine.steps, ["ok", "ok"]);
     check("dm-discount-heading", "the discount heading states the basis: list value minus billed amount, before tax", A.includes("Discount = list value − billed amount (before tax), 2025-10-01 to 2025-10-31:"), true);
-    check("dm-discount-total", "the discount total is the tool's own figure: 100 + 90 = 190 on a list value of 1,300 (14.62%), billed 1,110", A.includes("Total: discount 190 on a list value of 1,300 (14.62%), billed 1,110."), true);
+    check("dm-discount-total", "the discount total is the tool's own figure: 100 + 90 = 190 on a list value of billed 1,210 + 190 = 1,400 (13.57%)", A.includes("Total: discount 190 on a list value of 1,400 (13.57%), billed 1,210."), true);
     check("dm-discount-note", "the existing DISCOUNT_NOTE is shown verbatim", A.includes(insights.DISCOUNT_NOTE), true);
     check("dm-discount-norate", "1 line without a rate -> its note (and only because the data has one)", A.includes("1 item line has no rate or quantity and is not in the discount figures."), true);
-    check("dm-discount-excluded", "1 line billed below 5% of list value -> its note", A.includes("1 item line was billed below 5% of list value (and not free) and left out: more likely a different unit than a discount."), true);
+    check("dm-discount-excluded", "1 line billed far below quantity x rate with no discount in Tally (10,000 vs 100) -> disclosed, never a 9,900 discount", [A.includes("1 item line is billed ₹9,900 below quantity × rate with no discount recorded in Tally"), A.includes("discount 9,9")], [true, false]);
     check("dm-margin-heading", "the margin heading says indicative and not accounting profit", A.includes("Indicative margin per product (not accounting profit), 2025-10-01 to 2025-10-31:"), true);
     check("dm-margin-note", "the existing MARGIN_NOTE is shown verbatim", A.includes(insights.MARGIN_NOTE), true);
     check("dm-margin-labels", "row labels say indicative", [A.includes("Indicative unit margin: 32.73"), A.includes("Indicative margin %")], [true, true]);
-    check("dm-margin-nocost", "2 of 4 products have no purchase cost (Item NoRate, Item Odd) -> its note", A.includes("2 of 4 products have no purchase cost in the period or the 12 months before: they have no margin and are listed last."), true);
+    check("dm-margin-nocost", "1 of 3 products has no purchase cost (Item NoRate); Item Odd's billed quantity is unknown, so it is left out and disclosed", [A.includes("1 of 3 products have no purchase cost in the period or the 12 months before: they have no margin and are listed last."), A.includes("1 sale line (₹100) is billed below quantity × rate with no discount recorded in Tally")], [true, true]);
     check("dm-margin-earlier", "Item M2's cost comes from March 2025 -> the 12-months-before note", A.includes("For 1 product shown, the cost is the average purchase rate of the 12 months before the period (nothing was bought in it)."), true);
     check("dm-margin-unit", "Item M1 was sold at 90 and at 10 per unit (more than 5x) -> the unit-of-measure note", A.includes("1 product shown has line rates that differ by more than 5×: the unit of measure may differ between vouchers."), true);
     check("dm-not-a-cause", "both steps state that the figures alone do not explain a change in sales", (A.match(/on their own they do not explain a change in sales/g) || []).length >= 2, true);
     check("dm-profit-wording", "every 'profit' in the answer is 'indicative profit' or 'accounting profit'", (A.match(/\w*\s*profit/gi) || []).every((m) => /^(indicative|accounting)\s+profit$/i.test(m.trim())), true);
     model = fakeModel({ query: [NEEDS], analysis: [{ analysis: { v: 1, steps: [{ id: "d", kind: "insight", tool: "discount_summary", args: { period: OCT } }] } }] });
     out = await ask(TA, "discounts in October 2025?", model, { analysisEnabled: true });
-    check("dm-no-false-notes", "clean data (tenant A) gets no conditional discount notes", [/no rate or quantity|below 5% of list value \(and not free\)/.test(out.structured.answer), out.structured.answer.includes("Total: discount 100")], [false, true]);
+    check("dm-no-false-notes", "clean data (tenant A) gets no conditional discount notes", [/no rate or quantity and|item lines? (?:is|are) billed ₹|given free \(list value|does not agree with its quantity/.test(out.structured.answer), out.structured.answer.includes("Total: discount 100")], [false, true]);
 
     model = fakeModel({ query: [NEEDS], analysis: [{ analysis: marginPlan }] });
     out = await ask(TC, "What was our gross margin in October 2025?", model, { analysisEnabled: true });

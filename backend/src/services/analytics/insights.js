@@ -19,12 +19,12 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 // the stored item lines (quantity, rate, amount) and never from Claude. No Tally data, no database write.
 //
 // Meanings (disclosed in every result):
-//   - list value of a line   = |quantity x rate|            (rate is the price BEFORE discount)
 //   - billed value of a line = |amount|                      (already after discount; pre-tax)
-//   - discount of a line     = list value - billed value, counted only when it is plausible: the line has a rate and a
-//     quantity, and it is either free (billed 0) or billed at 5% of list value or more. A line billed below 5% of its
-//     list value (but not free) is far more likely another unit than a 95% discount, so it is left out and counted.
-//   - rate (net)             = billed value / quantity       (what was really paid per unit)
+//   - discount of a line     = the discount the parser VERIFIED and stored (inventory.discountAmount: billed quantity x rate -
+//     billed value, only when it agrees with the percentage Tally states); list value = billed value + that discount. The stored
+//     quantity is the ACTUAL quantity (free goods included), so quantity x rate is never used as a list value: free goods are
+//     counted apart, and a line billed below quantity x rate without a verified discount is disclosed, not read as a discount.
+//   - rate (net)             = billed value / BILLED quantity (what was really paid per billed unit; see PRICED_STAGES)
 // No unit of measure is stored, so a rate assumes the same unit on every line of a product; `rateSpread` (highest line
 // rate / lowest, sales and purchases measured separately) flags products where that is doubtful.
 //   - indicative margin (productMargin, and per supplier in supplierRates) = average sale rate - average purchase cost per
@@ -34,18 +34,17 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 //     total from the first month shown. It is a movement, never a stock balance.
 // --------------------------------------------------
 
-const MIN_BILLED_TO_LIST = 0.05;
 const MAX_LIMIT = 50;
 const UNIT_WARNING_SPREAD = 5;
 const LOW_VOLUME_SHARE = 0.05;
 
 const DISCOUNT_NOTE =
-  "Discount = list value (quantity × rate) − billed line amount, per item line. Lines without a rate or quantity are left out, and a line billed below 5% of its list value (but not free) is not read as a discount. Pre-tax item values: they do not add up to invoice totals.";
+  "Discount = the discount Tally records on each item line: billed quantity × rate − billed line amount, counted only when it agrees with the discount percentage Tally states. List value = billed amount + that discount. Free goods are not a discount (shown apart), and a line billed below quantity × rate with no discount in Tally is not read as one. Pre-tax item values: they do not add up to invoice totals.";
 const RATE_NOTE =
-  "Rates are billed amount ÷ quantity (after discount, before tax). No unit of measure is stored, so a rate assumes the same unit on every voucher line of a product; a product whose sale line rates (or purchase line rates) differ among themselves by more than 5× is flagged.";
+  "Rates are billed amount ÷ billed quantity (after discount, before tax); free quantity is not part of a rate. No unit of measure is stored, so a rate assumes the same unit on every voucher line of a product; a product whose sale line rates (or purchase line rates) differ among themselves by more than 5× is flagged.";
 
 const MARGIN_NOTE =
-  "Indicative margin = average sale rate − average purchase cost, per unit, both after discount and before tax. The cost is the quantity-weighted average purchase rate of the same product in the same period, or, when nothing was bought in the period, in the 12 months before it. It is NOT Tally's stock valuation: opening and closing stock, the valuation method (FIFO / average), stock journals and returns are not used. Treat it as a direction, not as accounting profit. A product whose line rates differ among themselves by more than 5× is flagged: its unit of measure may differ between vouchers.";
+  "Indicative margin = average sale rate − average purchase cost, per BILLED unit (free quantity is left out), both after discount and before tax. The cost is the quantity-weighted average purchase rate of the same product in the same period, or, when nothing was bought in the period, in the 12 months before it. It is NOT Tally's stock valuation: opening and closing stock, the valuation method (FIFO / average), stock journals and returns are not used. Treat it as a direction, not as accounting profit. A product whose line rates differ among themselves by more than 5× is flagged: its unit of measure may differ between vouchers.";
 const TREND_NOTE =
   "Quantity bought and sold per month, from Sales and Purchase vouchers (free goods count as quantity). Net movement = bought − sold; the running total starts at zero in the first month shown. It is a movement, not a stock balance: opening stock, stock journals, returns and Tally's closing stock are not in these vouchers.";
 const SUPPLIER_MARGIN_NOTE =
@@ -97,33 +96,66 @@ function capRows(rows, what) {
   return rows;
 }
 
-// Per item line, computed inside the pipeline (after $unwind of inventory).
+// ---- one quantity basis per item line (after $unwind of inventory)
+// The stored `quantity` is Tally's ACTUAL quantity: free goods included ("10 + 2 free" is stored as 12). The billed quantity is not
+// stored. What the parser stores instead is the discount it could VERIFY (tallyParser deriveDiscountAmount): billed quantity x
+// rate - net amount, accepted only when it agrees with the percentage Tally states (else 0). So for a line with a verified
+// discount the billed quantity is exactly (net + discount) / rate, and its list value is net + discount; a line whose net equals
+// quantity x rate has no reduction at all. A line billed BELOW quantity x rate with no verified discount is ambiguous - free
+// quantity, another unit, or a line synced before discounts were read (voucherLineBackfill) - and is never read as a discount,
+// nor used for an average rate: it is counted and disclosed instead.
+const REDUCTION_ABS_TOLERANCE = 0.05; // the stored amount is rounded to 2 decimals
+const REDUCTION_REL_TOLERANCE = 0.005; // the stored rate is rounded too (20.90 for 20.8966...)
+const tolerance = (gross) => ({ $max: [REDUCTION_ABS_TOLERANCE, { $multiply: [gross, REDUCTION_REL_TOLERANCE] }] });
 const LINE_STAGE = {
   $addFields: {
     _hasList: { $and: [{ $gt: ["$inventory.rate", 0] }, { $gt: ["$inventory.quantity", 0] }] },
     _net: { $abs: "$inventory.amount" },
-    _gross: { $abs: { $multiply: ["$inventory.quantity", "$inventory.rate"] } },
+    _gross: { $abs: { $multiply: ["$inventory.quantity", "$inventory.rate"] } }, // ACTUAL quantity x rate (free quantity included)
+    _storedDisc: { $cond: [{ $and: [{ $isNumber: "$inventory.discountAmount" }, { $gt: ["$inventory.discountAmount", 0] }] }, "$inventory.discountAmount", 0] },
+    _stated: { $gt: [{ $ifNull: ["$inventory.discountPercentage", 0] }, 0] },
   },
 };
-const LINE_FLAGS_STAGE = {
+const LINE_KIND_STAGE = {
   $addFields: {
-    _plausible: {
+    // a verified discount: stored by the parser, on a priced line, never more than the line's own quantity x rate
+    _discOk: { $and: ["$_hasList", { $gt: ["$_storedDisc", 0] }, { $lte: ["$_storedDisc", { $add: ["$_gross", REDUCTION_ABS_TOLERANCE] }] }] },
+  },
+};
+const LINE_CLASS_STAGE = {
+  $addFields: {
+    // Tally states a discount (or a stored amount exists) that could not be verified: left out, counted
+    _discBad: { $and: ["$_hasList", { $not: ["$_discOk"] }, { $or: ["$_stated", { $gt: ["$_storedDisc", 0] }] }] },
+    // given entirely free: nothing billed and no discount stated (a stated 100% discount is a verified discount instead)
+    _free: { $and: ["$_hasList", { $eq: ["$_net", 0] }, { $not: ["$_discOk"] }, { $not: ["$_stated"] }] },
+    // billed below quantity x rate without a verified or stated discount: free quantity (the billed quantity is not stored),
+    // another unit, or a line synced before discounts were read. Never read as a discount; not used for rates.
+    _reduction: {
       $and: [
-        "$_hasList",
-        { $or: [{ $eq: ["$_net", 0] }, { $gte: ["$_net", { $multiply: ["$_gross", MIN_BILLED_TO_LIST] }] }] },
+        "$_hasList", { $not: ["$_discOk"] }, { $not: ["$_stated"] }, { $gt: ["$_net", 0] },
+        { $gt: [{ $subtract: ["$_gross", "$_net"] }, tolerance("$_gross")] },
       ],
     },
+    _disc: { $cond: ["$_discOk", "$_storedDisc", 0] },
+    _list: { $add: ["$_net", { $cond: ["$_discOk", "$_storedDisc", 0] }] }, // list value of what was billed
   },
 };
+const LINE_STAGES = [LINE_STAGE, LINE_KIND_STAGE, LINE_CLASS_STAGE];
+const COUNTED = { $and: ["$_hasList", { $not: ["$_discBad"] }, { $not: ["$_free"] }] };
 const DISCOUNT_GROUP = {
-  // gross, billed and discount all cover the SAME lines (the plausible ones), so gross - billed = discount; the others are counted apart
-  gross: { $sum: { $cond: ["$_plausible", "$_gross", 0] } },
-  billed: { $sum: { $cond: ["$_plausible", "$_net", 0] } },
-  discount: { $sum: { $cond: ["$_plausible", { $max: [0, { $subtract: ["$_gross", "$_net"] }] }, 0] } },
+  // gross, billed and discount all cover the SAME lines, so gross - billed = discount; the others are counted apart
+  gross: { $sum: { $cond: [COUNTED, "$_list", 0] } },
+  billed: { $sum: { $cond: [COUNTED, "$_net", 0] } },
+  discount: { $sum: { $cond: [COUNTED, "$_disc", 0] } },
   lines: { $sum: 1 },
   listedLines: { $sum: { $cond: ["$_hasList", 1, 0] } },
-  discountedLines: { $sum: { $cond: [{ $and: ["$_plausible", { $gt: [{ $subtract: ["$_gross", "$_net"] }, 0.005] }] }, 1, 0] } },
-  excludedLines: { $sum: { $cond: [{ $and: ["$_hasList", { $not: ["$_plausible"] }] }, 1, 0] } },
+  discountedLines: { $sum: { $cond: [{ $and: [COUNTED, { $gt: ["$_disc", 0.005] }] }, 1, 0] } },
+  excludedLines: { $sum: { $cond: ["$_discBad", 1, 0] } },
+  // free goods: lines given entirely free (free quantity on a billed line cannot be told apart without a billed quantity)
+  freeLines: { $sum: { $cond: ["$_free", 1, 0] } },
+  freeValue: { $sum: { $cond: ["$_free", "$_gross", 0] } },
+  reductionLines: { $sum: { $cond: [{ $and: [COUNTED, "$_reduction"] }, 1, 0] } },
+  reductionAmount: { $sum: { $cond: [{ $and: [COUNTED, "$_reduction"] }, { $subtract: ["$_gross", "$_net"] }, 0] } },
 };
 
 const shapeDiscount = (g) => ({
@@ -135,7 +167,26 @@ const shapeDiscount = (g) => ({
   listedLines: g.listedLines,
   discountedLines: g.discountedLines,
   excludedLines: g.excludedLines,
+  freeLines: g.freeLines,
+  freeValue: round2(g.freeValue),
+  reductionLines: g.reductionLines,
+  reductionAmount: round2(g.reductionAmount),
 });
+// For average RATES (rates, indicative margins, supplier rates): each billed line at its BILLED quantity, so free quantity never
+// lowers a rate - (net + verified discount) / rate (the parser's own identity), else the stored quantity when the line shows no
+// reduction. An ambiguous line is left out of the averages and counted. A line
+// without a rate cannot be checked and keeps its stored quantity.
+const PRICED_STAGES = [
+  ...LINE_STAGES,
+  {
+    $addFields: {
+      _ambiguous: { $or: ["$_discBad", "$_reduction"] },
+      _pricedQty: { $cond: ["$_discOk", { $divide: ["$_list", "$inventory.rate"] }, "$inventory.quantity"] },
+    },
+  },
+];
+const BILLED_LINE_MATCH = { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } };
+const usable = (expr, otherwise = 0) => ({ $cond: [{ $and: [{ $not: ["$_ambiguous"] }, { $gt: ["$_pricedQty", 0] }] }, expr, otherwise] });
 
 /**
  * Discount given (sales) or received (purchase): totals, and optionally a breakdown.
@@ -147,7 +198,7 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const Model = modelFor(entity);
-  const prefix = [{ $match: match }, { $unwind: "$inventory" }, LINE_STAGE, LINE_FLAGS_STAGE];
+  const prefix = [{ $match: match }, { $unwind: "$inventory" }, ...LINE_STAGES];
 
   const keyExpr = {
     customer: "$header.partyName",
@@ -158,7 +209,7 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   if (by && !keyExpr) throw Object.assign(new Error(`Unknown breakdown "${by}".`), { status: 400 });
 
   const [totalsRow] = await aggregate(Model, [...prefix, { $group: { _id: null, ...DISCOUNT_GROUP } }], timeLimit);
-  const totals = totalsRow ? shapeDiscount(totalsRow) : shapeDiscount({ gross: 0, billed: 0, discount: 0, lines: 0, listedLines: 0, discountedLines: 0, excludedLines: 0 });
+  const totals = totalsRow ? shapeDiscount(totalsRow) : shapeDiscount({ gross: 0, billed: 0, discount: 0, lines: 0, listedLines: 0, discountedLines: 0, excludedLines: 0, freeLines: 0, freeValue: 0, reductionLines: 0, reductionAmount: 0 });
 
   let rows = [];
   if (keyExpr) {
@@ -184,28 +235,38 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   };
 }
 
-// One side (sales or purchases) per product: priced lines only (a rate needs a billed amount), quantity-weighted.
-// At most MAX_GROUP_ROWS products come back; one more is refused (result_too_large) before any in-memory sorting.
+// One side (sales or purchases) per product: billed lines only (a rate needs a billed amount), weighted by the BILLED quantity
+// (PRICED_STAGES). Ambiguous lines are counted per product (ambLines, ambNet) and kept out of qty, billed and the rates; a product
+// with only ambiguous lines comes back with qty 0 (no rate). At most MAX_GROUP_ROWS products come back; one more is refused
+// (result_too_large) before any in-memory sorting.
 async function sideTotals(Model, match, productMatch = [], timeLimit) {
   const rows = await aggregate(Model, [
     { $match: match },
     { $unwind: "$inventory" },
     ...productMatch,
-    LINE_STAGE,
-    { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
+    ...PRICED_STAGES,
+    BILLED_LINE_MATCH,
     {
       $group: {
         _id: "$inventory.itemName",
-        qty: { $sum: "$inventory.quantity" },
-        billed: { $sum: "$_net" },
-        gross: { $sum: { $cond: ["$_hasList", "$_gross", "$_net"] } },
-        minRate: { $min: { $divide: ["$_net", "$inventory.quantity"] } },
-        maxRate: { $max: { $divide: ["$_net", "$inventory.quantity"] } },
+        qty: { $sum: usable("$_pricedQty") },
+        billed: { $sum: usable("$_net") },
+        gross: { $sum: usable("$_list") },
+        minRate: { $min: usable({ $divide: ["$_net", "$_pricedQty"] }, null) },
+        maxRate: { $max: usable({ $divide: ["$_net", "$_pricedQty"] }, null) },
+        ambLines: { $sum: { $cond: ["$_ambiguous", 1, 0] } },
+        ambNet: { $sum: { $cond: ["$_ambiguous", "$_net", 0] } },
       },
     },
     { $limit: MAX_GROUP_ROWS + 1 },
   ], timeLimit);
   return capRows(rows, "products");
+}
+const priced = (rows) => rows.filter((r) => r.qty > 0);
+function uncertainOf(sales, purchases) {
+  const sum = (rows) => rows.reduce((a, r) => ({ lines: a.lines + (r.ambLines || 0), value: a.value + (r.ambNet || 0) }), { lines: 0, value: 0 });
+  const s = sum(sales), p = sum(purchases);
+  return { saleLines: s.lines, saleValue: round2(s.value), purchaseLines: p.lines, purchaseValue: round2(p.value) };
 }
 
 // Per-product sale and purchase rates for the period, side by side.
@@ -220,12 +281,12 @@ async function ratesByProduct(tenantId, period, { limit = 10, product = null, ma
     if (!byName.has(name)) byName.set(name, { product: name, saleQty: 0, saleBilled: 0, saleList: 0, purchaseQty: 0, purchaseBilled: 0, spread: 1 });
     return byName.get(name);
   };
-  for (const s of sales) {
+  for (const s of priced(sales)) {
     const r = slot(s._id);
     r.saleQty = s.qty; r.saleBilled = s.billed; r.saleList = s.gross;
     r.spread = Math.max(r.spread, s.minRate > 0 ? s.maxRate / s.minRate : 1);
   }
-  for (const p of purchases) {
+  for (const p of priced(purchases)) {
     const r = slot(p._id);
     r.purchaseQty = p.qty; r.purchaseBilled = p.billed;
     r.spread = Math.max(r.spread, p.minRate > 0 ? p.maxRate / p.minRate : 1);
@@ -251,7 +312,7 @@ async function ratesByProduct(tenantId, period, { limit = 10, product = null, ma
       };
     });
 
-  return { rows, period: { from: period.from, to: period.to, label: period.label || null }, hasData: rows.length > 0, disclosures: [RATE_NOTE] };
+  return { rows, uncertain: uncertainOf(sales, purchases), period: { from: period.from, to: period.to, label: period.label || null }, hasData: rows.length > 0, disclosures: [RATE_NOTE] };
 }
 
 /**
@@ -266,10 +327,10 @@ async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", 
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const earlierMatch = buildVoucherMatchStage({ tenantId, from: daysBefore(period.from, EARLIER_COST_DAYS), to: daysBefore(period.from, 1) });
   const [sales, purchases, earlier] = await Promise.all([sideTotals(Sale, match, [], timeLimit), sideTotals(Purchase, match, [], timeLimit), sideTotals(Purchase, earlierMatch, [], timeLimit)]);
-  const purchaseBy = new Map(purchases.map((p) => [p._id, p]));
-  const earlierBy = new Map(earlier.map((p) => [p._id, p]));
+  const purchaseBy = new Map(priced(purchases).map((p) => [p._id, p]));
+  const earlierBy = new Map(priced(earlier).map((p) => [p._id, p]));
 
-  const all = sales.map((s) => {
+  const all = priced(sales).map((s) => {
     const saleRate = s.billed / s.qty;
     let cost = purchaseBy.get(s._id) || null;
     let costSource = cost ? "period" : null;
@@ -304,6 +365,8 @@ async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", 
     costedSaleAmount: round2(costedSale),
     indicativeProfit: round2(profit),
     marginPct: costedSale > 0 ? round2((profit / costedSale) * 100) : null,
+    // lines left out of the average rates (billed below quantity x rate without a verified discount), never guessed
+    uncertain: uncertainOf(sales, purchases),
   };
 
   const rows = ranked.slice(0, clampLimit(limit)).map((r) => ({
@@ -420,15 +483,16 @@ async function supplierRates(tenantId, period, { product = null, limit = 10, max
     { $match: match },
     { $unwind: "$inventory" },
     ...productMatch,
-    LINE_STAGE,
-    { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
-    { $addFields: { _unit: { $divide: ["$_net", "$inventory.quantity"] } } },
+    ...PRICED_STAGES,
+    BILLED_LINE_MATCH,
+    { $match: { _ambiguous: false, _pricedQty: { $gt: 0 } } }, // billed below quantity x rate without a verified discount: no reliable unit rate
+    { $addFields: { _unit: { $divide: ["$_net", "$_pricedQty"] } } },
     {
       $group: {
         _id: { item: "$inventory.itemName", supplier: "$header.partyName" },
-        qty: { $sum: "$inventory.quantity" },
+        qty: { $sum: "$_pricedQty" },
         billed: { $sum: "$_net" },
-        gross: { $sum: { $cond: ["$_hasList", "$_gross", "$_net"] } },
+        gross: { $sum: "$_list" },
         minRate: { $min: "$_unit" },
         maxRate: { $max: "$_unit" },
         // the latest purchase is chosen by DATE with an explicit sort key, never by the order the documents arrive in
@@ -470,9 +534,10 @@ async function supplierRates(tenantId, period, { product = null, limit = 10, max
         { $match: match },
         { $unwind: "$inventory" },
         { $match: { "inventory.itemName": { $in: selected.map((it) => it.product) } } },
-        LINE_STAGE,
-        { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
-        { $group: { _id: "$inventory.itemName", qty: { $sum: "$inventory.quantity" }, billed: { $sum: "$_net" } } },
+        ...PRICED_STAGES,
+        BILLED_LINE_MATCH,
+        { $match: { _ambiguous: false, _pricedQty: { $gt: 0 } } },
+        { $group: { _id: "$inventory.itemName", qty: { $sum: "$_pricedQty" }, billed: { $sum: "$_net" } } },
       ], timeLimit)
     : [];
   const saleRateBy = new Map(soldRows.map((r) => [r._id, r.billed / r.qty]));
@@ -523,4 +588,4 @@ async function supplierRates(tenantId, period, { product = null, limit = 10, max
   return { rows: out, period: { from: period.from, to: period.to, label: period.label || null }, hasData: out.length > 0, disclosures: [RATE_NOTE, SUPPLIER_MARGIN_NOTE] };
 }
 
-module.exports = { discountSummary, ratesByProduct, productMargin, productTrend, supplierRates, MIN_BILLED_TO_LIST, MAX_GROUP_ROWS, DISCOUNT_NOTE, RATE_NOTE, MARGIN_NOTE, TREND_NOTE, SUPPLIER_MARGIN_NOTE };
+module.exports = { discountSummary, ratesByProduct, productMargin, productTrend, supplierRates, MAX_GROUP_ROWS, DISCOUNT_NOTE, RATE_NOTE, MARGIN_NOTE, TREND_NOTE, SUPPLIER_MARGIN_NOTE };

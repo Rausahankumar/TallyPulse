@@ -17,7 +17,7 @@ const INSIGHT_FIELDS = {
   product_trend: [["month", "Month"], ["saleQty", "Sold qty"], ["purchaseQty", "Bought qty"], ["netQty", "Net qty"], ["cumulativeNetQty", "Running net"]],
   supplier_rates: [["product", "Product"], ["bestSupplier", "Best supplier"], ["bestRate", "Best rate"], ["avgRate", "Average rate"], ["supplierCount", "Suppliers"], ["savingIfAllAtBest", "Indicative saving"]],
   discount_summary: [["key", "Group"], ["discountAmount", "Discount"], ["discountPct", "Discount %"], ["grossAmount", "List value"], ["billedAmount", "Billed"]],
-  product_margin: [["product", "Product"], ["saleAmount", "Sale value"], ["unitMargin", "Indicative unit margin"], ["marginPct", "Indicative margin %"], ["costSource", "Cost from"]],
+  product_margin: [["product", "Product"], ["saleAmount", "Sale value"], ["unitMargin", "Indicative unit margin"], ["marginPct", "Indicative margin %"], ["indicativeProfit", "Indicative profit"], ["costSource", "Cost from"]],
 };
 // Fixed headings: the discount basis and the indicative nature of the margin are stated in the heading itself.
 const TOOL_TITLES = {
@@ -43,6 +43,7 @@ function insightText(step) {
   if (!rows.length && !summary) lines.push("No matching records in this period.");
   for (const r of rows.slice(0, MAX_INSIGHT_ROWS)) lines.push(`- ${fields.map(([k, label]) => `${label}: ${fmt(r[k])}`).join(" · ")}`);
   if (rows.length > MAX_INSIGHT_ROWS) lines.push(`(${rows.length - MAX_INSIGHT_ROWS} more rows not shown)`);
+  if (rows.length && ev.coverage && ev.coverage.ordering) lines.push(`Ordered by ${ev.coverage.ordering}.`);
   if (ev.coverage && ev.coverage.mayHaveMore) lines.push("Only the top rows were requested; more may exist.");
   for (const n of (ev.coverage && ev.coverage.notes) || []) lines.push(`• ${n}`);
   for (const d of ev.disclosures || []) lines.push(`• ${d}`);

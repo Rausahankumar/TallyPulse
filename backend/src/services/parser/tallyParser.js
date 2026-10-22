@@ -440,6 +440,7 @@ function extractOpenCompanies(rawTallyResponse) {
 
 module.exports = {
   parseTallyVoucher,
+  deriveDiscountAmount,
   extractOpenCompanies,
   parseTallyDate,
   parseQuantity,

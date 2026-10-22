@@ -43,6 +43,7 @@ const INDICATIVE_MARGIN = "Indicative margin from average sale and purchase rate
 const NOT_A_CAUSE = "These figures describe what happened; on their own they do not explain a change in sales.";
 // Notes computed from the returned data (never from the question): what a reader must know about THESE figures.
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const fmtAmount = (v) => `₹${Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const unitNote = (rows) => {
   const n = rows.filter((r) => r.unitWarning).length;
   return n ? [`${plural(n, "product shown has", "products shown have")} line rates that differ by more than 5×: the unit of measure may differ between vouchers.`] : [];
@@ -52,7 +53,16 @@ function discountNotes(d) {
   const out = [];
   const noRate = (t.lines || 0) - (t.listedLines || 0);
   if (noRate > 0) out.push(`${plural(noRate, "item line has", "item lines have")} no rate or quantity and ${noRate === 1 ? "is" : "are"} not in the discount figures.`);
-  if (t.excludedLines > 0) out.push(`${plural(t.excludedLines, "item line was", "item lines were")} billed below 5% of list value (and not free) and left out: more likely a different unit than a discount.`);
+  if (t.excludedLines > 0) out.push(`${plural(t.excludedLines, "item line has", "item lines have")} a discount in Tally that does not agree with its quantity, rate and amount (often another unit) and ${t.excludedLines === 1 ? "is" : "are"} left out.`);
+  if (t.freeLines > 0) out.push(`${plural(t.freeLines, "item line was", "item lines were")} given free (list value ${fmtAmount(t.freeValue)}): free goods are not counted as discount.`);
+  if (t.reductionLines > 0) out.push(`${plural(t.reductionLines, "item line is", "item lines are")} billed ${fmtAmount(t.reductionAmount)} below quantity × rate with no discount recorded in Tally (free quantity on a billed line, another unit, or lines synced before discounts were read): not counted as discount, so the discount may be incomplete.`);
+  return out;
+}
+// lines left out of the average rates because their billed quantity is not known (insights PRICED_STAGES)
+function uncertainNotes(u) {
+  const out = [];
+  if (u && u.saleLines > 0) out.push(`${plural(u.saleLines, "sale line", "sale lines")} (${fmtAmount(u.saleValue)}) ${u.saleLines === 1 ? "is" : "are"} billed below quantity × rate with no discount recorded in Tally (free quantity, another unit, or synced before discounts were read): left out of the average rates.`);
+  if (u && u.purchaseLines > 0) out.push(`${plural(u.purchaseLines, "purchase line", "purchase lines")} (${fmtAmount(u.purchaseValue)}) ${u.purchaseLines === 1 ? "is" : "are"} left out of the average costs for the same reason.`);
   return out;
 }
 function marginNotes(d) {
@@ -62,14 +72,14 @@ function marginNotes(d) {
   if (s.withoutCost > 0) out.push(`${s.withoutCost} of ${s.products} products have no purchase cost in the period or the 12 months before: they have no margin and are listed last.`);
   const earlier = rows.filter((r) => r.costSource === "earlier").length;
   if (earlier) out.push(`For ${plural(earlier, "product", "products")} shown, the cost is the average purchase rate of the 12 months before the period (nothing was bought in it).`);
-  return [...out, ...unitNote(rows)];
+  return [...out, ...uncertainNotes(s.uncertain), ...unitNote(rows)];
 }
 
 const VOUCHER_SETS ="Distinct voucher counts are computed from per-group voucher-id sets that are not capped; the tool is restricted to ONE product so those sets stay small, and maxTimeMS bounds the work.";
 
 const TOOLS = {
   discount_summary: {
-    description: "Discount given (sales) or received (purchases) in a period: list value (quantity × rate) minus the billed line amount, by customer/supplier, product or month. Pre-tax item values.",
+    description: "Discount given (sales) or received (purchases) in a period: the discount Tally records per item line (list value of the billed quantity minus the billed amount), by customer/supplier, product or month. Free goods are shown apart. Pre-tax item values.",
     ready: true,
     args: z
       .strictObject({ period: periodSchema, entity: z.enum(["sales", "purchase"]).default("sales"), by: z.enum(["customer", "supplier", "product", "month"]).nullable().default(null), limit: limitSchema })
@@ -91,18 +101,18 @@ const TOOLS = {
     run: (tenantId, period, a, maxTimeMS) => insights.ratesByProduct(tenantId, period, { limit: a.limit, product: a.product || null, maxTimeMS }),
     rows: (d) => d.rows,
     ordering: () => "largest sale value first",
-    notes: (d) => unitNote(d.rows || []),
+    notes: (d) => [...uncertainNotes(d.uncertain), ...unitNote(d.rows || [])],
     limitations: ["The rate gap is a price difference, not a profit.", NOT_A_CAUSE],
   },
   product_margin: {
-    description: "Indicative margin per product sold in a period: average sale rate minus average purchase cost per unit. Not accounting profit.",
+    description: "Indicative margin per product sold in a period: average sale rate minus average purchase cost per billed unit. sortBy marginPct ranks by margin %, profit by indicative rupees, unit margin × quantity. Not accounting profit.",
     ready: true,
     args: z.strictObject({ period: periodSchema, sortBy: z.enum(["profit", "marginPct"]).default("profit"), order: z.enum(["desc", "asc"]).default("desc"), limit: limitSchema }),
     product: null,
     voucherTypes: () => ["Sales", "Purchase"],
     run: (tenantId, period, a, maxTimeMS) => insights.productMargin(tenantId, period, { limit: a.limit, sortBy: a.sortBy, order: a.order, maxTimeMS }),
     rows: (d) => d.rows,
-    ordering: (a) => `${a.sortBy} ${a.order === "asc" ? "lowest" : "highest"} first (products without a cost last)`,
+    ordering: (a) => `${a.sortBy === "marginPct" ? "indicative margin %" : "indicative profit (₹)"}, ${a.order === "asc" ? "lowest" : "highest"} first (products without a cost last)`,
     notes: marginNotes,
     limitations: [INDICATIVE_MARGIN, NOT_A_CAUSE],
   },
