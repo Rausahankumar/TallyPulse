@@ -413,7 +413,8 @@ function oracle(kind, mode, r) {
         const again = await askPure(q);
         if (again.structured.answer === text) deterministic += 1;
       }
-      if (want === "partial" && !(r.structured.warnings || []).some((w) => /^Coverage: /.test(w))) bad.push(`${q}: partial caveat missing from warnings`);
+      // the caveat is stated in the answer (got === "partial" above) and shown ONCE: not repeated under it as a warning
+      if (want === "partial" && (r.structured.warnings || []).some((w) => /^Coverage: /.test(w) && text.includes(w))) bad.push(`${q}: partial caveat shown twice (text and warnings)`);
     }
     const outside = CQ.filter(([, w]) => w.startsWith("outside")).length;
     check(`coverage outcome for ${CQ.length} questions (${outside} outside, ${CQ.filter(([, w]) => w === "partial").length} partial, ${CQ.filter(([, w]) => w === "covered").length} covered)`, ok === CQ.length && bad.length === 0, bad.slice(0, 4).join(" | "));
@@ -630,7 +631,7 @@ async function syntheticTenant() {
     x = await ask("Sales from 2025-03-01 to 2025-03-31 vs 2025-02-01 to 2025-02-28");
     check("one period with zero transactions: March ₹0 vs February = oracle, -100.0%", x.ran && near(x.ran.result.totals.comparison.invoiceAmount.previous, sumOf(SALES, "2025-02-01", "2025-02-28")) && /-100\.0%/.test(x.text));
     x = await ask("Sales from 2025-01-01 to 2025-01-31");
-    check(`current period partly covered (history starts 15 Jan): ₹${sumOf(SALES, "2025-01-01", "2025-01-31")} = oracle, with the caveat in text AND warnings`, x.ran && near(x.ran.result.totals.values.invoiceAmount, sumOf(SALES, "2025-01-01", "2025-01-31")) && /synced data starts on 15 Jan 2025/.test(x.text) && x.r.structured.warnings.some((w) => /15 Jan 2025/.test(w)));
+    check(`current period partly covered (history starts 15 Jan): ₹${sumOf(SALES, "2025-01-01", "2025-01-31")} = oracle, with the caveat in the text, shown once (not repeated as a warning)`, x.ran && near(x.ran.result.totals.values.invoiceAmount, sumOf(SALES, "2025-01-01", "2025-01-31")) && /synced data starts on 15 Jan 2025/.test(x.text) && !x.r.structured.warnings.some((w) => /15 Jan 2025/.test(w)));
     x = await ask("Sales from 2025-02-01 to 2025-02-28 vs 2025-01-01 to 2025-01-31");
     check("comparison period partly covered: figures = oracle, comparison caveat stated", x.ran && near(x.ran.result.totals.comparison.invoiceAmount.previous, sumOf(SALES, "2025-01-01", "2025-01-31")) && /comparison period 1 Jan 2025 – 31 Jan 2025 is only partly covered/.test(x.text));
     x = await ask("Sales in June 2025 vs June 2024");

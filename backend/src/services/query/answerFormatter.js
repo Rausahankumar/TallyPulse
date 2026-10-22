@@ -208,4 +208,4 @@ function formatNonAnswer(result) {
   return canned || result.reason || "Could you clarify the question?";
 }
 
-module.exports = { formatQueryAnswer, formatNonAnswer, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };
+module.exports = { formatQueryAnswer, formatNonAnswer, plainMetricNames, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };

@@ -563,11 +563,22 @@ const UNSUPPORTED_CAPABILITIES = [
       'Sales and purchase totals are shown gross of returns: Credit/Debit Notes are never netted against them, and one query cannot combine sales with returns. Net sales (turnover: invoice sales after returns and before tax) therefore cannot be calculated. Sales/purchase returns themselves can be asked directly, for example "sales returns this month" or "purchase returns this month"; return reasons, return rate, partial/full status, GST-head impact and product-group returns are not available yet.',
     unlocks: "a combined sales-and-returns calculation on a before-tax basis, return rate, product-group returns",
   },
-  { id: "profit_margin", reason: "No cost/COGS data is available.", unlocks: "cost data (later phase)" },
-  { id: "discount_analysis", reason: "Discounts cannot be queried yet: they are stored per item line only for recently synced vouchers (older vouchers read zero until back-filled), and no discount metric exists.", unlocks: "a discount metric after the back-fill (later phase)" },
+  // Accounting profit only. An INDICATIVE product margin (average sale rate - average purchase rate) exists as an analysis
+  // tool (analytics/insightTools product_margin), always labelled indicative; it is never offered as profit.
+  {
+    id: "profit_margin",
+    label: "accounting profit",
+    reason:
+      "No cost/COGS data is available: accounting profit, gross margin and net margin need stock valuation and the cost of goods sold, which are not available. An indicative margin per product (average sale rate minus average purchase rate) can be shown instead, labelled as indicative.",
+    unlocks: "cost data (later phase)",
+  },
+  // (Discounts are no longer listed: analytics/insights discountSummary computes them for all history from the stored rate,
+  // quantity and amount, and analysis plans offer it as the discount_summary tool. A single query still has no discount metric.)
   { id: "cancelled_invoices", reason: "Cancelled vouchers are not reliably stored, so their counts would be wrong.", unlocks: "sync change (later phase)" },
   { id: "sales_by_region_or_salesperson", reason: "State, region, customer group and salesperson are not stored in this phase.", unlocks: "party master (later phase)" },
-  { id: "cross_entity_comparison", reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
+  // multiStep: ONE query cannot answer it, but separate steps of an analysis plan can (each entity measured on its own, never
+  // combined). The query planner sends it to the analysis path (needs_analysis); the analysis planner does not list it.
+  { id: "cross_entity_comparison", label: "sales next to purchases", multiStep: true, reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
   { id: "outstanding_or_payments", reason: "Receipts, payments and balances are outside Sales/Purchase in this phase.", unlocks: "receipt/payment sync (later phase)" },
   {
     id: "other_accounting_domains",
@@ -654,6 +665,9 @@ function metricsForEntity(entityId) {
 function dimensionsForEntity(entityId) {
   return Object.values(DIMENSIONS).filter((d) => d.entities.includes(entityId));
 }
+/** How an unsupported capability is named in the planner prompts: its label, else its id in plain words. */
+const unsupportedLabel = (u) => u.label || u.id.replace(/_/g, " ");
+
 function metricRefs() {
   const suffixes = Object.keys(COMPARE.derivedSuffixes);
   const ids = Object.keys(METRICS);
@@ -719,5 +733,6 @@ module.exports = {
   metricsForEntity,
   dimensionsForEntity,
   metricRefs,
+  unsupportedLabel,
   buildCompatibilityMatrix,
 };

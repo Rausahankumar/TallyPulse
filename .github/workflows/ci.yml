@@ -170,6 +170,8 @@ jobs:
             verify-query-dsl.js \
             verify-query-engine.js \
             verify-customer-count.js \
+            verify-analysis-plan.js \
+            verify-analysis-planner.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \

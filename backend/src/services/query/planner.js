@@ -277,7 +277,9 @@ const DEFAULT_PLANNER_MODEL = "claude-sonnet-4-5-20250929";
 const MAX_REPAIRS_CAP = 1;
 const VALIDATION_FALLBACK_REF = new Date(2025, 0, 15, 12, 0, 0);
 
-const DECLINE_CODES = ["unsupported_domain", "needs_clarification", "not_a_data_query"];
+// needs_analysis: the question needs several analyses (or an explanation). It is still a decline of THIS planner (status
+// "unsupported"), so every existing consumer treats it as before; queryChat may hand it to the analysis planner instead.
+const DECLINE_CODES = ["unsupported_domain", "needs_clarification", "not_a_data_query", "needs_analysis"];
 const NAME_DIMENSIONS = new Set(["customer", "supplier", "product", "productGroup"]);
 
 
@@ -304,30 +306,38 @@ function buildCatalogDigest(cat = CATALOG) {
   const metricLines = Object.values(cat.metrics)
     .filter((m) => m.status === "supported")
     .map((m) => `${m.id} [${m.entities.join("/")}; ${m.grain}]${needsMeaning(m) ? `: ${m.description}` : ""}`);
+  // Compact, still generated from the catalog: "all" when a dimension exists for every entity, and the grain only when it
+  // is line-only (every dimension supports line grain; voucher-grain metrics need a voucher-grain dimension).
+  const entityIds = Object.keys(cat.entities);
   const dimLines = dims.map((d) => {
-    const extra = d.id === "date" ? ` buckets ${d.buckets.join("|")}` : "";
-    return `${d.id} (${d.entities.join("/")}; ${(d.grains || []).join("+")})${extra}`;
+    const ents = entityIds.every((e) => d.entities.includes(e)) ? "all" : d.entities.join("/");
+    const lineOnly = (d.grains || []).includes("voucher") ? "" : "; line only";
+    const buckets = d.id === "date" ? `; buckets ${d.buckets.join("|")}` : "";
+    return `${d.id} (${ents}${lineOnly}${buckets})`;
   });
   const rules = NLU_RULE_CODES.map((code) => {
     const rule = cat.queryRules.find((r) => r.code === code);
     if (!rule) throw new Error(`The catalog has no query rule ${code}.`);
     return rule.description;
   });
-  const unsupported = cat.unsupported.map((u) => `${u.id.replace(/_/g, " ")}${u.examples ? ` (${u.examples.join(", ")})` : ""}`).join("; ");
+  // multi-step entries are not "cannot answer": separate analysis steps answer them, so they are named in the needs_analysis rule
+  const unsupported = cat.unsupported.filter((u) => !u.multiStep).map((u) => `${catalog.unsupportedLabel(u)}${u.examples ? ` (${u.examples.join(", ")})` : ""}`).join("; ");
+  const multiStep = cat.unsupported.filter((u) => u.multiStep).map((u) => catalog.unsupportedLabel(u)).join(", ");
   return [
-    "You translate ONE business question about Sales or Purchase data into ONE query plan by calling submit_query_plan. Never answer in prose. Never state figures.",
+    "You translate ONE Sales/Purchase question into ONE query plan by calling submit_query_plan. Never answer in prose. Never state figures.",
     `Entities: ${Object.values(cat.entities).map((e) => `${e.id} (${e.label}; party dimension: ${e.partyDimension})`).join(", ")}. One entity per plan.`,
-    `Metrics [entities; grain] (voucher grain = one value per voucher, line grain = one value per item line):\n${metricLines.join("\n")}`,
+    `Metrics [entities; grain: voucher = one value per invoice, line = one per item line]:\n${metricLines.join("\n")}`,
     `Dimensions (groupBy, max ${limits.maxGroupBy}): ${dimLines.join("; ")}.`,
     `Rules: never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare. Mode "list" returns individual invoices. ${rules.join(" ")} "Which products did we sell": sort by the value metric, desc; by name only if asked.`,
     // The period kinds and compare modes are enums of the tool schema itself, so they are not listed again here; ytd stays unused.
-    'Period kinds: use the schema values, never ytd. custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25; custom compare needs a period. all_time cannot be compared. Financial year is April-March; "last year" alone = previous_fy.',
-    "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + limits.maxLimit + ".",
-    "Growth/decline between two periods (grew, increased, dropped, fell, vs): period = the LATER period, compare = custom EARLIER period, groupBy only the dimension asked, never a date groupBy, sort by metric.delta (desc most growth, asc biggest decline). For ALL items meeting a condition (customers above an amount) use having with limit " + limits.maxLimit + ".",
+    // The schema also requires a custom compare's period and caps limit (maximum), so neither is repeated here.
+    'Period kinds: use the schema values, never ytd. custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. all_time cannot be compared. Financial year is April-March; "last year" alone = previous_fy.',
+    "having/sort may use a selected metric or, with compare, metric.previous / metric.delta / metric.deltaPct.",
+    "Growth/decline between two periods (grew, increased, dropped, fell, vs): period = the LATER period, compare = the EARLIER period (like_for_like when it is the one just before a relative period; custom only with dates the user gave); group only by the dimension asked, never a date groupBy; sort by metric.delta (desc = most growth, asc = biggest decline). ALL items meeting a condition (customers above an amount): having with limit " + limits.maxLimit + ".",
     '"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount (never invoiceAmount, invoiceCount or averageInvoiceValue). If a revenue question needs purchases or an invoice-level metric, decline.',
     'Returns: "returns" and "credit notes" mean sales_return; purchase_return only when purchases, suppliers or debit notes are named. "Orders" are not invoices and there is no order data: never answer an order question with an invoice count or average (ask which invoices are meant). Net sales, turnover and invoice sales (before tax) cannot be calculated: decline.',
     "Copy customer/supplier/product/group names exactly as the user wrote them; never invent names. Never add a period the user did not state unless the question clearly implies one.",
-    `If the question needs something this data cannot answer (${unsupported}), or a forecast or an explanation, or is truly ambiguous (for example "this year" without saying financial or calendar), do NOT guess: send decline {code, message}. Otherwise send plan, plus up to 3 short assumptions you made.`,
+    `If the question needs something this data cannot answer (${unsupported}), or a forecast, or is truly ambiguous ("this year": financial or calendar?), do NOT guess: send decline {code, message}. Several analyses (${multiStep}; a change, then its customers/products), an explanation, discounts or product margins: code needs_analysis. Otherwise send plan, plus up to 3 short assumptions.`,
   ].join("\n");
 }
 
@@ -470,6 +480,65 @@ const isNewPartyPlan = (plan) =>
   (plan.having || []).some((h) => /\.previous$/.test(h.metric) && h.op === "eq" && h.value === 0);
 
 const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed", route: "honest_response", source: "claude_planner", code, reason, usage, ...extra });
+
+/**
+ * The question-level checks a model-written query plan must pass, as planQuestion applies them after the model answers: the
+ * decided terms (D1-D3, counts), the revenue basis, years the user never wrote, and new-party comparisons. Exported so the
+ * analysis planner applies the SAME checks to each query step; it composes the existing functions and changes none of them.
+ * @returns {null | {status, code, reason, source}} null when the plan may run
+ */
+function checkPlannedQuery(question, plan) {
+  const text = String(question || "").replace(/\s+/g, " ").trim();
+  const term = uncalculableTermRefusal(text, plan, null);
+  if (term) return term;
+  if (mentionsRevenue(text) && !isRevenuePlan(plan)) return { status: "unsupported", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL };
+  if (!datesStated(plan, text, null)) return { status: "needs_clarification", source: "date_guard", code: "year_missing", reason: "Which year do you mean?" };
+  if (isNewPartyPlan(plan)) return { status: "unsupported", source: "new_party_guard", code: "unsupported_new_party", reason: NEW_PARTY_REASON };
+  return null;
+}
+
+/**
+ * The decided rules that rewrite or annotate a valid, name-verified query plan, as planQuestion applies them: the complete
+ * previous month (decision 2), the product value default and value sort, and the "last year" note. Exported so the analysis
+ * planner applies the SAME rules to each query step (one implementation; the same numbers and notes for the same plan).
+ * @returns {{plan, validation, notes: object[]} | {error: string}} the plan is a new object; the input is not changed
+ */
+function applyPlanRules(question, inputPlan, { referenceDate, previousPlan = null, validation = null } = {}) {
+  const text = String(question || "").replace(/\s+/g, " ").trim();
+  const ref = referenceDate || VALIDATION_FALLBACK_REF;
+  let plan = JSON.parse(JSON.stringify(inputPlan));
+  let checked = validation || validateQueryPlan(plan, { referenceDate: ref });
+  if (!checked.ok) return { error: "The plan is not valid." };
+  const notes = [];
+  if (plan.period.kind === "current_month" && plan.compare && plan.compare.mode === "like_for_like" && !SAME_DAYS_WORDING.test(text)) {
+    plan.compare = { mode: "full_previous" };
+    checked = validateQueryPlan(plan, { referenceDate: ref });
+    if (!checked.ok) return { error: "The plan was not valid after applying the month comparison rule." };
+    notes.push(MONTH_FULL_NOTE);
+  }
+  const valueDefault = withProductValueDefault(plan, text, previousPlan);
+  if (valueDefault) {
+    const v = validateQueryPlan(valueDefault.plan, { referenceDate: ref });
+    const reparsed = v.ok ? parseQueryPlan(valueDefault.plan) : null;
+    if (reparsed && reparsed.ok) {
+      plan = JSON.parse(JSON.stringify(reparsed.plan));
+      checked = v;
+      notes.push(valueDefault.note);
+    }
+  }
+  const valueSort = withProductValueSort(plan, text);
+  if (valueSort) {
+    const v = validateQueryPlan(valueSort.plan, { referenceDate: ref });
+    const reparsed = v.ok ? parseQueryPlan(valueSort.plan) : null;
+    if (reparsed && reparsed.ok) {
+      plan = JSON.parse(JSON.stringify(reparsed.plan));
+      checked = v;
+      notes.push(valueSort.note);
+    }
+  }
+  if (needsLastYearNote(plan, text)) notes.push(LAST_YEAR_FY_NOTE);
+  return { plan, validation: checked, notes };
+}
 
 // ---------------------------------------------------------------- the planner
 
@@ -666,33 +735,11 @@ async function planQuestionCore(question, options = {}) {
     const definitionNotes = revenue ? [REVENUE_ASSUMPTION] : [];
     if (defaultSortNote) definitionNotes.push(defaultSortNote);
     if (productValueNote) definitionNotes.push(productValueNote);
-    if (plan.period.kind === "current_month" && plan.compare && plan.compare.mode === "like_for_like" && !SAME_DAYS_WORDING.test(text)) {
-      plan.compare = { mode: "full_previous" };
-      validation = validateQueryPlan(plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
-      if (!validation.ok) return failed("planner_invalid_plan", "The plan was not valid after applying the month comparison rule.", usage);
-      definitionNotes.push(MONTH_FULL_NOTE);
-    }
-    const valueDefault = withProductValueDefault(plan, text, previous && previous.plan);
-    if (valueDefault) {
-      const checked = validateQueryPlan(valueDefault.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
-      const reparsed = checked.ok ? parseQueryPlan(valueDefault.plan) : null;
-      if (reparsed && reparsed.ok) {
-        plan = JSON.parse(JSON.stringify(reparsed.plan));
-        validation = checked;
-        definitionNotes.push(valueDefault.note);
-      }
-    }
-    const valueSort = withProductValueSort(plan, text);
-    if (valueSort) {
-      const sorted = validateQueryPlan(valueSort.plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
-      const reparsed = sorted.ok ? parseQueryPlan(valueSort.plan) : null;
-      if (reparsed && reparsed.ok) {
-        plan = JSON.parse(JSON.stringify(reparsed.plan));
-        validation = sorted;
-        definitionNotes.push(valueSort.note);
-      }
-    }
-    if (needsLastYearNote(plan, text)) definitionNotes.push(LAST_YEAR_FY_NOTE);
+    const ruled = applyPlanRules(text, plan, { referenceDate, previousPlan: previous && previous.plan, validation });
+    if (ruled.error) return failed("planner_invalid_plan", ruled.error, usage);
+    plan = ruled.plan;
+    validation = ruled.validation;
+    definitionNotes.push(...ruled.notes);
 
     const plannerAssumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);
     return {
@@ -777,4 +824,9 @@ module.exports = {
   DECLINE_CODES,
   REVENUE_ASSUMPTION,
   PRODUCT_UNIT_WORDS,
+  checkPlannedQuery,
+  applyPlanRules,
+  mentionsRevenue,
+  // The same accounting-profit words the profit refusal uses (profit, COGS, gross/net margin), on the normalised question.
+  mentionsAccountingProfit: (question) => PROFIT_TERMS.test(normalizeTerms(question)),
 };

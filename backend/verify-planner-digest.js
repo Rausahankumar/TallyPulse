@@ -58,7 +58,8 @@ const SECTION_PREFIXES = [
 ];
 // rules +100 (the product order clause) and periods -200 (the kind/mode lists moved to the schema enums) in the Slice 2 rebalance;
 // metrics +110 for the customerCount line (Slice 3).
-const SECTION_BUDGETS = { intro: 200, entities: 300, metrics: 1560, dimensions: 400, rules: 600, periods: 300, refs: 150, growth: 350, revenue: 250, returns: 400, names: 200, decline: 550 };
+// Analysis plans (Milestone 2): intro -50 (shortened to 136) and decline +50 (the needs_analysis code), total unchanged.
+const SECTION_BUDGETS = { intro: 150, entities: 300, metrics: 1560, dimensions: 400, rules: 600, periods: 300, refs: 150, growth: 450, revenue: 250, returns: 400, names: 200, decline: 600 };
 
 // Every enum/const string in the tool schema's period and compare branches, as "period:<v>" / "compare:<v>".
 function enumValues(node, out = new Set()) {
@@ -161,10 +162,48 @@ function sectionSizes(digest) {
   section("C. validator rules and the decline list");
   const rule = (code) => CATALOG.queryRules.find((r) => r.code === code).description;
   check("the validator rules the schema cannot express are stated, as the catalog words them: sort for high-cardinality groupings, list-mode shape, and voucher-grain metrics cannot be grouped by product/productGroup", text.includes(rule("high_cardinality_requires_sort")) && text.includes(rule("list_mode_shape")) && text.includes(rule("dimension_not_applicable_to_voucher_metric")) && /Mode "list" returns individual invoices/.test(text));
-  check("every unsupported capability in the catalog is in the decline sentence, in plain words", CATALOG.unsupported.every((u) => text.includes(u.id.replace(/_/g, " "))));
+  check("every unsupported capability in the catalog is in the decline sentence, in plain words (its label, else its id)", CATALOG.unsupported.every((u) => text.includes(require("./src/services/query/semanticCatalog").unsupportedLabel(u))));
+  const profitEntry = CATALOG.unsupported.find((u) => u.id === "profit_margin");
+  check("accounting profit stays unsupported: shown as 'accounting profit', and its reason keeps 'No cost/COGS data is available' and names gross and net margin", !!profitEntry && /accounting profit/.test(text) && profitEntry.reason.startsWith("No cost/COGS data is available") && /gross margin and net margin/.test(profitEntry.reason) && /labelled as indicative/.test(profitEntry.reason));
+  check("the outdated discount refusal is gone: discounts are no longer listed as unsupported", !CATALOG.unsupported.some((u) => u.id === "discount_analysis") && !/discount analysis/.test(text));
   const other = CATALOG.unsupported.find((u) => u.id === "other_accounting_domains");
   check("the catch-all entry's examples (orders, stock valuation, ...) reach the model, and its catalog reason text is unchanged", other.examples.every((e) => text.includes(e)) && other.reason === "Orders, delivery notes, stock valuation, payroll, expenses and other accounting areas are outside Sales/Purchase in this phase.");
-  check("forecasts and explanations remain declines (planner-level, not a data capability)", /or a forecast or an explanation/.test(text));
+  check("forecasts and explanations remain declines (planner-level, not a data capability): a forecast is in the decline sentence, an explanation in the needs_analysis sentence", /, or a forecast, or is truly ambiguous/.test(text) && /Several analyses \([^)]*\), an explanation,/.test(text));
+
+  // ---- compact text that relies on the catalog or the schema: it must not drift from them
+  const allEntities = Object.keys(CATALOG.entities);
+  const driftOf = (dimLine) => Object.values(CATALOG.dimensions).filter((d) => {
+    const m = new RegExp(`(?:: |; )${d.id} \\(([^)]*)\\)`).exec(dimLine);
+    if (!m) return true;
+    const parts = m[1].split("; ");
+    const ents = parts[0] === "all" ? allEntities : parts[0].split("/");
+    const lineOnly = parts.includes("line only");
+    const buckets = (parts.find((p) => p.startsWith("buckets ")) || "").replace("buckets ", "");
+    return ents.slice().sort().join() !== d.entities.slice().sort().join() || lineOnly !== !(d.grains || []).includes("voucher") || (d.id === "date" ? buckets !== d.buckets.join("|") : !!buckets);
+  });
+  const dimDrift = driftOf(lines.find((l) => l.startsWith("Dimensions ")));
+  check("the compact dimensions line agrees with the catalog for every dimension (entities or 'all', 'line only', date buckets)", dimDrift.length === 0, dimDrift.map((d) => d.id).join(","));
+  const changed = clone();
+  changed.dimensions.product.grains = ["voucher", "line"];
+  changed.dimensions.customer.entities = ["sales"];
+  const changedLine = buildCatalogDigest(changed).split("\n").find((l) => l.startsWith("Dimensions "));
+  check("negative: a digest built from a different catalog (product voucher grain, customer sales-only) is reported as drifted", driftOf(changedLine).map((d) => d.id).sort(), ["customer", "product"]);
+  const schemaJson = prompt.tool.input_schema.properties.plan;
+  const customCompare = JSON.stringify(schemaJson.properties.compare).includes('"required":["mode","period"]');
+  check("facts the prompt no longer repeats are enforced by the tool schema: limit maximum = LIMITS.maxLimit, and a custom compare requires its period", [schemaJson.properties.limit.maximum === CATALOG.limits.maxLimit, customCompare, /limit <= /.test(text), /custom compare needs a period/.test(text)], [true, true, false, false]);
+  check("rules the JSON schema cannot show stay in the prompt (a date groupBy needs a bucket and no compare; derived refs need compare; ALL items use limit = maxLimit)", [/A date groupBy needs a bucket and cannot be combined with compare\./.test(text), /with compare, metric\.previous \/ metric\.delta \/ metric\.deltaPct/.test(text), new RegExp(`having with limit ${CATALOG.limits.maxLimit}\\.`).test(text)], [true, true, true]);
+  check("a question needing several analyses, an explanation, discounts or product margins is a decline with code needs_analysis, and the tool schema allows that code", /Several analyses \([^)]*\), an explanation, discounts or product margins: code needs_analysis\./.test(text) && prompt.tool.input_schema.properties.decline.properties.code.enum.includes("needs_analysis"));
+  {
+    // generated from the catalog's multiStep flag: named in the needs_analysis rule, never in the "cannot answer" list
+    const catalog = require("./src/services/query/semanticCatalog");
+    const multi = CATALOG.unsupported.filter((u) => u.multiStep).map((u) => catalog.unsupportedLabel(u));
+    const declineLine = text.split("\n").find((l) => l.startsWith("If the question needs something"));
+    const cannot = declineLine.slice(0, declineLine.indexOf("do NOT guess"));
+    const several = (declineLine.match(/Several analyses \(([^)]*)\)/) || [])[1] || "";
+    check("multi-step catalog entries (sales next to purchases) go to needs_analysis, not to the cannot-answer list", multi.length > 0 && multi.every((l) => several.includes(l) && !cannot.includes(l)), JSON.stringify({ multi, several }));
+    check("single-entity limits stay in the cannot-answer list (accounting profit among them)", CATALOG.unsupported.filter((u) => !u.multiStep).every((u) => cannot.includes(catalog.unsupportedLabel(u))) && cannot.includes("accounting profit"));
+  }
+  check("relative periods compare with like_for_like; custom dates only when the user gave them (the year guard refuses invented years)", /compare = the EARLIER period \(like_for_like when it is the one just before a relative period; custom only with dates the user gave\)/.test(text));
   check("CONTRADICTION FIXED: the prompt no longer tells the model to decline returns / credit notes", !/returns\/credit notes/.test(text) && !fs.readFileSync(path.join(__dirname, "src", "services", "query", "planner.js"), "utf8").includes("returns/credit notes"));
   check("...and agrees with the catalog: return entities and metrics are offered, and the catalog says returns can be asked directly", ["sales_return", "purchase_return"].every((e) => lines.find((l) => l.startsWith("Entities:")).includes(e)) && ["returnAmount", "returnCount", "returnQuantity", "returnLineAmount"].every((m) => metricInfo[m]) && /can be asked directly/.test(CATALOG.unsupported.find((u) => u.id === "net_of_returns").reason));
 
