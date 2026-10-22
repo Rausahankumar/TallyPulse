@@ -427,6 +427,89 @@ async function main() {
     check("rest-trend-needs-product", "a missing or blank product is a 400", [(await call(controller.getProductTrend, TA, { from: Q1_26[0], to: Q1_26[1] })).code, (await call(controller.getProductTrend, TA, { product: "   ", from: Q1_26[0], to: Q1_26[1] })).code], [400, 400]);
     check("rest-trend-tenant-scope", "the tenant comes only from the company context: B sees only its own 7 units", (await call(controller.getProductTrend, TB, { product: "Item Trend", from: Q1_26[0], to: Q1_26[1] })).body.data.totals.saleQty, 7);
     const spm = await call(controller.getSupplierRates, TA, { period: "custom", from: AUG[0], to: AUG[1], product: "Item Alpha" });
+    console.log("\n=== 9. Bounded execution: optional maxTimeMS, query_timeout, result_too_large ===");
+    {
+      const origSale = Sale.aggregate, origPurchase = Purchase.aggregate;
+      const restore = () => { Sale.aggregate = origSale; Purchase.aggregate = origPurchase; };
+      // records every REAL aggregation (the Aggregate object, so its options and pipeline can be read afterwards)
+      const spy = () => {
+        const calls = [];
+        Sale.aggregate = function (pl) { const a = origSale.call(this, pl); calls.push(a); return a; };
+        Purchase.aggregate = function (pl) { const a = origPurchase.call(this, pl); calls.push(a); return a; };
+        return calls;
+      };
+      // a fake Aggregate whose exec resolves or rejects as asked (no database work)
+      const fakeWith = (exec) => { const fake = () => ({ option() { return this; }, exec }); Sale.aggregate = fake; Purchase.aggregate = fake; };
+      const runs = [
+        ["discountSummary", (o) => insights.discountSummary(TA, period(...AUG_SEP), { by: "product", ...o }), 2],
+        ["ratesByProduct", (o) => insights.ratesByProduct(TA, period(...AUG), { limit: 20, ...o }), 2],
+        ["productMargin", (o) => insights.productMargin(TA, period(...JUN26), { limit: 20, ...o }), 3],
+        ["productTrend", (o) => insights.productTrend(TA, period(...Q1_26), { product: "Item Trend", ...o }), 2],
+        ["supplierRates", (o) => insights.supplierRates(TA, period(...AUG), { limit: 10, ...o }), 2],
+      ];
+      try {
+        for (const [name, fn, expectedCalls] of runs) {
+          let calls = spy();
+          const limited = await fn({ maxTimeMS: 5000 });
+          restore();
+          check(`bound-time-${name}`, `${name}: every one of its ${expectedCalls} aggregations carries maxTimeMS 5000 when it is given`, [calls.length, calls.every((a) => a.options.maxTimeMS === 5000)], [expectedCalls, true]);
+          check(`bound-tenant-${name}`, `${name}: every aggregation still starts with the tenant + active-voucher $match`, calls.every((a) => { const first = a.pipeline()[0]; return Object.keys(first).join() === "$match" && first.$match.tenantId === TA && JSON.stringify(first.$match.voucherStatus) === JSON.stringify({ $in: ["active"] }); }), true);
+          calls = spy();
+          const plain = await fn({});
+          restore();
+          check(`bound-default-${name}`, `${name}: without maxTimeMS no aggregation gets a time limit (REST behaviour unchanged)`, calls.every((a) => a.options.maxTimeMS === undefined), true);
+          check(`bound-same-${name}`, `${name}: the result with a time limit is identical to the result without one (shape, numbers, disclosures)`, JSON.stringify(limited), JSON.stringify(plain));
+        }
+
+        let codes = [];
+        for (const bad of [0, -5, 1.5, "1000", 600001]) {
+          try { await insights.ratesByProduct(TA, period(...AUG), { maxTimeMS: bad }); codes.push("accepted"); } catch (e) { codes.push(e.status); }
+        }
+        check("bound-validate", "an invalid maxTimeMS (0, negative, fraction, string, above 600000) is a 400 before any query", codes, [400, 400, 400, 400, 400]);
+
+        fakeWith(() => Promise.reject(Object.assign(new Error("operation exceeded time limit"), { code: 50 })));
+        const timeouts = [];
+        for (const [name, fn] of runs) {
+          try { await fn({ maxTimeMS: 5 }); timeouts.push(`${name}:no error`); } catch (e) { timeouts.push(`${e.code}|${/exceeded|time limit/i.test(e.message) ? "driver text" : "plain"}`); }
+        }
+        check("bound-timeout", "a simulated MongoDB timeout (code 50) becomes query_timeout with a plain message, in all five functions", timeouts, Array(5).fill("query_timeout|plain"));
+        fakeWith(() => Promise.reject(Object.assign(new Error("MaxTimeMSExpired: operation exceeded time limit"), {})));
+        let byText = null;
+        try { await insights.productTrend(TA, period(...Q1_26), { product: "Item Trend", maxTimeMS: 5 }); } catch (e) { byText = e.code; }
+        check("bound-timeout-text", "a timeout recognised by its MaxTimeMSExpired text (no numeric code) is also query_timeout", byText, "query_timeout");
+        fakeWith(() => Promise.reject(new Error("some other failure")));
+        let other = null;
+        try { await insights.discountSummary(TA, period(...AUG)); } catch (e) { other = [e.message, e.code || null]; }
+        check("bound-other-error", "any other database error is passed through unchanged (not relabelled as a timeout)", other, ["some other failure", null]);
+
+        fakeWith(() => Promise.reject(Object.assign(new Error("operation exceeded time limit"), { code: 50 })));
+        const rest = await (async () => { const res = { code: null, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } }; await controller.getProductRates({ companyContext: { tenantId: TA }, query: { period: "custom", from: AUG[0], to: AUG[1] } }, res); return res; })();
+        check("bound-rest-envelope", "through the REST trust envelope a timeout is still the existing analytics_error state, and the driver text is not shown", [rest.code, rest.body.state, /exceeded time limit/i.test(rest.body.message)], [200, "analytics_error", false]);
+
+        const tooMany = Array.from({ length: insights.MAX_GROUP_ROWS + 1 }, (_, i) => ({ _id: `P${i}`, qty: 1, billed: 1, gross: 1, minRate: 1, maxRate: 1 }));
+        fakeWith(() => Promise.resolve(tooMany));
+        const caps = [];
+        for (const [name, fn] of runs.filter(([nm]) => ["ratesByProduct", "productMargin"].includes(nm))) {
+          try { await fn({}); caps.push(`${name}:no error`); } catch (e) { caps.push(`${name}:${e.code}`); }
+        }
+        check("bound-cap-products", `more than ${insights.MAX_GROUP_ROWS} products in one side is refused (result_too_large), never truncated`, caps, ["ratesByProduct:result_too_large", "productMargin:result_too_large"]);
+        fakeWith(() => Promise.resolve(Array.from({ length: insights.MAX_GROUP_ROWS + 1 }, (_, i) => ({ _id: { item: `P${i}`, supplier: "S" }, qty: 1, billed: 1, gross: 1, minRate: 1, maxRate: 1, lastRate: 1, lastDate: null, vouchers: [] }))));
+        let pairCap = null;
+        try { await insights.supplierRates(TA, period(...AUG)); } catch (e) { pairCap = e.code; }
+        check("bound-cap-pairs", `more than ${insights.MAX_GROUP_ROWS} product-supplier pairs is refused (result_too_large)`, pairCap, "result_too_large");
+        restore();
+
+        const capCalls = spy();
+        await insights.ratesByProduct(TA, period(...AUG));
+        await insights.supplierRates(TA, period(...AUG), { product: "Item Alpha" });
+        restore();
+        const lastStage = (a) => a.pipeline()[a.pipeline().length - 1];
+        check("bound-cap-stage", "the capped groupings ask MongoDB for at most one row more than the cap ($limit MAX_GROUP_ROWS + 1 as the last stage)", [lastStage(capCalls[0]).$limit, lastStage(capCalls[1]).$limit, lastStage(capCalls[2]).$limit], Array(3).fill(insights.MAX_GROUP_ROWS + 1));
+      } finally {
+        restore();
+      }
+    }
+
     check("rest-supplier-margin", "GET supplier rates now also returns the sale rate and each supplier's margin", [spm.body.data.rows[0].saleRate, spm.body.data.rows[0].suppliers.find((s) => s.supplier === "Sup X").unitMargin], [16.94, 0.74]);
   } finally {
     await cleanup();

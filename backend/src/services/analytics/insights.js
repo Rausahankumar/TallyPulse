@@ -4,8 +4,16 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 
 // --------------------------------------------------
 // Insights: discount and price analytics over the vouchers already stored. One file, plain functions, the same
-// shape as salesAnalytics.js / purchaseAnalytics.js: (tenantId, period, options) -> a plain result. The REST pages and
-// the Ask AI `run_insight` tool call THESE functions, so the two can never show different numbers.
+// shape as salesAnalytics.js / purchaseAnalytics.js: (tenantId, period, options) -> a plain result. Called by the REST
+// pages (controllers/analyticsController.js) and, for Ask AI analysis plans, through analytics/insightTools.js: the same
+// functions, so the two can never show different numbers.
+//
+// Bounded execution (all optional, REST passes none and keeps its behaviour):
+//   - options.maxTimeMS: a MongoDB time limit applied to EVERY aggregation a function runs (parallel ones included). A
+//     timeout is thrown as code "query_timeout" with a plain message (never the driver's text), like query/execute.js.
+//   - per-product (and per product-supplier) groupings return at most MAX_GROUP_ROWS rows to this process; one row more
+//     is refused as code "result_too_large", never truncated. This caps what the APPLICATION holds and sorts; MongoDB
+//     still builds every group of the $group stage before $limit applies (only maxTimeMS bounds that work).
 //
 // Every function goes through buildVoucherMatchStage (tenant + active vouchers + calendar-day dates), computes only from
 // the stored item lines (quantity, rate, amount) and never from Claude. No Tally data, no database write.
@@ -56,6 +64,39 @@ const clampLimit = (limit, fallback = 10) => {
 const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const modelFor = (entity) => (entity === "purchase" ? Purchase : Sale);
 
+// ---- bounded execution (see the header)
+// Same size as the query engine's per-item roll-up cap (LIMITS.maxRollupRows in services/query/semanticCatalog.js); kept
+// here as a constant so the analytics layer does not depend on the query layer.
+const MAX_GROUP_ROWS = 50000;
+const MAX_TIME_MS_CEILING = 600000;
+const TIMEOUT_MESSAGE = "The calculation took too long. Choose a shorter period or a narrower filter.";
+// The same test as services/query/execute.js isTimeout: MongoDB code 50 (MaxTimeMSExpired) or its message.
+const isTimeout = (error) => !!error && (error.code === 50 || /exceeded time limit|MaxTimeMSExpired/i.test(String(error.message || "")));
+
+function readMaxTimeMS(value) {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_TIME_MS_CEILING) {
+    throw Object.assign(new Error(`Invalid "maxTimeMS". Expected a whole number of milliseconds from 1 to ${MAX_TIME_MS_CEILING}.`), { status: 400 });
+  }
+  return value;
+}
+
+// Every aggregation in this file goes through here: the optional time limit, and a timeout turned into "query_timeout".
+function aggregate(Model, pipeline, maxTimeMS) {
+  const agg = Model.aggregate(pipeline);
+  if (maxTimeMS) agg.option({ maxTimeMS });
+  return agg.exec().catch((error) => {
+    throw isTimeout(error) ? Object.assign(new Error(TIMEOUT_MESSAGE), { code: "query_timeout" }) : error;
+  });
+}
+
+function capRows(rows, what) {
+  if (rows.length > MAX_GROUP_ROWS) {
+    throw Object.assign(new Error(`More than ${MAX_GROUP_ROWS} ${what} are involved. Choose a shorter period or filter by a product.`), { code: "result_too_large" });
+  }
+  return rows;
+}
+
 // Per item line, computed inside the pipeline (after $unwind of inventory).
 const LINE_STAGE = {
   $addFields: {
@@ -102,7 +143,8 @@ const shapeDiscount = (g) => ({
  * @param {{from: Date, to: Date, label?: string}} period
  * @param {{entity?: "sales"|"purchase", by?: "customer"|"supplier"|"product"|"month"|null, limit?: number}} [options]
  */
-async function discountSummary(tenantId, period, { entity = "sales", by = null, limit = 10 } = {}) {
+async function discountSummary(tenantId, period, { entity = "sales", by = null, limit = 10, maxTimeMS } = {}) {
+  const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const Model = modelFor(entity);
   const prefix = [{ $match: match }, { $unwind: "$inventory" }, LINE_STAGE, LINE_FLAGS_STAGE];
@@ -115,19 +157,19 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   }[by];
   if (by && !keyExpr) throw Object.assign(new Error(`Unknown breakdown "${by}".`), { status: 400 });
 
-  const [totalsRow] = await Model.aggregate([...prefix, { $group: { _id: null, ...DISCOUNT_GROUP } }]);
+  const [totalsRow] = await aggregate(Model, [...prefix, { $group: { _id: null, ...DISCOUNT_GROUP } }], timeLimit);
   const totals = totalsRow ? shapeDiscount(totalsRow) : shapeDiscount({ gross: 0, billed: 0, discount: 0, lines: 0, listedLines: 0, discountedLines: 0, excludedLines: 0 });
 
   let rows = [];
   if (keyExpr) {
-    const raw = await Model.aggregate([
+    const raw = await aggregate(Model, [
       ...prefix,
       { $group: { _id: keyExpr, ...DISCOUNT_GROUP } },
       // a group with no plausible priced line has nothing to say about discounts (its lines are counted in the totals)
       { $match: { gross: { $gt: 0 } } },
       by === "month" ? { $sort: { _id: 1 } } : { $sort: { discount: -1, _id: 1 } },
       { $limit: by === "month" ? 120 : clampLimit(limit) },
-    ]);
+    ], timeLimit);
     rows = raw.map((r) => ({ key: by === "month" ? r._id.toISOString().slice(0, 7) : r._id, ...shapeDiscount(r) }));
   }
 
@@ -143,8 +185,9 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
 }
 
 // One side (sales or purchases) per product: priced lines only (a rate needs a billed amount), quantity-weighted.
-function sideTotals(Model, match, productMatch = []) {
-  return Model.aggregate([
+// At most MAX_GROUP_ROWS products come back; one more is refused (result_too_large) before any in-memory sorting.
+async function sideTotals(Model, match, productMatch = [], timeLimit) {
+  const rows = await aggregate(Model, [
     { $match: match },
     { $unwind: "$inventory" },
     ...productMatch,
@@ -160,14 +203,17 @@ function sideTotals(Model, match, productMatch = []) {
         maxRate: { $max: { $divide: ["$_net", "$inventory.quantity"] } },
       },
     },
-  ]);
+    { $limit: MAX_GROUP_ROWS + 1 },
+  ], timeLimit);
+  return capRows(rows, "products");
 }
 
 // Per-product sale and purchase rates for the period, side by side.
-async function ratesByProduct(tenantId, period, { limit = 10, product = null } = {}) {
+async function ratesByProduct(tenantId, period, { limit = 10, product = null, maxTimeMS } = {}) {
+  const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const productMatch = product ? [{ $match: { "inventory.itemName": { $regex: `^${escapeRegex(product)}$`, $options: "i" } } }] : [];
-  const [sales, purchases] = await Promise.all([sideTotals(Sale, match, productMatch), sideTotals(Purchase, match, productMatch)]);
+  const [sales, purchases] = await Promise.all([sideTotals(Sale, match, productMatch, timeLimit), sideTotals(Purchase, match, productMatch, timeLimit)]);
 
   const byName = new Map();
   const slot = (name) => {
@@ -212,13 +258,14 @@ async function ratesByProduct(tenantId, period, { limit = 10, product = null } =
  * Indicative margin per product sold in the period: average sale rate vs average purchase cost (see MARGIN_NOTE).
  * @param {{sortBy?: "profit"|"marginPct", order?: "desc"|"asc", limit?: number}} [options]
  */
-async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", order = "desc" } = {}) {
+async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", order = "desc", maxTimeMS } = {}) {
   if (!MARGIN_SORTS[sortBy]) throw Object.assign(new Error(`Unknown sort "${sortBy}". Expected one of: ${Object.keys(MARGIN_SORTS).join(", ")}.`), { status: 400 });
   if (order !== "asc" && order !== "desc") throw Object.assign(new Error('Invalid "order". Expected asc or desc.'), { status: 400 });
 
+  const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const earlierMatch = buildVoucherMatchStage({ tenantId, from: daysBefore(period.from, EARLIER_COST_DAYS), to: daysBefore(period.from, 1) });
-  const [sales, purchases, earlier] = await Promise.all([sideTotals(Sale, match), sideTotals(Purchase, match), sideTotals(Purchase, earlierMatch)]);
+  const [sales, purchases, earlier] = await Promise.all([sideTotals(Sale, match, [], timeLimit), sideTotals(Purchase, match, [], timeLimit), sideTotals(Purchase, earlierMatch, [], timeLimit)]);
   const purchaseBy = new Map(purchases.map((p) => [p._id, p]));
   const earlierBy = new Map(earlier.map((p) => [p._id, p]));
 
@@ -281,12 +328,15 @@ async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", 
  * Month-by-month quantity bought and sold for ONE product, with the net movement (bought − sold) and its running total.
  * Months with no voucher between the first and the last active month are shown with zeros. See TREND_NOTE.
  */
-async function productTrend(tenantId, period, { product } = {}) {
+async function productTrend(tenantId, period, { product, maxTimeMS } = {}) {
   if (typeof product !== "string" || !product.trim()) throw Object.assign(new Error('"product" is required.'), { status: 400 });
   const wanted = product.trim();
+  const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
+  // One group per month of the period (at most the period's months). The per-month voucher-id set is left as it is: it is
+  // the exact distinct-voucher count, and replacing it would change the calculation (see the header).
   const side = (Model) =>
-    Model.aggregate([
+    aggregate(Model, [
       { $match: match },
       { $unwind: "$inventory" },
       { $match: { "inventory.itemName": { $regex: `^${escapeRegex(wanted)}$`, $options: "i" }, "inventory.quantity": { $gt: 0 } } },
@@ -302,7 +352,7 @@ async function productTrend(tenantId, period, { product } = {}) {
           vouchers: { $addToSet: "$_id" },
         },
       },
-    ]);
+    ], timeLimit);
   const [sales, purchases] = await Promise.all([side(Sale), side(Purchase)]);
 
   const byMonth = new Map();
@@ -359,11 +409,14 @@ async function productTrend(tenantId, period, { product } = {}) {
 }
 
 // What each supplier charged per unit for the same product, and who is cheapest.
-async function supplierRates(tenantId, period, { product = null, limit = 10 } = {}) {
+async function supplierRates(tenantId, period, { product = null, limit = 10, maxTimeMS } = {}) {
+  const timeLimit = readMaxTimeMS(maxTimeMS);
   const match = buildVoucherMatchStage({ tenantId, from: period.from, to: period.to });
   const productMatch = product ? [{ $match: { "inventory.itemName": { $regex: `^${escapeRegex(product)}$`, $options: "i" } } }] : [];
 
-  const pairs = await Purchase.aggregate([
+  // One row per (product, supplier) pair: at most MAX_GROUP_ROWS come back, one more is refused before any in-memory work.
+  // The per-pair voucher-id set is left as it is (the exact distinct-purchase count; see the header).
+  const pairs = capRows(await aggregate(Purchase, [
     { $match: match },
     { $unwind: "$inventory" },
     ...productMatch,
@@ -384,7 +437,8 @@ async function supplierRates(tenantId, period, { product = null, limit = 10 } = 
         vouchers: { $addToSet: "$_id" },
       },
     },
-  ]);
+    { $limit: MAX_GROUP_ROWS + 1 },
+  ], timeLimit), "product-supplier pairs");
 
   const items = new Map();
   for (const p of pairs) {
@@ -412,14 +466,14 @@ async function supplierRates(tenantId, period, { product = null, limit = 10 } = 
 
   // average sale rate of the SAME products in the SAME period, to show what each supplier's rate would leave per unit
   const soldRows = selected.length
-    ? await Sale.aggregate([
+    ? await aggregate(Sale, [
         { $match: match },
         { $unwind: "$inventory" },
         { $match: { "inventory.itemName": { $in: selected.map((it) => it.product) } } },
         LINE_STAGE,
         { $match: { "inventory.quantity": { $gt: 0 }, _net: { $gt: 0 } } },
         { $group: { _id: "$inventory.itemName", qty: { $sum: "$inventory.quantity" }, billed: { $sum: "$_net" } } },
-      ])
+      ], timeLimit)
     : [];
   const saleRateBy = new Map(soldRows.map((r) => [r._id, r.billed / r.qty]));
 
@@ -469,4 +523,4 @@ async function supplierRates(tenantId, period, { product = null, limit = 10 } = 
   return { rows: out, period: { from: period.from, to: period.to, label: period.label || null }, hasData: out.length > 0, disclosures: [RATE_NOTE, SUPPLIER_MARGIN_NOTE] };
 }
 
-module.exports = { discountSummary, ratesByProduct, productMargin, productTrend, supplierRates, MIN_BILLED_TO_LIST, DISCOUNT_NOTE, RATE_NOTE, MARGIN_NOTE, TREND_NOTE, SUPPLIER_MARGIN_NOTE };
+module.exports = { discountSummary, ratesByProduct, productMargin, productTrend, supplierRates, MIN_BILLED_TO_LIST, MAX_GROUP_ROWS, DISCOUNT_NOTE, RATE_NOTE, MARGIN_NOTE, TREND_NOTE, SUPPLIER_MARGIN_NOTE };
