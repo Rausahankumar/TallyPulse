@@ -91,6 +91,13 @@ async function cleanup() {
     res = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: SEP, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: T2 });
     check("tenant isolation: a different tenant's ranking is empty", res.ok && res.rows.length === 0);
 
+    // No N stated, synthetic: 12 customers in October 2026 (outside SEP and January above), amounts R01 1200 .. R12 100,
+    // all distinct. The validator's default limit (10) applies, so R01..R10 come back and the result is flagged truncated.
+    const OCT_RANKING = Array.from({ length: 12 }, (_, i) => [`R${String(i + 1).padStart(2, "0")}`, (12 - i) * 100]);
+    await AdjustmentNote.insertMany(OCT_RANKING.map(([party, amount], i) => note({ noteType: "credit", classification: "sales_return", party, amount, date: `2026-10-${String(i + 1).padStart(2, "0")}` })));
+    res = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2026-10-01", to: "2026-10-31" }, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: T1 });
+    check("no-N ranking applies the default limit: rowLimit 10, truncated, rows = [R01 1200 .. R10 300], R11/R12 absent", res.ok && res.rowLimit === 10 && res.truncated === true && same(res.rows.map((r) => [r.key.customer, r.values.returnAmount]), OCT_RANKING.slice(0, 10)), JSON.stringify(res.ok ? { rowLimit: res.rowLimit, truncated: res.truncated, rows: res.rows.map((r) => [r.key.customer, r.values.returnAmount]) } : res.errors));
+
     // ============================================================ C. CACHE
     section("C. CACHE: repeat ranking query hits");
     let execCalls = 0;

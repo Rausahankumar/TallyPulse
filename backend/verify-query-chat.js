@@ -443,7 +443,51 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   // ============================================================ H/I. real tenant, real engine + cache (read-only)
   section("H. real tenant: planner plans executed by the real engine match an independent Mongo oracle");
   await connectDB();
-  const we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === "WE FOUR");
+  let we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === "WE FOUR");
+  // No WE FOUR here (always the case in the isolated CI database): H, I and J run on two synthetic tenants instead, seeded
+  // here and removed after J. connectDB() already passed the test-mode guard (loopback test database only). Every H/I/J
+  // check compares with an independent Mongo oracle or checks behaviour, so synthetic vouchers exercise the same code path;
+  // they do not prove real WE FOUR data shapes, which still run here whenever that tenant exists.
+  let syntheticChat = null;
+  if (!we) {
+    const SyncCheckpointModel = require("./src/models/syncCheckpoint.model");
+    syntheticChat = {
+      a: { tenantId: "TEST-TENANT-query-chat-a", companyGuid: "verify-query-chat-synthetic-a", companyName: "Synthetic Query Chat A" },
+      b: { tenantId: "TEST-TENANT-query-chat-b", companyGuid: "verify-query-chat-synthetic-b", companyName: "Synthetic Query Chat B" },
+    };
+    const ids = [syntheticChat.a.tenantId, syntheticChat.b.tenantId];
+    await Promise.all([Sale.deleteMany({ tenantId: { $in: ids } }), SyncCheckpointModel.deleteMany({ tenantId: { $in: ids } })]);
+    await Company.deleteMany({ companyGuid: { $in: [syntheticChat.a.companyGuid, syntheticChat.b.companyGuid] } });
+    let seq = 0;
+    const v = (t, ymd, party, amount) => {
+      seq += 1;
+      return {
+        tenantId: t.tenantId, tallyGuid: `${t.companyGuid}-${seq}`, tallyAlterId: seq, voucherStatus: "active",
+        header: { voucherNo: `QC-${seq}`, voucherDate: new Date(`${ymd}T00:00:00.000Z`), voucherType: "Sales", voucherTotalAmount: amount, narration: "", partyName: party },
+        inventory: [{ itemName: "Synthetic Widget", quantity: 1, rate: amount, amount }], ledgers: [],
+      };
+    };
+    const A = syntheticChat.a;
+    const B = syntheticChat.b;
+    await Sale.insertMany([
+      // tenant A, August 2025 (the window H and I ask about), with distinct customer totals so the top 3 have a strict order
+      v(A, "2025-08-01", "Synthetic Chat Alpha", 5000), v(A, "2025-08-14", "Synthetic Chat Alpha", 1200),
+      v(A, "2025-08-09", "Synthetic Chat Beta", 3000), v(A, "2025-08-20", "Synthetic Chat Gamma", 900),
+      v(A, "2025-08-31", "Synthetic Chat Delta", 400),
+      // tenant A, just outside August (must not be counted for August)
+      v(A, "2025-07-31", "Synthetic Chat Gamma", 650), v(A, "2025-09-01", "Synthetic Chat Delta", 350),
+      // tenant B: a shared customer name and its own, different August numbers
+      v(B, "2025-08-05", "Synthetic Chat Beta", 777), v(B, "2025-08-22", "Synthetic Chat B-Only Store", 333),
+    ]);
+    for (const t of [A, B]) {
+      await Company.create({ companyName: t.companyName, companyGuid: t.companyGuid, tenantId: t.tenantId, isActive: true });
+      for (const voucherType of ["Sales", "Purchase"]) {
+        await SyncCheckpointModel.create({ tenantId: t.tenantId, companyGuid: t.companyGuid, voucherType, lastAlterId: seq, lastSyncedAt: new Date(), lastRunStatus: "success" });
+      }
+    }
+    we = { tenantId: A.tenantId, companyGuid: A.companyGuid };
+    console.log("    no WE FOUR tenant in this database: running H, I and J on two synthetic tenants (seeded here, removed after J)");
+  }
   const realData = !!we;
   if (!realData) console.log("  SKIPPED - sections H, I and J need the real WE FOUR tenant, which is not present in this database");
   const tenantId = realData ? we.tenantId : null;
@@ -475,7 +519,8 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const day = { $dateToString: { format: "%Y-%m-%d", date: "$header.voucherDate", timezone: "UTC" } };
     const o = await Sale.aggregate([{ $match: { tenantId, voucherStatus: "active" } }, { $addFields: { d: day } }, { $match: { d: { $gte: "2025-08-01", $lte: "2025-08-31" } } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
     check("planner path on real data: one planner call and the answer equals the oracle", r.handled && p.requests.length === 1 && r.structured.answer.includes(fmtMoney(o[0].amt)) && /AI-assisted/.test(r.structured.answer), r.structured && r.structured.answer.slice(0, 200));
-    const other = (await Company.find({ isActive: true }).lean()).find((c) => c.tenantId !== tenantId);
+    // synthetic run: the other tenant is synthetic tenant B (never another suite's leftover company)
+    const other = syntheticChat ? { tenantId: syntheticChat.b.tenantId } : (await Company.find({ isActive: true }).lean()).find((c) => c.tenantId !== tenantId);
     const mkP = () => planner(() => toolReply({ plan: planOf({ period: AUG }) }));
     const rOther = await tryAnswerWithQueryEngine({ context: { tenantId: other.tenantId }, userMessage: "total sales from 2025-08-01 to 2025-08-31", conversationHistory: [], deps: { plannerClient: mkP() } });
     const rWe = await tryAnswerWithQueryEngine({ context: realCtx, userMessage: "total sales from 2025-08-01 to 2025-08-31", conversationHistory: [], deps: { plannerClient: mkP() } });
@@ -554,6 +599,17 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       await Chat.deleteMany({ _id: { $in: made }, tenantId, userId });
     }
     check("synthetic chats removed", (await Chat.countDocuments({ userId })) === 0);
+  }
+  if (syntheticChat) {
+    // only the synthetic tenants' own records
+    const ids = [syntheticChat.a.tenantId, syntheticChat.b.tenantId];
+    await Promise.all([
+      Sale.deleteMany({ tenantId: { $in: ids } }),
+      require("./src/models/syncCheckpoint.model").deleteMany({ tenantId: { $in: ids } }),
+      require("./src/models/tenantDataVersion.model").deleteMany({ tenantId: { $in: ids } }),
+    ]);
+    await Company.deleteMany({ companyGuid: { $in: [syntheticChat.a.companyGuid, syntheticChat.b.companyGuid] } });
+    check("H/I/J synthetic tenants removed", (await Sale.countDocuments({ tenantId: { $in: ids } })) === 0 && (await Company.countDocuments({ companyGuid: { $in: [syntheticChat.a.companyGuid, syntheticChat.b.companyGuid] } })) === 0);
   }
 
   // ============================================================ L. F3 + freshness ordering (fakes only)
