@@ -394,7 +394,59 @@ function resolveCell(kind, mode, referenceDate) {
   process.exit(1);
 });
 
-// ---------------------------------------------------------------- F. ground truth (read-only)
+// ---------------------------------------------------------------- F. synthetic tenant (used only when no real tenant qualifies)
+// Section F needs a tenant with 100+ active sales. A real database has one; the isolated CI database has none, so F seeds this
+// deterministic synthetic tenant instead (synthetic names only, no Company document) and removes it afterwards. Dates run
+// 1 Apr 2024 .. 18 Sep 2025, so the reference date (the latest voucher) is 18 Sep 2025 and every compared period - this month,
+// last month, this quarter, last 90 days, this FY and the same period last year - has data on both sides. One customer stops
+// buying after July 2025 and one is new in September 2025, so the "stopped" and "new" rows are exercised too.
+const SYNTHETIC_TENANT = "TEST-TENANT-comparison-period-synthetic";
+function syntheticVouchers(tenantId) {
+  let seed = 4242;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const day = (y, m, d) => new Date(Date.UTC(y, m, d));
+  const FIRST = day(2024, 3, 1);
+  const LAST = day(2025, 8, 18);
+  const span = Math.round((LAST - FIRST) / 86400000); // days from FIRST to LAST
+  const CUSTOMERS = ["Synthetic Customer A", "Synthetic Customer B", "Synthetic Customer C", "Synthetic Customer D", "Synthetic Customer E", "Synthetic Customer F", "Synthetic Customer G"];
+  const SUPPLIERS = ["Synthetic Supplier P", "Synthetic Supplier Q", "Synthetic Supplier R", "Synthetic Supplier S"];
+  const ITEMS = ["Alpha Widget", "Beta Widget", "Gamma Cable", "Delta Cable", "Epsilon Box", "Zeta Box", "Eta Pipe", "Theta Pipe", "Iota Gear", "Kappa Gear"];
+  let seq = 0;
+  const voucher = (kind, date, party, status) => {
+    seq += 1;
+    const lines = [];
+    let sum = 0;
+    for (let l = 0, n = 1 + Math.floor(rnd() * 3); l < n; l += 1) {
+      const quantity = 1 + Math.floor(rnd() * 40);
+      const rate = 10 + Math.floor(rnd() * 90);
+      sum += quantity * rate;
+      lines.push({ itemName: pick(ITEMS), quantity, rate, amount: kind === "purchase" ? -quantity * rate : quantity * rate });
+    }
+    return {
+      tenantId,
+      tallyGuid: `syn-cmp-${kind}-${seq}`,
+      tallyAlterId: seq,
+      voucherStatus: status || (rnd() < 0.03 ? "cancelled" : "active"),
+      header: { voucherNo: `${kind === "purchase" ? "CP" : "CS"}-${seq}`, voucherDate: date, voucherType: kind === "purchase" ? "Purchase" : "Sales", voucherTotalAmount: Math.round(sum * 1.18 * 100) / 100, narration: "", partyName: party },
+      inventory: lines,
+      ledgers: [],
+    };
+  };
+  const randomDay = () => new Date(FIRST.getTime() + Math.floor(rnd() * (span + 1)) * 86400000);
+  const sales = [];
+  for (let i = 0; i < 320; i += 1) sales.push(voucher("sales", randomDay(), pick(CUSTOMERS)));
+  // stops buying: active until July 2025, nothing in August or September 2025
+  for (const d of [day(2025, 5, 3), day(2025, 5, 21), day(2025, 6, 8), day(2025, 6, 26)]) sales.push(voucher("sales", d, "Synthetic Customer H", "active"));
+  // new: first purchase from us in September 2025
+  for (const d of [day(2025, 8, 4), day(2025, 8, 15)]) sales.push(voucher("sales", d, "Synthetic Customer I", "active"));
+  sales.push(voucher("sales", LAST, pick(CUSTOMERS), "active")); // pins the reference date to the last day
+  const purchases = [];
+  for (let i = 0; i < 160; i += 1) purchases.push(voucher("purchase", randomDay(), pick(SUPPLIERS)));
+  return { sales, purchases, activeSales: sales.filter((v) => v.voucherStatus === "active").length };
+}
+
+// ---------------------------------------------------------------- F. ground truth (read-only on real data; synthetic tenant otherwise)
 async function groundTruth() {
   const mongoose = require("mongoose");
   require("dotenv").config();
@@ -405,6 +457,7 @@ async function groundTruth() {
     console.log("  SKIPPED - MongoDB not reachable (sections A-D are complete without it)");
     return;
   }
+  let seededTenant = null;
   try {
     const Company = require("./src/models/company");
     const Sale = require("./src/models/sales.model");
@@ -418,7 +471,18 @@ async function groundTruth() {
       const n = await Sale.countDocuments({ tenantId: c.tenantId, voucherStatus: "active" });
       if (n > most) { most = n; tenantId = c.tenantId; }
     }
-    if (!tenantId || most < 100) { console.log("  SKIPPED - no tenant with enough data"); return; }
+    if (!tenantId || most < 100) {
+      // No real tenant has enough data (always the case in the isolated CI database): run the same checks on a synthetic tenant.
+      // The connection above already passed the test-mode guard, so this writes only to a loopback test database.
+      seededTenant = SYNTHETIC_TENANT;
+      await Promise.all([Sale.deleteMany({ tenantId: seededTenant }), Purchase.deleteMany({ tenantId: seededTenant })]);
+      const fixture = syntheticVouchers(seededTenant);
+      await Sale.insertMany(fixture.sales);
+      await Purchase.insertMany(fixture.purchases);
+      tenantId = seededTenant;
+      most = fixture.activeSales;
+      console.log(`    no real tenant with 100+ active sales: using a synthetic tenant (${fixture.activeSales} active sales, ${fixture.purchases.length} purchases)`);
+    }
     const ref = await getTenantReferenceDate(tenantId);
     console.log(`    tenant with ${most} active sales vouchers; reference date ${ymd(ref)}${[29, 30, 31].includes(ref.getDate()) ? " (a month-end anchor: see section B)" : ""}`);
 
@@ -530,6 +594,13 @@ async function groundTruth() {
       check(`"${q}" [${ymd(v.normalized.period.from)}..${ymd(v.normalized.period.to)} vs ${ymd(v.normalized.comparison.from)}..${ymd(v.normalized.comparison.to)}] engine = independent aggregation (${note})`, problems.length === 0, problems.slice(0, 4).join(", "));
     }
   } finally {
+    if (seededTenant) {
+      // only the synthetic tenant's own vouchers
+      await Promise.all([
+        require("./src/models/sales.model").deleteMany({ tenantId: seededTenant }),
+        require("./src/models/purchase.model").deleteMany({ tenantId: seededTenant }),
+      ]);
+    }
     await mongoose.disconnect();
   }
 }

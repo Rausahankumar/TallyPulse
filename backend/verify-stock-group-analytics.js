@@ -46,6 +46,8 @@ function approx(a, b, epsilon = 0.001) {
 
 const TENANT_A = "TEST-TENANT-A-stockgroup-verify";
 const TENANT_B = "TEST-TENANT-B-stockgroup-verify";
+// Section B's stand-in when no real WE FOUR data is present (e.g. CI) - seeded only then, never otherwise.
+const TENANT_C = "TEST-TENANT-C-stockgroup-verify";
 
 let voucherSeq = 0;
 function makeSale({ tenantId, date, inventory, voucherStatus = "active" }) {
@@ -71,8 +73,8 @@ function inv(itemName, quantity, rate, amount) {
 }
 
 async function cleanup() {
-  await Sale.deleteMany({ tenantId: { $in: [TENANT_A, TENANT_B] } });
-  await StockItemMaster.deleteMany({ tenantId: { $in: [TENANT_A, TENANT_B] } });
+  await Sale.deleteMany({ tenantId: { $in: [TENANT_A, TENANT_B, TENANT_C] } });
+  await StockItemMaster.deleteMany({ tenantId: { $in: [TENANT_A, TENANT_B, TENANT_C] } });
 }
 
 async function seedFixtures() {
@@ -289,7 +291,11 @@ async function independentStockGroupAggregation(tenantId, from, to) {
   const stockItems = await StockItemMaster.find({ tenantId }).lean();
   const groupByItemName = new Map(stockItems.map((s) => [s.itemName, s.stockGroupName]));
 
-  const sales = await Sale.find({ tenantId, voucherStatus: "active", "header.voucherDate": { $gte: from, $lte: to } }).lean();
+  // A period is a range of local CALENDAR DAYS and a voucher is stored at UTC midnight of its Tally date, so compare on
+  // stored-day bounds (first day 00:00Z .. last day 23:59:59.999Z). Raw local Dates only line up when the server runs in UTC.
+  const fromDay = new Date(Date.UTC(from.getFullYear(), from.getMonth(), from.getDate()));
+  const toDay = new Date(Date.UTC(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59, 999));
+  const sales = await Sale.find({ tenantId, voucherStatus: "active", "header.voucherDate": { $gte: fromDay, $lte: toDay } }).lean();
 
   const byGroup = new Map();
   let mappedAmount = 0, mappedLines = 0, unmappedAmount = 0, unmappedLines = 0;
@@ -325,20 +331,55 @@ async function independentStockGroupAggregation(tenantId, from, to) {
   };
 }
 
+// Stand-in for WE FOUR when its data is absent. Latest voucher 2025-08-20, so (FY quarters, Apr start):
+//   current  = 2025-07-01 .. 2025-08-20   previous = 2025-04-01 .. 2025-05-20   YoY = 2024-07-01 .. 2024-08-20
+// Hand-computed expectations are asserted in runRealWeFourVerification on top of the independent-aggregation checks.
+async function seedSyntheticSectionB() {
+  await StockItemMaster.insertMany([
+    { tenantId: TENANT_C, itemName: "SItem1", stockGroupName: "SG-Red", tallyGuid: "guidC-1", syncedAt: new Date() },
+    { tenantId: TENANT_C, itemName: "SItem2", stockGroupName: "SG-Red", tallyGuid: "guidC-2", syncedAt: new Date() },
+    { tenantId: TENANT_C, itemName: "SItem3", stockGroupName: "SG-Blue", tallyGuid: "guidC-3", syncedAt: new Date() },
+    { tenantId: TENANT_C, itemName: "SItem4", stockGroupName: "SG-Green", tallyGuid: "guidC-4", syncedAt: new Date() },
+    // SItem5 deliberately has NO StockItemMaster record (unmapped).
+  ]);
+  const d = (iso) => new Date(`${iso}T00:00:00.000Z`);
+  await Sale.create([
+    // Current quarter-to-date.
+    makeSale({ tenantId: TENANT_C, date: d("2025-07-01"), inventory: [inv("SItem1", 4, 1000, 4000)] }), // first day of the quarter
+    makeSale({ tenantId: TENANT_C, date: d("2025-07-15"), inventory: [inv("SItem2", 2, 500, 1000), inv("SItem3", 3, 1000, 3000)] }),
+    makeSale({ tenantId: TENANT_C, date: d("2025-07-20"), inventory: [inv("SItem3", 99, 1010, 99999)], voucherStatus: "cancelled" }), // excluded
+    makeSale({ tenantId: TENANT_C, date: d("2025-08-05"), inventory: [inv("SItem5", 1, 700, 700)] }), // unmapped
+    makeSale({ tenantId: TENANT_C, date: d("2025-08-10"), inventory: [inv("SItem1", -1, 500, -500)] }), // return line
+    makeSale({ tenantId: TENANT_C, date: d("2025-08-20"), inventory: [inv("SItem4", 1, 2500, 2500)] }), // latest voucher = reference day
+    // The day before the quarter - inside none of the three periods.
+    makeSale({ tenantId: TENANT_C, date: d("2025-06-30"), inventory: [inv("SItem1", 1, 900, 900)] }),
+    // Previous quarter-to-date.
+    makeSale({ tenantId: TENANT_C, date: d("2025-04-10"), inventory: [inv("SItem1", 3, 1000, 3000)] }),
+    makeSale({ tenantId: TENANT_C, date: d("2025-05-20"), inventory: [inv("SItem3", 2, 1000, 2000)] }), // last day of the previous period
+    makeSale({ tenantId: TENANT_C, date: d("2025-05-25"), inventory: [inv("SItem1", 5, 1000, 5000)] }), // after it - excluded
+    // Same quarter-to-date last year.
+    makeSale({ tenantId: TENANT_C, date: d("2024-08-01"), inventory: [inv("SItem3", 4, 1000, 4000)] }),
+    makeSale({ tenantId: TENANT_C, date: d("2024-08-21"), inventory: [inv("SItem1", 8, 1000, 8000)] }), // after it - excluded
+  ]);
+}
+
 async function runRealWeFourVerification() {
   console.log("\n=== B. Real WE FOUR verification (independent aggregation) ===");
 
+  // Real WE FOUR data is used whenever it is present; only otherwise do the same checks run on synthetic tenant C.
+  let tenantId = null;
   const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
   if (!weFour) {
-    console.log("SKIP | real-we-four - no WE FOUR company found in this database");
-    return;
+    console.log("INFO | real-we-four - no WE FOUR company found in this database; running section B on synthetic tenant C");
+  } else if ((await StockItemMaster.countDocuments({ tenantId: weFour.tenantId })) === 0) {
+    console.log("INFO | real-we-four - StockItemMaster is empty for WE FOUR (run refresh-stock-item-master.js first); running section B on synthetic tenant C");
+  } else {
+    tenantId = weFour.tenantId;
   }
-  const tenantId = weFour.tenantId;
-
-  const mastersCount = await StockItemMaster.countDocuments({ tenantId });
-  if (mastersCount === 0) {
-    console.log("SKIP | real-we-four - StockItemMaster is empty for WE FOUR (run refresh-stock-item-master.js first)");
-    return;
+  const synthetic = tenantId === null;
+  if (synthetic) {
+    await seedSyntheticSectionB();
+    tenantId = TENANT_C;
   }
 
   const referenceDate = await getTenantReferenceDate(tenantId);
@@ -376,7 +417,27 @@ async function runRealWeFourVerification() {
   const expectedYoyAmount = independent.mappedAmount - independentYoy.mappedAmount;
   check("real-yoy-growth-amount", "9. YoY growth amount matches independent calculation", approx(actual.summary.yoyGrowth.growthAmount, expectedYoyAmount, 0.01), true);
 
-  console.log("\n--- Real WE FOUR Top 10 Stock Groups (current quarter) ---");
+  if (synthetic) {
+    // Hand-computed from seedSyntheticSectionB, independent of both the function and the oracle above.
+    // Current: Red = 4000 + 1000 - 500 = 4500 (qty 4+2-1 = 5), Blue = 3000 (qty 3), Green = 2500 (qty 1) -> 10000.
+    // Previous: Red 3000, Blue 2000 -> 5000. YoY: Blue 4000 -> 4000.
+    const ref = referenceDate;
+    check("synthetic-reference-date", "the reference date is the latest voucher's calendar day (2025-08-20)", [ref.getFullYear(), ref.getMonth() + 1, ref.getDate()], [2025, 8, 20]);
+    check("synthetic-top-names", "groups ranked Red > Blue > Green", actual.items.map((i) => i.stockGroupName), ["SG-Red", "SG-Blue", "SG-Green"]);
+    check("synthetic-top-amounts", "group amounts 4500 / 3000 / 2500 (return line netted, cancelled and out-of-period vouchers excluded)", actual.items.map((i) => i.salesAmount), [4500, 3000, 2500]);
+    check("synthetic-top-quantities", "group quantities 5 / 3 / 1", actual.items.map((i) => i.salesQuantity), [5, 3, 1]);
+    check("synthetic-mapping", "5 mapped lines / 10000, 1 unmapped line / 700",
+      [actual.mapping.mappedLines, actual.mapping.mappedAmount, actual.mapping.unmappedLines, actual.mapping.unmappedAmount], [5, 10000, 1, 700]);
+    check("synthetic-period-totals", "current / previous / YoY totals are 10000 / 5000 / 4000",
+      [actual.summary.currentPeriod.totalAmount, actual.summary.previousPeriod.totalAmount, actual.summary.samePeriodLastYear.totalAmount], [10000, 5000, 4000]);
+    check("synthetic-summary-growth", "overall MoM +5000 (100%), YoY +6000 (150%)",
+      [actual.summary.momGrowth.growthAmount, actual.summary.momGrowth.growthPercentage, actual.summary.yoyGrowth.growthAmount, actual.summary.yoyGrowth.growthPercentage], [5000, 100, 6000, 150]);
+    check("synthetic-item-growth", "per-group growth: Red MoM +1500 (50%) YoY +4500 (null), Blue MoM +1000 (50%) YoY -1000 (-25%), Green MoM +2500 (null) YoY +2500 (null)",
+      actual.items.map((i) => [i.previousPeriodAmount, i.momGrowthAmount, i.momGrowthPercentage, i.samePeriodLastYearAmount, i.yoyGrowthAmount, i.yoyGrowthPercentage]),
+      [[3000, 1500, 50, 0, 4500, null], [2000, 1000, 50, 4000, -1000, -25], [0, 2500, null, 0, 2500, null]]);
+  }
+
+  console.log(`\n--- ${synthetic ? "Synthetic tenant C" : "Real WE FOUR"} Top 10 Stock Groups (current quarter) ---`);
   actual.items.forEach((g, i) => {
     console.log(`  ${i + 1}. ${g.stockGroupName} — ₹${g.salesAmount.toFixed(2)} (qty ${g.salesQuantity}) | MoM: ${g.momGrowthPercentage === null ? "N/A" : g.momGrowthPercentage.toFixed(1) + "%"} | YoY: ${g.yoyGrowthPercentage === null ? "N/A" : g.yoyGrowthPercentage.toFixed(1) + "%"}`);
   });
