@@ -70,6 +70,7 @@ const Company = require("./src/models/company");
 const Purchase = require("./src/models/purchase.model");
 const Sale = require("./src/models/sales.model");
 const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
+const StockItemMaster = require("./src/models/stockItemMaster.model");
 const { processSinglePurchaseVoucher } = require("./src/services/import/tallyPurchaseImport");
 const { resolveAuthorizedCompany } = require("./src/services/auth/companyContext");
 const { buildVoucherMatchStage } = require("./src/services/analytics/analyticsScope");
@@ -146,10 +147,73 @@ async function setupSyntheticCompany() {
 async function cleanupSyntheticCompany() {
   await cleanupSyntheticData();
   await Company.deleteOne({ companyGuid: SYNTHETIC_COMPANY_GUID });
+  await cleanupShapeFixture();
+}
+
+// Synthetic stand-in for the real WE FOUR data the customer-sales, stock-group data-shape and period-semantics sections
+// were written against, so the same assertions run in any database (CI has no real tenant). Latest active voucher
+// 2026-08-15, so current month, quarter and FY are all partial; the full previous quarter (Apr-Jun) has a voucher the
+// same-duration previous quarter (Apr 1 - May 15) does not. Voucher totals include tax, line amounts do not, so the two
+// amount bases differ. A cancelled voucher and another tenant's voucher for the same customer must never count.
+const SHAPE_TENANT = "verify-analytics-ai-shape-tenant";
+const SHAPE_OTHER_TENANT = "verify-analytics-ai-shape-other-tenant";
+const SHAPE_CUSTOMER = "VERIFY GENERAL STORE";
+const SHAPE_SNAPSHOT = { total: 5900, count: 4, label: "the fixture's known values (5900.00 / 4)" };
+const REAL_SNAPSHOT = { total: 2478874.0, count: 80, label: "the documented 2026-09-23 snapshot (2478874.00 / 80)" };
+
+async function cleanupShapeFixture() {
+  await Sale.deleteMany({ tenantId: { $in: [SHAPE_TENANT, SHAPE_OTHER_TENANT] } });
+  await StockItemMaster.deleteMany({ tenantId: { $in: [SHAPE_TENANT, SHAPE_OTHER_TENANT] } });
+}
+
+async function seedShapeFixture() {
+  await cleanupShapeFixture();
+  await StockItemMaster.create([
+    { tenantId: SHAPE_TENANT, itemName: "Verify Item A", stockGroupName: "Verify Group 1", tallyGuid: "verify-shape-item-a", syncedAt: new Date() },
+    { tenantId: SHAPE_TENANT, itemName: "Verify Item B", stockGroupName: "Verify Group 2", tallyGuid: "verify-shape-item-b", syncedAt: new Date() },
+  ]);
+  const line = (itemName, quantity, amount) => ({ itemName, quantity, rate: amount / quantity, amount });
+  const sale = (n, tenantId, date, partyName, total, inventory, voucherStatus = "active") => ({
+    tenantId,
+    header: { voucherNo: `VERIFY-SHAPE-${n}`, voucherDate: new Date(date), voucherType: "Sales", voucherTotalAmount: total, partyName },
+    inventory,
+    ledgers: [],
+    tallyGuid: `verify-shape-guid-${n}`,
+    tallyAlterId: 900 + n,
+    voucherStatus,
+  });
+  await Sale.create([
+    sale(1, SHAPE_TENANT, "2026-04-20", SHAPE_CUSTOMER, 1180, [line("Verify Item A", 10, 1000)]),
+    sale(2, SHAPE_TENANT, "2026-06-20", SHAPE_CUSTOMER, 590, [line("Verify Item B", 5, 500)]),
+    sale(3, SHAPE_TENANT, "2026-07-10", SHAPE_CUSTOMER, 2360, [line("Verify Item A", 20, 2000)]),
+    sale(4, SHAPE_TENANT, "2026-08-15", SHAPE_CUSTOMER, 1770, [line("Verify Item A", 10, 1000), line("Verify Item B", 5, 500)]),
+    sale(5, SHAPE_TENANT, "2026-08-01", SHAPE_CUSTOMER, 999, [line("Verify Item A", 1, 999)], "cancelled"),
+    sale(6, SHAPE_TENANT, "2026-08-10", "VERIFY OTHER PARTY", 118, [line("Verify Item B", 1, 100)]),
+    sale(7, SHAPE_OTHER_TENANT, "2026-08-12", SHAPE_CUSTOMER, 5000, [line("Verify Item A", 50, 5000)]),
+  ]);
+}
+
+// Where a section's data-dependent checks run: always on the synthetic fixture; also on real WE FOUR data when that
+// tenant is in this database. When it is not, the real-data run is reported as SKIP (never as a pass).
+async function dataTargets(section) {
+  const targets = [{ name: "synthetic fixture", tenantId: SHAPE_TENANT, customer: SHAPE_CUSTOMER, snapshot: SHAPE_SNAPSHOT }];
+  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
+  if (weFour) targets.push({ name: "real WE FOUR data", tenantId: weFour.tenantId, customer: "DHINGRA GENERAL STORE", snapshot: REAL_SNAPSHOT });
+  else skip(`${section} on real WE FOUR data`, "no WE FOUR company in this database; the same assertions ran on the synthetic fixture");
+  return targets;
 }
 
 let pass = 0;
 let fail = 0;
+let skipped = 0;
+
+// check() with the data target's name in front of every label (sections run once per target).
+const checkFor = (name) => (label, condition, detail) => check(`[${name}] ${label}`, condition, detail);
+
+function skip(label, reason) {
+  skipped += 1;
+  console.log(`  SKIP - ${label} (${reason})`);
+}
 
 function check(label, condition, detail) {
   if (condition) {
@@ -277,15 +341,12 @@ async function testTrustEnvelope() {
 // actual casing break, or a future accidental amount-basis change - are
 // caught without needing a live LLM call to notice.
 async function testCustomerSalesAmountBasis() {
-  console.log("\n=== getCustomerSales: amount basis + case-insensitivity (real WE FOUR data) ===");
+  console.log("\n=== getCustomerSales: amount basis + case-insensitivity (synthetic fixture, and real WE FOUR data when present) ===");
+  for (const t of await dataTargets("getCustomerSales amount-basis regression")) await customerSalesAmountBasisOn(t);
+}
 
-  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  if (!weFour) {
-    check("WE FOUR company exists for this real-data regression", false, "no WE FOUR company found - skipped");
-    return;
-  }
-  const tenantId = weFour.tenantId;
-  const CUSTOMER = "DHINGRA GENERAL STORE";
+async function customerSalesAmountBasisOn({ name, tenantId, customer: CUSTOMER, snapshot }) {
+  console.log(`  -- ${name}`);
 
   // Independent ground truth: hand-written, NOT calling getCustomerSales
   // or buildVoucherMatchStage - straight from Sale.
@@ -294,32 +355,33 @@ async function testCustomerSalesAmountBasis() {
     { $match: { tenantId, voucherStatus: "active", "header.partyName": { $regex: `^${escaped}$`, $options: "i" } } },
     { $group: { _id: null, total: { $sum: "$header.voucherTotalAmount" }, count: { $sum: 1 } } },
   ]);
-  check("independent ground truth found real DHINGRA GENERAL STORE vouchers", !!groundTruth && groundTruth.count > 0, groundTruth ? `count=${groundTruth.count}` : "none found");
+  check(`[${name}] independent ground truth found ${CUSTOMER} vouchers`, !!groundTruth && groundTruth.count > 0, groundTruth ? `count=${groundTruth.count}` : "none found");
   if (!groundTruth) return;
 
-  // Documented as of 2026-09-23 (see the investigation report) - if this
+  // Real data: documented as of 2026-09-23 (see the investigation report) - if this
   // ever legitimately drifts (new real vouchers synced), the comparison
   // below against the FRESH ground truth still passes; only this fixed
   // snapshot check would need updating, and its own failure is the
-  // signal to do that.
-  check("ground truth matches the documented 2026-09-23 snapshot (2478874.00 / 80)", groundTruth.total === 2478874.0 && groundTruth.count === 80, `total=${groundTruth.total} count=${groundTruth.count}`);
+  // signal to do that. Synthetic fixture: its own known values.
+  check(`[${name}] ground truth matches ${snapshot.label}`, groundTruth.total === snapshot.total && groundTruth.count === snapshot.count, `total=${groundTruth.total} count=${groundTruth.count}`);
 
   const allTimePeriod = { from: undefined, to: undefined, label: "All time", isPartial: false };
-  const variants = ["DHINGRA GENERAL STORE", "dhingra general store", "Dhingra General Store"];
+  const titleCase = CUSTOMER.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  const variants = [CUSTOMER, CUSTOMER.toLowerCase(), titleCase];
   const results = [];
 
   for (const variant of variants) {
     const res = await salesAnalytics.getCustomerSales(tenantId, variant, allTimePeriod);
     results.push({ variant, res });
-    check(`"${variant}" -> customerFound: true`, res.customerFound === true);
-    check(`"${variant}" -> orderCount matches independent ground truth (${groundTruth.count})`, res.orderCount === groundTruth.count, `got ${res.orderCount}`);
-    check(`"${variant}" -> totalSales matches independent ground truth (${groundTruth.total})`, res.totalSales === groundTruth.total, `got ${res.totalSales}`);
-    check(`"${variant}" -> amountBasis === "voucher_total_incl_tax"`, res.amountBasis === "voucher_total_incl_tax", `got ${res.amountBasis}`);
-    check(`"${variant}" -> amountBasis matches the exported CUSTOMER_SALES_AMOUNT_BASIS constant`, res.amountBasis === salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS);
+    check(`[${name}] "${variant}" -> customerFound: true`, res.customerFound === true);
+    check(`[${name}] "${variant}" -> orderCount matches independent ground truth (${groundTruth.count})`, res.orderCount === groundTruth.count, `got ${res.orderCount}`);
+    check(`[${name}] "${variant}" -> totalSales matches independent ground truth (${groundTruth.total})`, res.totalSales === groundTruth.total, `got ${res.totalSales}`);
+    check(`[${name}] "${variant}" -> amountBasis === "voucher_total_incl_tax"`, res.amountBasis === "voucher_total_incl_tax", `got ${res.amountBasis}`);
+    check(`[${name}] "${variant}" -> amountBasis matches the exported CUSTOMER_SALES_AMOUNT_BASIS constant`, res.amountBasis === salesAnalytics.CUSTOMER_SALES_AMOUNT_BASIS);
   }
 
   check(
-    "all 3 casings return equivalent totalSales/orderCount (case-insensitivity confirmed, not a casing bug)",
+    `[${name}] all 3 casings return equivalent totalSales/orderCount (case-insensitivity confirmed, not a casing bug)`,
     results.every((r) => r.res.totalSales === results[0].res.totalSales && r.res.orderCount === results[0].res.orderCount),
     JSON.stringify(results.map((r) => ({ variant: r.variant, totalSales: r.res.totalSales, orderCount: r.res.orderCount })))
   );
@@ -513,10 +575,7 @@ async function testRedundantToolCallReduction() {
   console.log("\n=== Tier 2A: redundant tool-call reduction (mechanics + real data shape) ===");
 
   const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  if (!weFour) {
-    check("WE FOUR company exists for this real-data check", false, "no WE FOUR company found - skipped");
-  } else {
-    const tenantId = weFour.tenantId;
+  for (const { name, tenantId } of await dataTargets("Tier 2A data-shape checks")) {
     const referenceDate = await getTenantReferenceDate(tenantId);
     const current = periodEngine.resolvePeriod("current_quarter", referenceDate);
     const previous = periodEngine.resolveComparisonPeriod("current_quarter", referenceDate);
@@ -527,10 +586,11 @@ async function testRedundantToolCallReduction() {
     // comparison would be genuinely redundant, not proving Claude will
     // skip it (that's Phase 4).
     const single = await stockGroupAnalytics.getTopStockGroups(tenantId, current, previous, null, { limit: 10 });
-    check("a single call's summary.currentPeriod has exact from/to", !!(single.summary.currentPeriod.from && single.summary.currentPeriod.to));
-    check("a single call's summary.previousPeriod has exact from/to (the built-in comparison)", !!(single.summary.previousPeriod.from && single.summary.previousPeriod.to));
-    check("a single call's summary.momGrowth has a real growthPercentage", single.summary.momGrowth && typeof single.summary.momGrowth.growthPercentage === "number");
-    check("each item already carries its own previousPeriodAmount/momGrowthPercentage - no second call needed per item", single.items.every((i) => "previousPeriodAmount" in i && "momGrowthPercentage" in i));
+    check(`[${name}] a single call returns stock groups to check`, single.items.length > 0, `items=${single.items.length}`);
+    check(`[${name}] a single call's summary.currentPeriod has exact from/to`, !!(single.summary.currentPeriod.from && single.summary.currentPeriod.to));
+    check(`[${name}] a single call's summary.previousPeriod has exact from/to (the built-in comparison)`, !!(single.summary.previousPeriod.from && single.summary.previousPeriod.to));
+    check(`[${name}] a single call's summary.momGrowth has a real growthPercentage`, single.summary.momGrowth && typeof single.summary.momGrowth.growthPercentage === "number");
+    check(`[${name}] each item already carries its own previousPeriodAmount/momGrowthPercentage - no second call needed per item`, single.items.every((i) => "previousPeriodAmount" in i && "momGrowthPercentage" in i));
   }
 
   const context = { tenantId: SYNTHETIC_TENANT, companyGuid: SYNTHETIC_COMPANY_GUID };
@@ -631,64 +691,61 @@ async function testRedundantToolCallReduction() {
 async function testComparisonPeriodSemantics() {
   console.log("\n=== Option A: previousPeriod (same-duration) vs previous_X (full period) semantics ===");
 
-  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  if (!weFour) {
-    check("WE FOUR company exists for this real-data check", false, "no WE FOUR company found - skipped");
-    return;
-  }
-  const tenantId = weFour.tenantId;
-  const referenceDate = await getTenantReferenceDate(tenantId);
+  for (const { name, tenantId } of await dataTargets("previousPeriod vs previous_X data checks")) {
+    const check = checkFor(name); // every label in this loop names its data target
+    const referenceDate = await getTenantReferenceDate(tenantId);
 
-  // ---- Test B: quarter ----
-  {
-    const current = periodEngine.resolvePeriod("current_quarter", referenceDate);
-    const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_quarter", referenceDate);
-    const fullPrevious = periodEngine.resolvePeriod("previous_quarter", referenceDate);
+    // ---- Test B: quarter ----
+    {
+      const current = periodEngine.resolvePeriod("current_quarter", referenceDate);
+      const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_quarter", referenceDate);
+      const fullPrevious = periodEngine.resolvePeriod("previous_quarter", referenceDate);
 
-    check("Test B setup: current_quarter is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
-    check(
-      "Test B: previousPeriod (truncated) != previous_quarter (full) - different `to` boundary",
-      truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
-      `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
-    );
-    check("Test B: previousPeriod shares the same `from` as the full previous quarter (both start Jul 1)", truncatedPrevious.from.getTime() === fullPrevious.from.getTime());
+      check("Test B setup: current_quarter is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
+      check(
+        "Test B: previousPeriod (truncated) != previous_quarter (full) - different `to` boundary",
+        truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
+        `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
+      );
+      check("Test B: previousPeriod shares the same `from` as the full previous quarter (both start Jul 1)", truncatedPrevious.from.getTime() === fullPrevious.from.getTime());
 
-    const truncatedResult = await stockGroupAnalytics.getTopStockGroups(tenantId, current, truncatedPrevious, null, { limit: 10 });
-    const fullResult = await stockGroupAnalytics.getTopStockGroups(tenantId, fullPrevious, null, null, { limit: 10 });
-    check(
-      "Test B: the two interpretations produce genuinely DIFFERENT totals, not just different labels",
-      truncatedResult.summary.currentPeriod.totalAmount !== fullResult.summary.currentPeriod.totalAmount,
-      `previousPeriod total=${truncatedResult.summary.currentPeriod.totalAmount} previous_quarter total=${fullResult.summary.currentPeriod.totalAmount}`
-    );
-  }
+      const truncatedResult = await stockGroupAnalytics.getTopStockGroups(tenantId, current, truncatedPrevious, null, { limit: 10 });
+      const fullResult = await stockGroupAnalytics.getTopStockGroups(tenantId, fullPrevious, null, null, { limit: 10 });
+      check(
+        "Test B: the two interpretations produce genuinely DIFFERENT totals, not just different labels",
+        truncatedResult.summary.currentPeriod.totalAmount !== fullResult.summary.currentPeriod.totalAmount,
+        `previousPeriod total=${truncatedResult.summary.currentPeriod.totalAmount} previous_quarter total=${fullResult.summary.currentPeriod.totalAmount}`
+      );
+    }
 
-  // ---- Test C: month ----
-  {
-    const current = periodEngine.resolvePeriod("current_month", referenceDate);
-    const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_month", referenceDate);
-    const fullPrevious = periodEngine.resolvePeriod("previous_month", referenceDate);
+    // ---- Test C: month ----
+    {
+      const current = periodEngine.resolvePeriod("current_month", referenceDate);
+      const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_month", referenceDate);
+      const fullPrevious = periodEngine.resolvePeriod("previous_month", referenceDate);
 
-    check("Test C setup: current_month is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
-    check(
-      "Test C: previousPeriod (truncated) != previous_month (full) - different `to` boundary",
-      truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
-      `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
-    );
-  }
+      check("Test C setup: current_month is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
+      check(
+        "Test C: previousPeriod (truncated) != previous_month (full) - different `to` boundary",
+        truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
+        `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
+      );
+    }
 
-  // ---- Test D: FY ----
-  {
-    const current = periodEngine.resolvePeriod("current_fy", referenceDate);
-    const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_fy", referenceDate);
-    const fullPrevious = periodEngine.resolvePeriod("previous_fy", referenceDate);
+    // ---- Test D: FY ----
+    {
+      const current = periodEngine.resolvePeriod("current_fy", referenceDate);
+      const truncatedPrevious = periodEngine.resolveComparisonPeriod("current_fy", referenceDate);
+      const fullPrevious = periodEngine.resolvePeriod("previous_fy", referenceDate);
 
-    check("Test D setup: current_fy is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
-    check(
-      "Test D: previousPeriod (truncated) != previous_fy (full) - different `to` boundary",
-      truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
-      `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
-    );
-    check("Test D: previousPeriod shares the same `from` as the full previous FY (both start Apr 1)", truncatedPrevious.from.getTime() === fullPrevious.from.getTime());
+      check("Test D setup: current_fy is actually partial (this reference date)", current.isPartial === true, `isPartial=${current.isPartial}`);
+      check(
+        "Test D: previousPeriod (truncated) != previous_fy (full) - different `to` boundary",
+        truncatedPrevious.to.getTime() !== fullPrevious.to.getTime(),
+        `truncated.to=${truncatedPrevious.to.toISOString()} full.to=${fullPrevious.to.toISOString()}`
+      );
+      check("Test D: previousPeriod shares the same `from` as the full previous FY (both start Apr 1)", truncatedPrevious.from.getTime() === fullPrevious.from.getTime());
+    }
   }
 
   // ---- Test A: a like-for-like comparison is fully answerable from ONE call (mechanics) ----
@@ -746,6 +803,7 @@ async function main() {
 
   try {
     await setupSyntheticCompany();
+    await seedShapeFixture();
 
     await testVoucherIdentity();
     await testAnalyticsScope();
@@ -761,7 +819,7 @@ async function main() {
     await cleanupSyntheticCompany();
   }
 
-  console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===`);
+  console.log(`\n=== RESULT: ${pass} passed, ${fail} failed, ${skipped} skipped ===`);
 
   await mongoose.connection.close();
   process.exitCode = fail > 0 ? 1 : 0;
