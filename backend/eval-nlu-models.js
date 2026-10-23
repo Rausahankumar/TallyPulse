@@ -21,6 +21,12 @@
  *
  * Models:    --models=<list> or OPENROUTER_EVAL_MODELS. "claude" = the existing planner; "vendor/model:free" or
  *            "openrouter:vendor/model:free" = an OpenRouter model. The Claude baseline is added next to OpenRouter models unless --no-claude.
+ *            "nvidia:vendor/model" = the NVIDIA API Catalog (eval/nvidiaClient.js, key NVIDIA_API_KEY). Called only when the id is in
+ *            the public catalogue AND --allow-nvidia-trial is given (hosted calls use NVIDIA trial credits; no price is reported per
+ *            request). --structured=auto means tool for NVIDIA; json_schema there is undocumented and labelled unverified. Raw
+ *            response bodies (redacted) go to eval/results/nvidia-raw-<timestamp>.jsonl. NVIDIA_MAX_TOKENS / NVIDIA_TIMEOUT_MS.
+ *            Reasoning: --nvidia-thinking=on|off, else NVIDIA_THINKING=on|off, else the provider default (nothing sent);
+ *            off = chat_template_kwargs {enable_thinking:false}. NVIDIA only; tested offline by verify-nvidia-eval.js.
  * Rows:      --limit=N (the first N), --sample=N (N rows evenly spaced through the corpus: keeps the mix of groups, languages and
  *            follow-ups), or --all (one is required); --group=<name>, --ids=a,b, --no-followups, --no-gaps. Follow-up rows carry their
  *            previous plan; capability-gap rows are included by default (they are a reporting category).
@@ -56,6 +62,7 @@ const scoring = require("./eval/nluScoring");
 const runner = require("./eval/nluModelRunner");
 const { ABLATIONS, withAblation } = require("./eval/promptAblations");
 const { createOpenRouterPlannerClient, fetchModelCapabilities, pickStructuredMode, assessFreeModel, FREE_ONLY_PROVIDER } = require("./eval/openRouterClient");
+const { createNvidiaPlannerClient, fetchNvidiaModels, resolveNvidiaThinking, structuredOutputSummary } = require("./eval/nvidiaClient");
 
 // Exit through process.exitCode (never process.exit) so open keep-alive sockets close cleanly; on Windows a hard exit with a
 // live fetch connection can abort the process with a libuv assertion.
@@ -74,6 +81,7 @@ function fail(message, code = 2) {
   // ---------------------------------------------------------------- what to evaluate
   let specs = runner.parseModelSpecs(opt("models") || process.env.OPENROUTER_EVAL_MODELS || "");
   const openRouterSpecs = specs.filter((s) => s.provider === "openrouter");
+  const nvidiaSpecs = specs.filter((s) => s.provider === "nvidia");
   if (!specs.length) fail("No models given. Use --models=vendor/model-a:free,vendor/model-b:free or set OPENROUTER_EVAL_MODELS. Nothing was called.");
   if (!flag("no-claude") && !specs.some((s) => s.provider === "claude")) specs = [runner.parseModelSpecs("claude")[0], ...specs];
   const withClaude = specs.some((s) => s.provider === "claude");
@@ -110,7 +118,32 @@ function fail(message, code = 2) {
       console.log(`  ${g.callable ? "OK     " : "SKIPPED"} ${s.model}: ${g.status}${g.pricing ? ` pricing=${JSON.stringify(g.pricing)}` : ""}${g.reason ? ` - ${g.reason}` : ""}`);
     }
   }
-  const callable = specs.filter((s) => s.provider === "claude" || (gates[s.model] && gates[s.model].callable));
+  // NVIDIA API Catalog (eval/nvidiaClient.js): no per-request price exists to verify, so a model is called only when it is listed in
+  // the public catalogue AND the operator passed --allow-nvidia-trial (hosted calls use NVIDIA API trial credits). No fallback.
+  // Reasoning switch for NVIDIA only (never read for, or sent to, OpenRouter): --nvidia-thinking=on|off, else NVIDIA_THINKING,
+  // else the provider default (nothing sent). An invalid value stops the run before any request.
+  let nvidiaThinking = null;
+  if (nvidiaSpecs.length) {
+    try {
+      nvidiaThinking = resolveNvidiaThinking({ cli: opt("nvidia-thinking"), env: process.env.NVIDIA_THINKING });
+    } catch (e) {
+      fail(`${e.message} Nothing was called.`);
+    }
+    console.log(`\nNVIDIA thinking: ${nvidiaThinking.setting} (from ${nvidiaThinking.source})${nvidiaThinking.chatTemplateKwargs ? ` -> chat_template_kwargs ${JSON.stringify(nvidiaThinking.chatTemplateKwargs)}` : " -> nothing sent"}`);
+  }
+  if (nvidiaSpecs.length) {
+    const listing = await fetchNvidiaModels(nvidiaSpecs.map((s) => s.model));
+    const allowed = flag("allow-nvidia-trial");
+    console.log(`\nNVIDIA API Catalog check (${listing.reachable ? "reachable" : "UNREACHABLE: no NVIDIA model will be called"}; trial use ${allowed ? "allowed by --allow-nvidia-trial" : "NOT allowed: add --allow-nvidia-trial"}):`);
+    for (const s of nvidiaSpecs) {
+      const listed = !!listing.listed[s.model];
+      const g = { callable: listing.reachable && listed && allowed, status: !listing.reachable ? "catalogue_unreachable" : !listed ? "not_in_catalogue" : allowed ? "listed_trial_allowed" : "trial_not_allowed", checkedAt: new Date().toISOString() };
+      gates[s.label] = g;
+      console.log(`  ${g.callable ? "OK     " : "SKIPPED"} ${s.label}: ${g.status}`);
+    }
+  }
+  const gateOf = (s) => gates[s.provider === "nvidia" ? s.label : s.model];
+  const callable = specs.filter((s) => s.provider === "claude" || (gateOf(s) && gateOf(s).callable));
   const openRouterCallable = callable.filter((s) => s.provider === "openrouter");
   if (openRouterSpecs.length && !openRouterCallable.length) console.log("\nNo OpenRouter model passed the free-model check: nothing from OpenRouter will be called.");
   if (!callable.length) fail("Nothing can be run. Nothing was called.");
@@ -119,17 +152,44 @@ function fail(message, code = 2) {
     return;
   }
   if (withClaude && !process.env.ANTHROPIC_API_KEY) fail("ANTHROPIC_API_KEY is missing (backend/.env): the Claude baseline cannot run. Nothing was called.");
+  if (callable.some((s) => s.provider === "nvidia") && !process.env.NVIDIA_API_KEY) fail("NVIDIA_API_KEY is missing (add it to backend/.env): NVIDIA models cannot run. Nothing was called.");
   if (openRouterCallable.length && !process.env.OPENROUTER_API_KEY) fail("OPENROUTER_API_KEY is missing (add it to backend/.env): OpenRouter models cannot run. Nothing was called.");
 
   // ---------------------------------------------------------------- build the targets
   const cacheDir = opt("cache-dir") || path.join(__dirname, "eval", ".cache");
   const throttle = openRouterCallable.length && !flag("no-pace") ? runner.createSpacer(rpm) : null; // one pace for every OpenRouter model: the free quota is per account
+  // NVIDIA: its own pace (its rate limit is separate from OpenRouter's), and every raw response body (redacted, before any
+  // parsing) appended to a git-ignored JSONL file next to the report.
+  const nvidiaThrottle = callable.some((s) => s.provider === "nvidia") && !flag("no-pace") ? runner.createSpacer(rpm) : null;
+  let nvidiaRawPath = null;
+  const nvidiaRawSink = (entry) => {
+    if (!nvidiaRawPath) {
+      const dir = opt("out-dir") || path.join(__dirname, "eval", "results");
+      fs.mkdirSync(dir, { recursive: true });
+      nvidiaRawPath = path.join(dir, `nvidia-raw-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+    }
+    fs.appendFileSync(nvidiaRawPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+  };
   const targets = callable.map((spec) => {
     if (spec.provider === "claude") {
       const model = process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || "(planner default)";
       // --ablate=<name> (evaluation only): the SAME model and settings, one prompt change - see eval/promptAblations.js
       const client = ablation ? withAblation(createAnthropicPlannerClient(), ablation) : createAnthropicPlannerClient();
       return { ...spec, model, label: ablation ? `claude+${ablation}` : "claude", client, settings: { provider: "claude", model, ...(ablation ? { ablation } : {}) }, limitations: [], pricingStatus: "anthropic_baseline_paid_api_requested_by_user" };
+    }
+    if (spec.provider === "nvidia") {
+      const mode = structuredOverride === "auto" ? "tool" : structuredOverride;
+      const limitations = mode === "json_schema" ? ["json_schema: response_format is not documented for this hosted endpoint; acceptance and enforcement are unverified"] : [];
+      const client = createNvidiaPlannerClient({
+        evalOnly: true,
+        model: spec.model,
+        structuredMode: mode,
+        maxTokens: num(opt("max-tokens") ?? process.env.NVIDIA_MAX_TOKENS, 0) || undefined,
+        attemptTimeoutMs: num(opt("timeout-ms") ?? process.env.NVIDIA_TIMEOUT_MS, 0) || undefined,
+        thinking: nvidiaThinking,
+        rawSink: nvidiaRawSink,
+      });
+      return { ...spec, client, settings: client.describe(), limitations, pricingStatus: gateOf(spec).status, throttle: nvidiaThrottle };
     }
     const picked = pickStructuredMode(catalogue.byId[spec.model], structuredOverride);
     const client = createOpenRouterPlannerClient({
@@ -213,6 +273,8 @@ function fail(message, code = 2) {
     corpus: { version: scoring.corpus.version, referenceDate: scoring.corpus.referenceDate, totalRows: scoring.corpus.rows.length, evaluatedRows: rows.length, selection: flag("all") ? "all rows" : sample ? `${sample} evenly spaced rows` : `first ${limit} rows` },
     run: { timezone: EVAL_TIMEZONE, concurrency, rpm: openRouterCallable.length ? rpm : null, maxInFlight, elapsedMs: Date.now() - started, structuredOverride, cacheEnabled: !flag("no-cache"), databaseConnections: mongoose.connection.readyState === 0 ? 0 : 1 },
     freeOnly: freeOnlyReport,
+    // NVIDIA only: requested output mode vs what the evidence shows, step by step; provider enforcement stays "unverified".
+    nvidia: nvidiaSpecs.length ? { rawResponses: nvidiaRawPath ? path.basename(nvidiaRawPath) : null, targets: targets.filter((t) => t.provider === "nvidia").map((t) => ({ label: t.label, structuredOutput: structuredOutputSummary(t.records, t.settings) })) } : null,
     targets: targets.map((t) => ({
       label: t.label,
       provider: t.provider,
@@ -242,7 +304,14 @@ function fail(message, code = 2) {
         "",
       ]
     : [];
-  const summaryText = [`NLU model comparison - ${report.generatedAt}`, `corpus v${report.corpus.version}, ${rows.length} of ${report.corpus.totalRows} questions (${report.corpus.selection}); evaluation time zone ${EVAL_TIMEZONE}; planner prompt/schema fingerprints: ${targets.map((t) => `${t.label}=${t.fingerprint}`).join(", ")}`, "", ...freeLines, runner.comparisonTable(targets), "", runner.breakdownTable(targets), ""].join("\n");
+  const nvidiaLines = report.nvidia
+    ? [
+        "NVIDIA structured-output evidence (each step counts only rows that passed the step before):",
+        ...report.nvidia.targets.map(({ label, structuredOutput: s }) => `  ${label}: requested ${s.requestedOutputMode}, thinking ${s.thinking}; provider accepted ${s.providerAccepted}/${s.rows}, parseable JSON ${s.parseableJson}, planner protocol ${s.passedPlannerProtocol}, schema+validator ${s.passedSchemaAndValidator}; exact ${s.semantic.exact}, imprecise ${s.semantic.imprecise}, correct refusals ${s.semantic.correctRefusal}; provider schema enforcement: ${s.schemaEnforcementByProvider.status}`),
+        "",
+      ]
+    : [];
+  const summaryText = [`NLU model comparison - ${report.generatedAt}`, `corpus v${report.corpus.version}, ${rows.length} of ${report.corpus.totalRows} questions (${report.corpus.selection}); evaluation time zone ${EVAL_TIMEZONE}; planner prompt/schema fingerprints: ${targets.map((t) => `${t.label}=${t.fingerprint}`).join(", ")}`, "", ...freeLines, ...nvidiaLines, runner.comparisonTable(targets), "", runner.breakdownTable(targets), ""].join("\n");
   fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2));
   fs.writeFileSync(jsonPath.replace(/\.json$/, ".txt"), summaryText);
   console.log(`\n${summaryText}`);
