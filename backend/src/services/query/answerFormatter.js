@@ -10,10 +10,12 @@
 // user, and assumptions/caveats are listed rather than hidden.
 // --------------------------------------------------
 
-const { CATALOG } = require("./semanticCatalog");
+const { CATALOG, LIMITS } = require("./semanticCatalog");
 const { rangeText, fmtDay } = require("../analytics/coverage");
 
-const MAX_DISPLAY_ROWS = 25;
+// Every row the engine returns is listed (the engine itself never returns more than maxLimit); the frontend
+// table collapses long lists, so the answer never has to drop rows to stay readable.
+const MAX_DISPLAY_ROWS = LIMITS.maxLimit;
 const MAX_NOTES = 8;
 
 const isMoney = (metricId) => {

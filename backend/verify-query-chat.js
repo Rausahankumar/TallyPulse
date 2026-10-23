@@ -412,7 +412,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const rows = Array.from({ length: 30 }, (_, i) => ({ key: { customer: `Customer ${i + 1}` }, values: { invoiceAmount: 1000 - i, invoiceCount: i + 1 } }));
     const grouped = okScalar({ groupBy: [{ dim: "customer" }], rows, totals: { values: { invoiceAmount: 99999, invoiceCount: 999 } }, truncated: true, rowLimit: 30 });
     f = formatQueryAnswer({ plan: planOf({ groupBy: [{ dim: "customer" }], limit: 30 }), result: grouped });
-    check("grouped rows numbered, capped at 25 with a 'more rows' note, truncation disclosed", /^1\. Customer 1 —/m.test(f.text) && /^25\. Customer 25/m.test(f.text) && !/^26\./m.test(f.text) && /and 5 more rows/.test(f.text) && /more exist/.test(f.text));
+    check("grouped rows numbered, every returned row listed (30), truncation disclosed", /^1\. Customer 1 —/m.test(f.text) && /^30\. Customer 30 —/m.test(f.text) && !/more rows not shown/.test(f.text) && /more exist/.test(f.text));
     const series = okScalar({ groupBy: [{ dim: "date", bucket: "month" }], metrics: ["invoiceAmount"], rows: [{ key: { date: { bucket: "month", start: "2025-04-01", label: "2025-04" } }, values: { invoiceAmount: 5 } }], totals: { values: { invoiceAmount: 5 } } });
     f = formatQueryAnswer({ plan: planOf({ groupBy: [{ dim: "date", bucket: "month" }], metrics: ["invoiceAmount"] }), result: series });
     check("date bucket rows use the bucket label", /1\. 2025-04 — ₹5\.00/.test(f.text) && /by month/.test(f.text));
