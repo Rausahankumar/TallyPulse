@@ -26,7 +26,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **3. Routes (URL → controller)**
 
-- `src/routes/analyticsRoutes.js` (48 lines, 0 functions)
+- `src/routes/analyticsRoutes.js` (52 lines, 0 functions)
 - `src/routes/authRoutes.js` (31 lines, 0 functions)
 - `src/routes/chatRoutes.js` (27 lines, 0 functions)
 - `src/routes/importRoutes.js` (30 lines, 0 functions)
@@ -37,7 +37,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **4. Controllers (request handle)**
 
-- `src/controllers/analyticsController.js` (441 lines, 6 functions)
+- `src/controllers/analyticsController.js` (493 lines, 6 functions)
 - `src/controllers/authController.js` (480 lines, 7 functions)
 - `src/controllers/chatController.js` (243 lines, 5 functions)
 - `src/controllers/importController.js` (285 lines, 6 functions)
@@ -119,7 +119,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/analytics/coverage.js` (106 lines, 4 functions)
 - `src/services/analytics/dateRanges.js` (278 lines, 21 functions)
 - `src/services/analytics/freshness.js` (94 lines, 1 functions)
-- `src/services/analytics/insights.js` (280 lines, 8 functions)
+- `src/services/analytics/insights.js` (473 lines, 12 functions)
 - `src/services/analytics/periodEngine.js` (491 lines, 18 functions)
 - `src/services/analytics/purchaseAnalytics.js` (195 lines, 6 functions)
 - `src/services/analytics/referenceDate.js` (109 lines, 8 functions)
@@ -311,7 +311,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **Imports:** `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`, `src/services/analytics/salesAnalytics.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/insights.js`, `src/services/analytics/dateRanges.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/stockGroupAnalytics.js`
 
-**Exports:** `getDiscountSummary`, `getProductRates`, `getSupplierRates`, `getSalesSummary`, `getSalesComparison`, `getTopProducts`, `getGrowingProducts`, `getDecliningProducts`, `getTopCustomers`, `getSalesTrend`, `getCustomerCounts`, `getStockGroupPerformance`, `getPurchaseSummary`, `getPurchaseComparison`, `getTopSuppliers`, `getPurchaseTrend`
+**Exports:** `getDiscountSummary`, `getProductRates`, `getProductMargin`, `getProductTrend`, `getSupplierRates`, `getSalesSummary`, `getSalesComparison`, `getTopProducts`, `getGrowingProducts`, `getDecliningProducts`, `getTopCustomers`, `getSalesTrend`, `getCustomerCounts`, `getStockGroupPerformance`, `getPurchaseSummary`, `getPurchaseComparison`, `getTopSuppliers`, `getPurchaseTrend`
 
 - **`parsePeriodFromQuery()`** — line 39
   - Purpose: `referenceDate` anchors what "current_month"/"previous_month" actually mean - see services/analytics/referenceDate.js for why this is the tenant's own latest voucher date, not necessarily the wall clock. Every caller below computes it once per request and threads it through; period="custom" ignores it entirely (an explicit from/to
@@ -1454,31 +1454,43 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **Imports:** `src/services/analytics/analyticsScope.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`
 
-**Exports:** `discountSummary`, `ratesByProduct`, `supplierRates`, `MIN_BILLED_TO_LIST`, `DISCOUNT_NOTE`, `RATE_NOTE`
+**Exports:** `discountSummary`, `ratesByProduct`, `productMargin`, `productTrend`, `supplierRates`, `MIN_BILLED_TO_LIST`, `DISCOUNT_NOTE`, `RATE_NOTE`, `MARGIN_NOTE`, `TREND_NOTE`, `SUPPLIER_MARGIN_NOTE`
 
-- **`round2()`** — line 34
+- **`round2()`** — line 49
   - Purpose: (no comment in code — see name and calls below)
-- **`clampLimit()`** — line 35
+- **`daysBefore()`** — line 51
+  - Purpose: Calendar-day arithmetic on the local-midnight Dates the period engine produces (buildVoucherMatchStage reads the local day).
+- **`clampLimit()`** — line 52
   - Purpose: (no comment in code — see name and calls below)
-- **`escapeRegex()`** — line 39
+- **`escapeRegex()`** — line 56
   - Purpose: (no comment in code — see name and calls below)
-- **`modelFor()`** — line 40
+- **`modelFor()`** — line 57
   - Purpose: (no comment in code — see name and calls below)
-- **`shapeDiscount()`** — line 71
+- **`shapeDiscount()`** — line 88
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `round2()`
-- **`discountSummary()`** _(async)_ — line 88
+- **`discountSummary()`** _(async)_ — line 105
   - Purpose: Discount given (sales) or received (purchase): totals, and optionally a breakdown. @param {string} tenantId @param {{from: Date, to: Date, label?: string}} period @param {{entity?: "sales"|"purchase", by?: "customer"|"supplier"|"product"|"month"|null, limit?: number}} [options]
   - Calls in this file: `clampLimit()`, `modelFor()`, `shapeDiscount()`
   - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`
-- **`ratesByProduct()`** _(async)_ — line 129
+- **`sideTotals()`** — line 146
+  - Purpose: One side (sales or purchases) per product: priced lines only (a rate needs a billed amount), quantity-weighted.
+- **`ratesByProduct()`** _(async)_ — line 167
   - Purpose: Per-product sale and purchase rates for the period, side by side.
-  - Calls in this file: `round2()`, `clampLimit()`, `escapeRegex()`
+  - Calls in this file: `round2()`, `clampLimit()`, `escapeRegex()`, `sideTotals()`
   - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`
-- **`supplierRates()`** _(async)_ — line 192
+- **`productMargin()`** _(async)_ — line 215
+  - Purpose: Indicative margin per product sold in the period: average sale rate vs average purchase cost (see MARGIN_NOTE). @param {{sortBy?: "profit"|"marginPct", order?: "desc"|"asc", limit?: number}} [options]
+  - Calls in this file: `round2()`, `daysBefore()`, `clampLimit()`, `sideTotals()`
+  - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`
+- **`productTrend()`** _(async)_ — line 284
+  - Purpose: Month-by-month quantity bought and sold for ONE product, with the net movement (bought − sold) and its running total. Months with no voucher between the first and the last active month are shown with zeros. See TREND_NOTE.
+  - Calls in this file: `round2()`, `escapeRegex()`
+  - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`
+- **`supplierRates()`** _(async)_ — line 362
   - Purpose: What each supplier charged per unit for the same product, and who is cheapest.
   - Calls in this file: `round2()`, `clampLimit()`, `escapeRegex()`
-  - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`, `src/models/purchase.model.js → aggregate()`
+  - Calls other files: `src/services/analytics/analyticsScope.js → buildVoucherMatchStage()`, `src/models/sales.model.js → aggregate()`, `src/models/purchase.model.js → aggregate()`
 
 ## `src/services/analytics/periodEngine.js`
 **Used by:** `src/controllers/analyticsController.js`, `src/services/query/queryChat.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/semanticCatalog.js`, `src/services/query/validator.js`

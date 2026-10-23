@@ -405,6 +405,56 @@ const getProductRates = handle(async (req, res) => {
   return res.status(200).json({ success: true, ...envelope });
 });
 
+const MARGIN_SORT_KEYS = ["profit", "marginPct"];
+
+const getProductMargin = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const sortBy = req.query.sortBy || "profit";
+  const order = req.query.order || "desc";
+  if (!MARGIN_SORT_KEYS.includes(sortBy)) {
+    const err = new Error(`Invalid "sortBy". Expected one of: ${MARGIN_SORT_KEYS.join(", ")}.`);
+    err.status = 400;
+    throw err;
+  }
+  if (order !== "asc" && order !== "desc") {
+    const err = new Error('Invalid "order". Expected asc or desc.');
+    err.status = 400;
+    throw err;
+  }
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parsePeriodFromQuery(req.query, referenceDate);
+  const limit = parseLimitFromQuery(req.query);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => insights.productMargin(tenantId, period, { limit, sortBy, order }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
+// One product, month by month. Without from/to: the last 6 complete months, like the other trend endpoints.
+const getProductTrend = handle(async (req, res) => {
+  const { tenantId } = req.companyContext;
+  const product = typeof req.query.product === "string" ? req.query.product.trim() : "";
+  if (!product) {
+    const err = new Error('"product" is required.');
+    err.status = 400;
+    throw err;
+  }
+  const referenceDate = await getTenantReferenceDate(tenantId);
+  const period = parseTrendPeriodFromQuery(req.query, referenceDate);
+
+  const envelope = await wrapAnalyticsResult({
+    tenantId,
+    voucherType: "Sales",
+    run: () => insights.productTrend(tenantId, period, { product }),
+  });
+
+  return res.status(200).json({ success: true, ...envelope });
+});
+
 const getSupplierRates = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const referenceDate = await getTenantReferenceDate(tenantId);
@@ -423,6 +473,8 @@ const getSupplierRates = handle(async (req, res) => {
 module.exports = {
   getDiscountSummary,
   getProductRates,
+  getProductMargin,
+  getProductTrend,
   getSupplierRates,
   getSalesSummary,
   getSalesComparison,
