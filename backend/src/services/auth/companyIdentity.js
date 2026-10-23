@@ -200,4 +200,4 @@ async function ensureCompanyForGuid({
   return { ok: true, company, created: true, reactivated: false, tenantReused };
 }
 
-module.exports = { ensureCompanyForGuid, collectCandidateTenantIds, survivingOwnerIds };
+module.exports = { ensureCompanyForGuid };

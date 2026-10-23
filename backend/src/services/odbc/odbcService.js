@@ -1,88 +1,3 @@
-// const odbc = require("odbc");
-
-// const connectTally = async () => {
-//   try {
-//     console.log("Connecting to Tally ODBC...");
-
-//     const connection = await odbc.connect(
-//       "DSN=TallyODBC64_9000;"
-//     );
-
-//     console.log("Tally ODBC connected");
-
-//     return connection;
-//   } catch (error) {
-//     console.error("TALLY CONNECTION ERROR:", error);
-//     throw error;
-//   }
-// };
-
-
-
-// const getCompanyInfo = async (connection) => {
-//   const result = await connection.query(`
-//     SELECT
-//       $CompanyName,
-//       $CompanyGuid,
-//       $SourceType,
-//       $TenantId,
-//       $IsActive
-//     FROM Company
-//   `);
-// }
-
-// const getSalesVouchers = async () => {
-//   const connection = await connectTally();
-
-//   try {
-//      const inventoryResult = await connection.query(`
-//     //   SELECT
-//     //     $V_Date,
-//     //     $V_VchNo,
-//     //     $V_VchType,
-//     //     $V_Party,
-//     //     $V_Narration,
-//     //     $V_Total,
-//     //     $StockItemName,
-//     //     $ActualQty,
-//     //     $Rate,
-//     //     $Amount,
-//     //     $Discount,
-//     //     $DiscountAmount
-//     //   FROM RTSSalesInventory
-
-
-//    `);
-
-//     // const ledgerResult = await connection.query(`
-//     //   SELECT
-//     //     $V_Date,
-//     //     $V_VchNo,
-//     //     $V_VchType,
-//     //     $V_Party,
-//     //     $LedgerName,
-//     //     $Amount
-//     //   FROM RTSSalesLedger
-//     // `);
-
-
-//     // return {
-//     //   inventory: inventoryResult,
-//     //   ledgers: ledgerResult
-//     // };
-
-  
-
-//   } finally {
-//     await connection.close();
-//   }
-// };
-
-// module.exports = {
-//   connectTally,
-//   getSalesVouchers,
-// };
-
 
 const axios = require("axios");
 const { resolveTallyUrl } = require("./tallyUrl");
@@ -443,6 +358,112 @@ const getStockItemMasters = async ({ baseUrl } = {}) => {
 
 
 // ============================================================
+// GET STOCK ITEM GST MASTERS (one Stock Group at a time)
+// ============================================================
+//
+// The GST/HSN configuration of the Stock Items in ONE Stock Group. Confirmed live
+// (read-only, WE FOUR, 2026-10-09): with these methods a StockItem collection returns
+//   gstapplicable, gsttypeofsupply,
+//   hsndetails[{applicablefrom, hsncode, hsn, srcofhsndetails}],
+//   gstdetails[{applicablefrom, taxability, calculationtype, srcofgstdetails,
+//     reversechargerate, gstineligibleitc, statewisedetails[{statename,
+//     ratedetails[{gstratedutyhead, gstratevaluationtype, gstrate, gstrateperunit}]}]}]
+// One 184-item group came back in about 90 ms (about 0.4 MB), so the full set is requested group by
+// group, one request at a time (Tally rule: narrow and sequential, never one wide query).
+// Masters only: no voucher data. The core Name/Parent/Guid request above is unchanged.
+const STOCK_ITEM_GST_NATIVE_METHOD =
+  "Name, Parent, Guid, GSTApplicable, GSTTypeOfSupply, GSTDetails.*, HSNDetails.*, GSTDetails.StateWiseDetails.*, GSTDetails.StateWiseDetails.RateDetails.*";
+
+// The group name is placed inside a TDL formula string, so a name that could break out of it is refused
+// (the caller reports the group as skipped; its items keep whatever GST data they already had).
+function isSafeStockGroupNameForFormula(name) {
+  return typeof name === "string" && name.length > 0 && !/["\\\u0000-\u001F]/.test(name);
+}
+
+const getStockItemGstMasters = async ({ baseUrl, stockGroupName } = {}) => 
+{
+  if (!isSafeStockGroupNameForFormula(stockGroupName)) {
+    throw new Error("getStockItemGstMasters requires a stockGroupName that is safe to place in a Tally formula.");
+  }
+
+  try {
+    const requestBody = {
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS StockItem GST Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "StockItem"
+                },
+
+                {
+                  "Native Method": STOCK_ITEM_GST_NATIVE_METHOD
+                },
+
+                {
+                  "Filter": "RTS StockItem GST Group Filter"
+                }
+              ]
+            },
+
+            {
+              metadata: {
+                name: "RTS StockItem GST Group Filter",
+                type: "System",
+                sys_type: "Formulae",
+                ismodify: true
+              },
+
+              value: `$Parent = "${stockGroupName}"`
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS StockItem GST Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+    console.error(
+      "TALLY STOCKITEM GST API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
 // GET LEDGER / GROUP MASTERS
 // ============================================================
 //
@@ -560,7 +581,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 
                 {
                   "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, inventoryentries.* , ledgerentries.*"
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, inventoryentries.* , inventoryentries.computedigst , inventoryentries.computedhsn, ledgerentries.*"
                 },
 
                 {
@@ -699,7 +720,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucher
 
                 {
                   "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , ledgerentries.*"
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*"
                 },
 
                 {
@@ -796,7 +817,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
 
                 {
                   "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , ledgerentries.*"
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*"
                 },
 
                 {
@@ -1111,7 +1132,7 @@ const getVouchersByAlterIds = async ({ alterIds, baseUrl, voucherTypeNames } = {
 
                 {
                   "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , ledgerentries.*"
+                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*"
                 },
 
                 {
@@ -1291,6 +1312,9 @@ module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
   getStockItemMasters,
+  getStockItemGstMasters,
+  isSafeStockGroupNameForFormula,
+  STOCK_ITEM_GST_NATIVE_METHOD,
   getLedgerMasters,
   getGroupMasters,
   getPendingVoucherAlterIds,

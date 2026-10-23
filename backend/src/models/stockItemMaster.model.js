@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { stockItemGstSchema } = require("./gstSchemas");
 
 // --------------------------------------------------
 // Stock Item -> Stock Group master data, refreshed on demand from Tally
@@ -51,6 +52,15 @@ const stockItemMasterSchema = new mongoose.Schema(
       type: Date,
       required: true,
       default: Date.now,
+    },
+
+    // The item's GST master configuration with its full dated history, refreshed by
+    // services/tally/stockItemGst.js. Absent on items that have not been through a GST
+    // refresh. This is the item's CURRENT master data, not what any voucher charged:
+    // vouchers keep their own inventory[].gst, and nothing derives a tax amount from this.
+    gst: {
+      type: stockItemGstSchema,
+      default: undefined,
     },
   },
   {

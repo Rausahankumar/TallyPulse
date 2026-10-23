@@ -452,8 +452,10 @@ async function groundTruth() {
   require("dotenv").config();
   try {
     if (!process.env.MONGODB_URI) throw new Error("MONGODB_URI not set");
-    await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 }); // not connectDB(): it exits the process on failure
+    // not connectDB(): it exits the process on failure. connectGuarded applies the same target guard.
+    await require("./src/config/db").connectGuarded({ serverSelectionTimeoutMS: 10000 });
   } catch (e) {
+    if (e.refused) { console.error(e.message); process.exit(1); }
     console.log("  SKIPPED - MongoDB not reachable (sections A-D are complete without it)");
     return;
   }

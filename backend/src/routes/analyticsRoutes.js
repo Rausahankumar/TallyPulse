@@ -2,6 +2,9 @@ const express = require("express");
 const auth = require("../middleware/auth");
 const { activeCompanyContext } = require("../services/auth/companyContext");
 const {
+  getDiscountSummary,
+  getProductRates,
+  getSupplierRates,
   getSalesSummary,
   getSalesComparison,
   getTopProducts,
@@ -37,5 +40,8 @@ router.get("/purchases/summary", getPurchaseSummary);
 router.get("/purchases/comparison", getPurchaseComparison);
 router.get("/purchases/top-suppliers", getTopSuppliers);
 router.get("/purchases/trend", getPurchaseTrend);
+router.get("/discounts", getDiscountSummary);
+router.get("/products/rates", getProductRates);
+router.get("/purchases/supplier-rates", getSupplierRates);
 
 module.exports = router;

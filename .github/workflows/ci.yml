@@ -153,6 +153,7 @@ jobs:
             verify-sales-mapper.js \
             verify-migrate-voucher-total-amount.js \
             verify-security-audit.js \
+            verify-db-connection-guard.js \
             verify-company-identity.js \
             verify-company-ownership.js \
             verify-multi-company.js \
@@ -166,6 +167,9 @@ jobs:
             verify-month-boundary-dates.js \
             verify-timezone-boundaries.js \
             verify-stock-item-master.js \
+            verify-stock-item-gst.js \
+            verify-voucher-line-details.js \
+            verify-insights.js \
             verify-stock-group-analytics.js \
             verify-ledger-master.js \
             verify-adjustment-note.js \

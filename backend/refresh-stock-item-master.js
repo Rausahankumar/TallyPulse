@@ -13,11 +13,17 @@
  *
  * USAGE
  * -----
- *   node refresh-stock-item-master.js --tenant <tenantId>
+ *   node refresh-stock-item-master.js --tenant <tenantId> [--skip-gst]
  *
  * --tenant is REQUIRED. There is no "all tenants" mode - matches the
  * same explicit-per-tenant safety convention as
  * migrate-voucher-total-amount.js.
+ *
+ * After the Stock Item -> Stock Group refresh it also reads each Stock
+ * Group's GST/HSN configuration from Tally (one group per request,
+ * sequentially) and stores it on the items under `gst`. The result's `gst`
+ * block says what was updated, unchanged, kept or skipped. --skip-gst
+ * refreshes the groups only. The GST phase can never fail the group refresh.
  */
 
 require("dotenv").config();
@@ -27,11 +33,13 @@ const Company = require("./src/models/company.js");
 const { refreshStockItemMasters } = require("./src/services/tally/stockItemMaster");
 
 function parseArgs(argv) {
-  const args = { tenant: null };
+  const args = { tenant: null, skipGst: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--tenant") {
       args.tenant = argv[i + 1];
       i++;
+    } else if (argv[i] === "--skip-gst") {
+      args.skipGst = true;
     }
   }
   return args;
@@ -41,7 +49,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (!args.tenant) {
-    console.error("Usage: node refresh-stock-item-master.js --tenant <tenantId>");
+    console.error("Usage: node refresh-stock-item-master.js --tenant <tenantId> [--skip-gst]");
     process.exit(1);
   }
 
@@ -60,6 +68,7 @@ async function main() {
     tenantId: args.tenant,
     companyGuid: company.companyGuid,
     baseUrl: company.tallyConnection?.baseUrl || undefined,
+    includeGst: !args.skipGst,
   });
 
   console.log(JSON.stringify(result, null, 2));

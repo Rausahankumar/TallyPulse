@@ -1,6 +1,7 @@
-const { getStockItemMasters } = require("../odbc/odbcService");
+const { getStockItemMasters, getStockItemGstMasters } = require("../odbc/odbcService");
 const { parseVoucherTypeMasterList } = require("./voucherTypeClassifier");
 const { validateMasterOwnership } = require("./companyOwnership");
+const { refreshStockItemGst } = require("./stockItemGst");
 const StockItemMaster = require("../../models/stockItemMaster.model");
 
 // --------------------------------------------------
@@ -71,8 +72,23 @@ function buildFailureResult(reason) {
  *   the full parse -> validate -> persist flow against a synthetic,
  *   Tally-shaped response without a live Tally connection - the
  *   production code path (default) is unchanged either way.
+ * @param {Function} [params.gstFetcher] - ({baseUrl, stockGroupName}) -> the
+ *   GST/HSN configuration of one Stock Group's items. Defaults to the real
+ *   getStockItemGstMasters ONLY when `fetcher` is also the real one, so a test
+ *   that stubs the core fetcher can never reach live Tally by accident.
+ * @param {boolean} [params.includeGst] - false skips the GST phase (default true).
+ *
+ * The GST phase runs AFTER the core Name/Parent/Guid write, group by group, and
+ * can never fail the core refresh: its outcome is reported under `gst`.
  */
-async function refreshStockItemMasters({ tenantId, companyGuid, baseUrl, fetcher = getStockItemMasters } = {}) {
+async function refreshStockItemMasters({
+  tenantId,
+  companyGuid,
+  baseUrl,
+  fetcher = getStockItemMasters,
+  gstFetcher = fetcher === getStockItemMasters ? getStockItemGstMasters : undefined,
+  includeGst = true,
+} = {}) {
   if (typeof tenantId !== "string" || !tenantId.trim()) {
     return buildFailureResult("No tenantId supplied - refusing to write company-less Stock Item data.");
   }
@@ -140,6 +156,10 @@ async function refreshStockItemMasters({ tenantId, companyGuid, baseUrl, fetcher
 
   const result = await StockItemMaster.bulkWrite(ops, { ordered: false });
 
+  const gst = includeGst && typeof gstFetcher === "function"
+    ? await refreshStockItemGst({ tenantId, companyGuid, baseUrl, items, fetcher: gstFetcher, now })
+    : { attempted: false };
+
   return {
     ok: true,
     written: (result.upsertedCount || 0) + (result.modifiedCount || 0),
@@ -148,6 +168,7 @@ async function refreshStockItemMasters({ tenantId, companyGuid, baseUrl, fetcher
     unusable: unusable.length,
     distinctStockGroups: new Set(items.map((i) => i.stockGroupName)).size,
     resolvedAt: now,
+    gst,
   };
 }
 

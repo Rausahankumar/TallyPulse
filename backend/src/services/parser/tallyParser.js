@@ -1,3 +1,5 @@
+const { parseVoucherLineGst, numericField } = require('./gstFields');
+
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -221,6 +223,66 @@ function parseTallyBoolean(rawValue) {
   return text === 'yes' || text === 'true' || text === '1';
 }
 
+// --------------------------------------------------
+// Line discount, from what Tally actually sends.
+//
+// Confirmed live (WE FOUR, August 2025, 5,644 item lines): every inventory line carries a field called `discount`, the
+// discount PERCENTAGE as text with a leading space (" 36.44"); 55% of the lines have one above zero. There is NO discount
+// amount field. Tally's `rate` is the price before discount and `amount` is the line after discount:
+//   amount = quantity x rate x (1 - discount / 100)        e.g. 440 x 20.90 x 0.79 = 7,264.84
+// so the discount amount is not sent, but it is exactly gross minus net.
+//
+// Real data (August 2025): for 2,535 of the 3,092 discounted lines the net equals gross x (1 - percentage) to the paisa. For
+// the other 557 the net is a further 1-12% BELOW that (Tally applies another reduction it does not label on the line:
+// no discount-amount field, no discount ledger, `appropriateddiscount` empty). The customer still paid less than the list
+// value, so the discount amount is the whole reduction, gross minus net.
+//
+// Rules:
+//   - percentage: the `discount` field (legacy spellings are still read). Missing, not a number, or outside 0-100 -> 0.
+//     It is kept exactly as Tally shows it, even when the amount below is larger than percentage x gross.
+//   - amount: gross (|billed quantity x rate|) minus net (|amount|) - the total reduction against the list value - but
+//     ONLY when that is plausible next to the stated percentage:
+//       * the net must not be ABOVE what the percentage implies (that would be LESS discount than Tally states: the
+//         numbers disagree), and
+//       * the net may be at most 20% BELOW it (MIN_NET_RATIO). A bigger gap is more likely another unit or price basis
+//         (a rate quoted per box on a quantity in pieces) than a discount, so it is not invented.
+//     A missing quantity or rate also leaves the amount 0. The percentage is kept either way.
+//   - always >= 0, whatever the voucher type's sign convention (purchase lines carry negative amounts).
+//   - the line `amount` itself is never touched: it is already net of discount, so revenue and invoice totals are unchanged.
+// --------------------------------------------------
+
+const ABS_TOLERANCE = 0.05; // the stored amount is rounded to 2 decimals
+const REL_TOLERANCE = 0.0001; // the percentage is shown rounded to 2-3 decimals
+const MIN_NET_RATIO = 0.8; // the net may be at most 20% below "gross less the stated percentage"
+
+const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+function parseDiscountPercentage(entry) {
+  const raw = entry.discount ?? entry.discountpercentage ?? entry.discountPercentage;
+  const field = numericField(raw);
+  if (field.status !== "value") return 0;
+  return field.value >= 0 && field.value <= 100 ? field.value : 0;
+}
+
+/**
+ * @param {number} percentage  already parsed (0 when none)
+ * @param {{quantity: number|null, rate: number|null, amount: number}} line  parsed numbers of the same line
+ * @returns {number} the discount amount in rupees (>= 0): list value minus line amount, or 0 when that is not plausible
+ */
+function deriveDiscountAmount(percentage, { quantity, rate, amount }) {
+  if (!(percentage > 0)) return 0;
+  if (!Number.isFinite(quantity) || !Number.isFinite(rate) || !Number.isFinite(amount)) return 0;
+  const gross = Math.abs(quantity * rate);
+  const net = Math.abs(amount);
+  if (!(gross > 0)) return 0;
+  const derived = round2(gross - net);
+  if (derived < 0 || derived > gross + ABS_TOLERANCE) return 0;
+  const expectedNet = gross * (1 - percentage / 100);
+  if (net > expectedNet + gross * REL_TOLERANCE + ABS_TOLERANCE) return 0; // less discount than Tally states: they disagree
+  if (percentage < 100 && net < expectedNet * MIN_NET_RATIO - ABS_TOLERANCE) return 0; // too far below: not trusted as a discount
+  return derived;
+}
+
 function parseTallyVoucher(voucher) {
   if (!isObject(voucher)) {
     throw new Error('parseTallyVoucher expected a raw Tally voucher object, but received a non-object value.');
@@ -248,18 +310,29 @@ function parseTallyVoucher(voucher) {
       const quantityInfo = parseQuantity(entry.actualqty ?? entry.billedqty ?? entry.quantity ?? entry.qty ?? entry.actualquantity);
       const rateInfo = parseRate(entry.rate ?? entry.unitrate ?? entry.rateperunit);
       const amount = parseAmount(entry.amount ?? entry.amountvalue ?? entry.value ?? 0);
-      const discountAmount = parseAmount(entry.discountamount ?? entry.discountAmount ?? 0);
-      const discountPercentage = Number(entry.discountpercentage ?? entry.discountPercentage ?? 0);
+      // Discount: Tally sends only a percentage (`discount`, see parseDiscountPercentage above); the amount is derived from it and the line
+      // values when they agree, and an explicit discount-amount field, if some Tally version sends one, wins.
+      const discountPercentage = parseDiscountPercentage(entry);
+      const explicitDiscountAmount = parseAmount(entry.discountamount ?? entry.discountAmount ?? 0);
+      const billedQuantity = parseQuantity(entry.billedqty ?? entry.actualqty ?? entry.quantity ?? entry.qty ?? entry.actualquantity);
+      const discountAmount = explicitDiscountAmount > 0
+        ? explicitDiscountAmount
+        : deriveDiscountAmount(discountPercentage, { quantity: billedQuantity.quantity, rate: rateInfo.rate, amount });
 
       const itemName = safeString(entry.stockitemname ?? entry.stockItemName ?? entry.itemName ?? entry.name ?? entry.stockitem).trim();
+
+      // The GST fields this line itself carried (HSN, taxability, rate rows). Only attached when the
+      // line has any, so a line without them keeps exactly the shape it always had.
+      const gst = parseVoucherLineGst(entry);
 
       return {
         itemName,
         quantity: quantityInfo.quantity ?? 0,
         rate: rateInfo.rate ?? 0,
         amount,
-        discountPercentage: Number.isFinite(discountPercentage) ? discountPercentage : 0,
+        discountPercentage,
         discountAmount,
+        ...(gst ? { gst } : {}),
       };
     })
     .filter((entry) => entry.itemName || entry.amount || entry.quantity || entry.rate);
@@ -380,4 +453,7 @@ module.exports = {
   // existing caller - purely additive.
   safeString,
   findCollectionByKeywords,
+  // Item-line discount (Tally sends a percentage only; the amount is derived). Exported for the tests.
+  parseDiscountPercentage,
+  deriveDiscountAmount,
 };
