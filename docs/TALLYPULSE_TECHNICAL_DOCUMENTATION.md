@@ -603,18 +603,24 @@ There is no test framework: every suite is a plain `node verify-*.js` script in 
 
 | Area | Suites |
 |---|---|
-| Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity`, `verify-query-planner`, `verify-planner-digest`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
+| Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity` (real data), `verify-query-parity-synthetic` (the same `runParity()` on two synthetic tenants), `verify-query-planner`, `verify-planner-digest`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
 | Chat, cost, telemetry | `verify-chat-management`, `verify-cost-forensic`, `verify-ai-telemetry`, `verify-ai-usage-persist` |
 | Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-openrouter-eval` (offline tests of the multi-model evaluation, local stub server), `eval-nlu-models.js` (manual; the Claude baseline is billed, OpenRouter models are free-only), `verify-planner-live-eval` (manual, real tenant, billed) |
 | Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-timezone-boundaries` (six server zones), `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
-| Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-migrate-voucher-total-amount` |
+| Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-purchase-mapper`, `verify-migrate-voucher-total-amount` |
+| Import and sync pipeline (stub Tally server, no live Tally) | `verify-sales-import`, `verify-sales-sync-worker` |
 | Sync and recovery | `verify-sync-batching`, `verify-voucher-recovery`, `verify-self-heal`, `verify-reconciliation-history`, `verify-reconciliation-perf-and-failure` |
 | Identity and security | `verify-security-audit` (executable audit probes), `verify-company-identity`, `verify-company-ownership`, `verify-multi-company` |
 | Needs live TallyPrime | `verify-voucher-type-classification`, `verify-voucher-lifecycle`, `verify-sync-worker-guard`, `verify-reconciliation` |
 | Needs a running backend on :5000 | `verify-company-guid-match`, `verify-dashboard-real-data`, `verify-reports`, `verify-voucher-pagination` |
 | Frontend (from `frontend/`) | `verify-chat-api.mjs`, `verify-chat-rendering.mjs`, `verify-chat-presentation.mjs`, `verify-dashboard-report-link.mjs`; `verify-chat-timeout.cjs` (about 45 s, run manually) |
 
-**CI** (`.github/workflows/ci.yml`, on pull requests and pushes to `main`): backend install + syntax check + `npm audit`, frontend lint + build + verification scripts, and the self-contained backend suites above against a throwaway MongoDB service. The live-Tally, running-backend and billed-Claude suites are excluded and run manually.
+**CI** (`.github/workflows/ci.yml`, on pull requests and pushes to `main`, and manually via `workflow_dispatch` for other branches): backend install + syntax check + `npm audit`, frontend lint + build + the `verify-*.mjs` scripts, and the self-contained backend suites above against a throwaway `mongo:7` service (`tallypulse_ci`, loopback only). The live-Tally, running-backend and billed-Claude suites are excluded and run manually, as is `frontend/verify-chat-timeout.cjs`.
+
+The backend suite step reports each suite as **PASS**, **FAIL**, **PARTIAL** or **NOT RUN**:
+- **PARTIAL**: a suite on the step's hard-coded PARTIAL list printed `SKIP`. Its other checks ran and passed; the skipped real-data section did **not** run and is not proven by CI. A `SKIP` from a suite not on the list fails the job.
+- **NOT RUN**: `verify-query-parity.js`, which only compares against the real WE FOUR tenant. `verify-query-parity-synthetic.js` runs the same comparisons on synthetic tenants instead.
+- When a real-data section's checks are generic (engine vs. an independent oracle, no company facts), the suite runs them on a synthetic tenant when the real one is absent. Examples: `verify-stock-group-analytics.js` section B (synthetic tenant C with hand-computed totals and growth), and sections of `verify-query-engine`, `verify-comparison-period-capability`, `verify-query-planner` and `verify-query-chat`. Company-specific checks (real WE FOUR/Nirmal totals and rankings, genuine zeros, the stored-GUID audit) stay real-data only. That is why `verify-query-engine`, `verify-return-analytics` and `verify-return-ranking` are still PARTIAL in CI.
 
 ---
 
@@ -671,6 +677,54 @@ The sync, reconciliation and self-heal workers start from `server.js` in the sam
 | Frontend | **DONE** (React) |
 | Automated tests | scripts + CI (§13); no test framework |
 
+### 15.1 Work log: 2026-10-16 to 2026-10-17 (branch `fix/ask-ai-quick-wins`, not merged to `main`)
+
+This is a dated record; the durable rules it produced are in `PROJECT_CONTEXT.md`. CI runs were started manually (`workflow_dispatch`) on the branch.
+
+**Committed and pushed**
+- **Data-correctness fixes (production code):**
+  - `f51254d`: a cancelled or deleted Credit/Debit Note is stored as `unclassified`, and the reclassifier only touches active notes.
+  - `aa6f141`: a Purchase with no party-ledger line stores an absolute voucher total (the parser fallback takes `Math.abs` of the negative item subtotal); `verify-purchase-mapper.js` was added.
+- **Test fixes and new suites:**
+  - `80c9b0d` and `bba5e8c` fixed fixtures in `verify-adjustment-note.js`. The two CI runs on `80c9b0d` failed; `bba5e8c` fixed them.
+  - New suites: `041a9ed` (`verify-sales-import.js`), `6da1bfd` (`verify-sales-sync-worker.js`, stub Tally server), `75f316c` (`verify-query-parity-synthetic.js`).
+- **Synthetic stand-ins for generic real-data checks** (see §13):
+  - `c02a877` comparison-period, `05844af` query-engine reference date, `4ccdaca` query-planner section N, `f8ddf30` query-chat sections H–J.
+  - `6caed48` stock-group section B: a synthetic tenant C fallback, plus an oracle fix so its date bounds use the stored calendar day in any server time zone. The suite was removed from CI's PARTIAL list.
+  - `6caadf2`: return-ranking now checks the no-N default limit (10) and `truncated` on synthetic data.
+- **Latest CI:** [run 39023407727](https://github.com/Rausahankumar/TallyPulse/actions/runs/39023407727) on `6caadf2`. All three jobs succeeded. Backend suites: 46 PASS, 3 PARTIAL, 1 NOT RUN, 0 FAIL.
+  - `verify-stock-group-analytics`: 57/57, PASS.
+  - Still PARTIAL, with their real-data sections not run in CI:
+    - `verify-return-ranking`: 9 passed, section D skipped;
+    - `verify-return-analytics`: 18 passed, section G skipped;
+    - `verify-query-engine`: 299 passed, 3 real-data checks skipped.
+  - NOT RUN: `verify-query-parity`.
+  - The earlier baseline, [run 39007210043](https://github.com/Rausahankumar/TallyPulse/actions/runs/39007210043) on `f8ddf30`, was 45 PASS / 4 PARTIAL / 1 NOT RUN / 0 FAIL.
+- **Local only** (loopback `tallypulse_test`): `verify-stock-group-analytics` 57/57 and `verify-return-ranking` 9 passed, each under UTC, Asia/Kolkata and America/New_York.
+
+**Repository cleanup (2026-10-17 to 2026-10-19): verified locally before it was committed; GitHub Actions had not run on it when this was written**
+- **Cleanup batch 1:**
+  - removed the commented-out ODBC POC from `backend/src/controllers/odbcController.js` (lines 1–185) and the commented-out router from `backend/src/routes/odbcRoutes.js` (lines 1–19);
+  - deleted the unused `frontend/src/components/ui/ErrorState.jsx`;
+  - 3 files, 227 deletions, 0 additions.
+- **Verified locally:**
+  - `node --check` passes on both backend files;
+  - the live exports (`testTallyConnection`, `getSales`) and routes (`GET /company`, `GET /sales`) are unchanged;
+  - `verify-security-audit.js`: 74 secure, 0 vulnerable;
+  - frontend `npm run lint` and `npm run build` succeed;
+  - `git diff --check` is clean.
+
+- **Cleanup batch 2 (docs only, 2026-10-19):** a docs index in `README.md`; `docs/CODE_REFERENCE.md` marked as a dated snapshot; the hard-coded local repository path in `CLAUDE.md` and `PROJECT_CONTEXT.md` replaced with "the repository root". The security audit was not moved (see `PROJECT_CONTEXT.md` §L).
+
+**Repository cleanup audit (2026-10-17), main conclusions**
+- **Security:** the public repository's history contains a MongoDB connection string with credentials. It was committed once early on and later removed from the tree, but not from history, and it matched the credential then in use. It was rotated on 2026-10-19 (§16 item 12 separates what was verified from what was reported). No value is recorded anywhere.
+- **`exceljs`:** absent from both manifests, both lockfiles, the tracked files and git history. There was nothing to remove.
+- **Runtime dependencies:** all backend and frontend runtime dependencies have live importers.
+- **Manual import:** the pipeline (`/api/import/*`, `services/import/*`) is used by the frontend and reuses `voucherPersistence`.
+- **Unused code:** `ErrorState.jsx` was the only unreachable frontend file.
+- **OpenRouter:** `backend/eval/` is evaluation tooling only. Production Ask AI calls Anthropic through `planner.js`.
+- **Next:** the remaining cleanup batches and the agreed AI direction are in `PROJECT_CONTEXT.md` §L.
+
 ---
 
 ## 16. Known Limitations / Risks
@@ -686,6 +740,14 @@ The sync, reconciliation and self-heal workers start from `server.js` in the sam
 9. **The planner is not cached** and costs one Claude call per question; the entity resolver cold-loads a tenant's name lists after a data refresh.
 10. **Stop cannot undo provider work already done**: tokens processed before the abort may still be billed; if the server finished and saved before the disconnect arrived, the turn appears when the chat is reopened.
 11. **REST dashboards anchor to the latest voucher** and their `vs_previous_month` cards keep the same-days comparison, while Ask AI uses today's date and "this month vs last month" means the month to date against the complete previous month (see `PROJECT_CONTEXT.md` §H).
+12. **A database credential is exposed in public git history** (§15.1). It was rotated on 2026-10-19.
+    - **Verified by read-only connection checks:** Atlas rejected the leaked credential, and the backend connects with a replacement database user and password. It still connected after the IP list change.
+    - **Reported by the operator from the Atlas UI:** Database Access lists only the new user, and Network Access lists specific IPs with no `0.0.0.0/0`.
+    - **Remaining:**
+      - History was not purged and still contains the old value, which is harmless only while it stays invalid.
+      - A new machine or deployment needs its IP added in Network Access.
+      - This is not a full production-security review.
+13. **OpenRouter is not in the production path.** Ask AI uses Anthropic only. Moving to OpenRouter is a planned feature change; it must keep the forced structured plan, schema validation and backend-controlled execution.
 
 ---
 
@@ -723,7 +785,7 @@ TallyPulse/
 │   ├── verify-*.js                     # verification suites (§13)
 │   └── *.js                            # operator scripts (master refreshes, migrations, index tools)
 ├── frontend/                           # React app + verify-*.mjs
-├── docs/                               # this file, PROJECT_CONTEXT.md, SEMANTIC_FOUNDATION.md
+├── docs/                               # this file, PROJECT_CONTEXT.md, SEMANTIC_FOUNDATION.md, walkthroughs, snapshots (see README)
 ├── TallyPulse-Security-Audit.md        # security audit, fix log and runnable probes' register
 ├── .github/workflows/ci.yml
 └── CLAUDE.md                           # working rules for AI-assisted development

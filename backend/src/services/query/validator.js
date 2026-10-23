@@ -336,7 +336,10 @@ function validateQueryPlan(raw, { referenceDate } = {}) {
 
   // 7. Caveats ------------------------------------------------------------
   const productishFilter = plan.filters.some((f) => f.dim === "product" || f.dim === "productGroup");
-  if (productishFilter && grain === "voucher") {
+  // A distinct count (customerCount) has no amount to misread as the product's share, so the invoice-amount caveat is not attached
+  // when distinct counts are the only metrics; any invoice-level amount next to them still gets it.
+  const onlyDistinctMetrics = plan.mode === "aggregate" && usableMetrics.length > 0 && usableMetrics.every((id) => CATALOG.metrics[id].aggregation && CATALOG.metrics[id].aggregation.op === "distinct");
+  if (productishFilter && grain === "voucher" && !onlyDistinctMetrics) {
     warnings.push({
       code: "warn_invoice_total_not_product_share",
       message: CATALOG.listMode.filterCaveats.productOrGroupFilter.message,

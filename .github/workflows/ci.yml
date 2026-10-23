@@ -151,6 +151,9 @@ jobs:
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
+            verify-purchase-mapper.js \
+            verify-sales-import.js \
+            verify-sales-sync-worker.js \
             verify-migrate-voucher-total-amount.js \
             verify-security-audit.js \
             verify-db-connection-guard.js \
@@ -170,11 +173,15 @@ jobs:
             verify-stock-item-gst.js \
             verify-voucher-line-details.js \
             verify-insights.js \
+            verify-insight-tools.js \
             verify-stock-group-analytics.js \
             verify-ledger-master.js \
             verify-adjustment-note.js \
             verify-query-dsl.js \
             verify-query-engine.js \
+            verify-customer-count.js \
+            verify-analysis-plan.js \
+            verify-analysis-planner.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \

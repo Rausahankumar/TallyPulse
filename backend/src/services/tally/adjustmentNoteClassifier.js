@@ -15,8 +15,10 @@ const LedgerMaster = require("../../models/ledgerMaster.model");
 // value_adjustment: anything else with readable inventory (no evidence, or
 //                   mixed/contradicting evidence) - the safe default, never
 //                   a guessed return.
-// unclassified:     no inventory lines at all (a pure ledger adjustment) -
-//                   still queryable, but never counted as any return.
+// unclassified:     no inventory lines at all (a pure ledger adjustment), or a
+//                   cancelled/deleted voucher (set at store time and when a
+//                   note is cancelled) - still queryable, but never counted as
+//                   any return.
 // --------------------------------------------------
 
 const NOTE_ROLE = { credit: "sales_accounts", debit: "purchase_accounts" };
@@ -72,4 +74,49 @@ async function resolveAccountRoles(tenantId, ledgerNames) {
   return map;
 }
 
-module.exports = { classifyAdjustmentNote, resolveAccountRoles, NOTE_ROLE, NOTE_CLASSIFICATION };
+/**
+ * A note is classified when it is STORED, from the Ledger master's account roles. Notes stored while the Ledger master was empty (or
+ * before a ledger existed in it) all became "value_adjustment", so returns read zero. Once the master has the roles, this re-reads the
+ * stored lines (accountingAllocationLedger) and UPGRADES those notes with the same rule as classifyAdjustmentNote. No Tally call.
+ *
+ * Upgrade only, on purpose: "value_adjustment" -> "sales_return" / "purchase_return". A stored return is never downgraded (a ledger
+ * deleted from Tally later must not rewrite history), "unclassified" notes (no inventory lines) are never touched, and the write
+ * is conditional on the note still being a value_adjustment, so it cannot overwrite a concurrent change.
+ *
+ * @param {{tenantId: string, apply?: boolean, batchSize?: number}} p  apply=false only counts (dry run)
+ * @returns {Promise<{ok: boolean, scanned: number, upgrades: number, applied: boolean, byTransition: Object, reason?: string}>}
+ */
+async function reclassifyAdjustmentNotes({ tenantId, apply = false, batchSize = 500 } = {}) {
+  if (typeof tenantId !== "string" || !tenantId.trim()) {
+    return { ok: false, scanned: 0, upgrades: 0, applied: false, byTransition: {}, reason: "No tenantId supplied." };
+  }
+  const AdjustmentNote = require("../../models/adjustmentNote.model");
+  const out = { ok: true, scanned: 0, upgrades: 0, applied: Boolean(apply), byTransition: {} };
+
+  let afterId = null;
+  for (;;) {
+    // Only active vouchers: cancelled/deleted notes are never counted as returns (analytics and the query engine count active only).
+    const filter = { tenantId, voucherStatus: "active", classification: "value_adjustment", "inventory.0": { $exists: true } };
+    if (afterId) filter._id = { $gt: afterId };
+    const page = await AdjustmentNote.find(filter, { noteType: 1, "inventory.accountingAllocationLedger": 1 }).sort({ _id: 1 }).limit(batchSize).lean();
+    if (!page.length) break;
+    afterId = page[page.length - 1]._id;
+    out.scanned += page.length;
+
+    const roles = await resolveAccountRoles(tenantId, page.flatMap((n) => (n.inventory || []).map((l) => l.accountingAllocationLedger)));
+    const ops = [];
+    for (const note of page) {
+      const computed = classifyAdjustmentNote({ inventory: note.inventory || [] }, note.noteType, roles);
+      if (computed !== "sales_return" && computed !== "purchase_return") continue;
+      out.upgrades += 1;
+      const key = `value_adjustment->${computed}`;
+      out.byTransition[key] = (out.byTransition[key] || 0) + 1;
+      ops.push({ updateOne: { filter: { _id: note._id, tenantId, classification: "value_adjustment" }, update: { $set: { classification: computed } } } });
+    }
+    if (apply && ops.length) await AdjustmentNote.bulkWrite(ops, { ordered: false });
+    if (page.length < batchSize) break;
+  }
+  return out;
+}
+
+module.exports = { classifyAdjustmentNote, resolveAccountRoles, reclassifyAdjustmentNotes, NOTE_ROLE, NOTE_CLASSIFICATION };

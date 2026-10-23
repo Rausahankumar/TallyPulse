@@ -170,7 +170,7 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
     status: "supported",
-    description: "Total invoice value (party-ledger total, tax-inclusive) summed over active Sales vouchers.",
+    description: "Total sales: total invoice value (party-ledger total, tax-inclusive) summed over active Sales vouchers.",
     disclosures: [
       "Gross of returns: Credit/Debit Notes are stored separately and are never netted against this total.",
       "Tax-inclusive only when the party-ledger line of the voucher is found (exact, case-sensitive name match); otherwise the pre-tax item sum is stored.",
@@ -200,6 +200,24 @@ const METRICS = {
     status: "supported",
     description: "invoiceAmount / invoiceCount (0 when there are no invoices).",
     disclosures: [],
+  },
+  // Distinct customers. The query engine collects each group's distinct header.partyName values; the executor then counts only the
+  // names that match EXACTLY ONE live ledger of this tenant's Ledger master, and that ledger is a debtor (Sundry Debtors). Cash, bank
+  // and other non-debtor ledgers, names with no ledger and names shared by more than one ledger are never counted, and are disclosed.
+  // A distinct count is not additive, so it is never summed across rows (totals come from their own query) and cannot be grouped by
+  // customer (always 1) or product/productGroup (a product-group roll-up adds rows).
+  customerCount: {
+    id: "customerCount",
+    label: "Customers",
+    entities: ["sales"],
+    grain: "voucher",
+    aggregation: { op: "distinct", path: "header.partyName", ledgerRole: "debtor" },
+    sign: "n/a",
+    amountBasis: null,
+    status: "supported",
+    notGroupableBy: ["customer", "product", "productGroup"],
+    description: "Distinct customers (debtor ledgers) with a Sales invoice; never by customer/product.",
+    disclosures: ["Counts only party names matching exactly one debtor ledger in the synced Ledger master."],
   },
   purchaseAmount: {
     id: "purchaseAmount",
@@ -317,7 +335,7 @@ const METRICS = {
     sign: "positive",
     amountBasis: AMOUNT_BASIS.LINE_ITEM_PRE_TAX,
     status: "supported",
-    description: "Pre-tax inventory line amount. Never reconciles to invoiceAmount/purchaseAmount - different basis.",
+    description: "Default for product sales/purchase value, incl. most sold/bikne; quantity only for product units/pieces. Pre-tax item line value; never adds up to invoice/purchase totals.",
     disclosures: [
       "Pre-tax line-item basis; does not reconcile to invoice totals.",
       "Item lines only: tax, freight/other charges and vouchers without item lines are not included, so it is not an invoice total before tax.",
@@ -459,6 +477,7 @@ const LIMITS = {
   maxCompareGroups: 20000, // a comparison must hold both periods' groups in memory; beyond this it is refused, never silently truncated
   maxGroupItemNames: 5000, // item names a productGroup filter may resolve to
   maxRollupRows: 50000, // per-item rows a product-group roll-up may hold in memory; beyond this it is refused, never silently truncated
+  maxPartyNames: 20000, // distinct party names a customerCount answer may resolve against the Ledger master; beyond this it is refused
 };
 
 // Query complexity score = base + the sum of what the plan uses. A plan whose
@@ -501,6 +520,7 @@ const QUERY_RULES = [
   { code: "metric_not_applicable_to_entity", description: "Every metric/dimension must apply to the plan's entity (see METRICS/DIMENSIONS.entities)." },
   { code: "mixed_metric_grains", description: "Voucher-grain and line-grain metrics cannot share one plan (would double-count invoice totals across lines)." },
   { code: "dimension_not_applicable_to_voucher_metric", description: "Voucher-grain metrics cannot be grouped by product/productGroup: an invoice total cannot be attributed to a product without inventing an allocation." },
+  { code: "distinct_count_not_groupable", description: "A distinct count (customerCount) cannot be grouped by customer, product or productGroup: per row it is 1, or a roll-up would add it across rows." },
   { code: "compare_not_supported_with_date_groupby", description: "compare + groupBy:date is rejected: two different periods share no date buckets." },
   { code: "compare_mode_unsupported_for_period", description: "compare.mode must be supported for the period kind (COMPARISON_SUPPORT)." },
   { code: "derived_ref_requires_compare", description: "having/sort refs ending in .previous/.delta/.deltaPct require `compare`." },
@@ -534,7 +554,7 @@ const UNSUPPORTED_CAPABILITIES = [
   {
     id: "tax_breakdown",
     reason:
-      "GST/tax amounts are not modelled, and there is no invoice-level total before tax: sales are shown as invoice totals including tax, or as revenue (the pre-tax value of the item lines only, which is not an invoice total before tax).",
+      "GST amounts are stored per item line as Tally sends them, but no answer uses them yet (they are not checked against the voucher's tax ledgers), and there is no invoice-level total before tax: sales are shown as invoice totals including tax, or as revenue (the pre-tax value of the item lines only, which is not an invoice total before tax).",
     unlocks: "identifying the tax ledger lines of each voucher (later phase)",
   },
   {
@@ -543,11 +563,22 @@ const UNSUPPORTED_CAPABILITIES = [
       'Sales and purchase totals are shown gross of returns: Credit/Debit Notes are never netted against them, and one query cannot combine sales with returns. Net sales (turnover: invoice sales after returns and before tax) therefore cannot be calculated. Sales/purchase returns themselves can be asked directly, for example "sales returns this month" or "purchase returns this month"; return reasons, return rate, partial/full status, GST-head impact and product-group returns are not available yet.',
     unlocks: "a combined sales-and-returns calculation on a before-tax basis, return rate, product-group returns",
   },
-  { id: "profit_margin", reason: "No cost/COGS data is available.", unlocks: "cost data (later phase)" },
-  { id: "discount_analysis", reason: "Discounts cannot be queried yet: they are stored per item line only for recently synced vouchers (older vouchers read zero until back-filled), and no discount metric exists.", unlocks: "a discount metric after the back-fill (later phase)" },
+  // Accounting profit only. An INDICATIVE product margin (average sale rate - average purchase rate) exists as an analysis
+  // tool (analytics/insightTools product_margin), always labelled indicative; it is never offered as profit.
+  {
+    id: "profit_margin",
+    label: "accounting profit",
+    reason:
+      "No cost/COGS data is available: accounting profit, gross margin and net margin need stock valuation and the cost of goods sold, which are not available. An indicative margin per product (average sale rate minus average purchase rate) can be shown instead, labelled as indicative.",
+    unlocks: "cost data (later phase)",
+  },
+  // (Discounts are no longer listed: analytics/insights discountSummary computes them for all history from the stored rate,
+  // quantity and amount, and analysis plans offer it as the discount_summary tool. A single query still has no discount metric.)
   { id: "cancelled_invoices", reason: "Cancelled vouchers are not reliably stored, so their counts would be wrong.", unlocks: "sync change (later phase)" },
   { id: "sales_by_region_or_salesperson", reason: "State, region, customer group and salesperson are not stored in this phase.", unlocks: "party master (later phase)" },
-  { id: "cross_entity_comparison", reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
+  // multiStep: ONE query cannot answer it, but separate steps of an analysis plan can (each entity measured on its own, never
+  // combined). The query planner sends it to the analysis path (needs_analysis); the analysis planner does not list it.
+  { id: "cross_entity_comparison", label: "sales next to purchases", multiStep: true, reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
   { id: "outstanding_or_payments", reason: "Receipts, payments and balances are outside Sales/Purchase in this phase.", unlocks: "receipt/payment sync (later phase)" },
   {
     id: "other_accounting_domains",
@@ -634,6 +665,9 @@ function metricsForEntity(entityId) {
 function dimensionsForEntity(entityId) {
   return Object.values(DIMENSIONS).filter((d) => d.entities.includes(entityId));
 }
+/** How an unsupported capability is named in the planner prompts: its label, else its id in plain words. */
+const unsupportedLabel = (u) => u.label || u.id.replace(/_/g, " ");
+
 function metricRefs() {
   const suffixes = Object.keys(COMPARE.derivedSuffixes);
   const ids = Object.keys(METRICS);
@@ -647,6 +681,13 @@ function metricRefs() {
 // from them; the Phase 1B validator reads THIS, not hand-written rules.
 
 function compatibilityCell(metric, dim) {
+  if ((metric.notGroupableBy || []).includes(dim.id)) {
+    return {
+      status: "invalid",
+      code: "distinct_count_not_groupable",
+      reason: `${metric.label} is a distinct count: it cannot be grouped by ${dim.label.toLowerCase()} (a per-row count would be 1, or would be added across rows).`,
+    };
+  }
   if (!dim.grains.includes(metric.grain)) {
     return {
       status: "invalid",
@@ -692,5 +733,6 @@ module.exports = {
   metricsForEntity,
   dimensionsForEntity,
   metricRefs,
+  unsupportedLabel,
   buildCompatibilityMatrix,
 };

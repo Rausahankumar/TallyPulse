@@ -23,7 +23,8 @@ function variantOf(message) {
 }
 
 const VARIANTS = {
-  answer: { bubble: "bg-surface-alt text-ink-800", label: null },
+  // A plain answer reads as page text (no bubble), like a chat app; only the special states keep a box.
+  answer: { bubble: "px-0 py-0.5 text-ink-800", label: null },
   clarification: {
     bubble: "border border-brand-200 bg-brand-50 text-ink-800",
     label: { icon: HelpCircle, text: "Clarification needed", className: "text-brand-700" },
@@ -49,14 +50,14 @@ export default function ChatBubble({ message }) {
           <Sparkles className="h-4 w-4 text-white" />
         </span>
       )}
-      <div className={cn("min-w-0 space-y-2", isUser ? "max-w-[75%] items-end" : presentation ? "w-full max-w-[95%]" : "max-w-[85%]")}>
+      <div className={cn("min-w-0 space-y-2", isUser ? "max-w-[80%] items-end" : "w-full flex-1")}>
         {isUser ? (
           // The user's question exactly as typed: plain text, never parsed as Markdown.
           <div className="whitespace-pre-wrap break-words rounded-2xl bg-brand-600 px-4 py-2.5 text-[13.5px] leading-relaxed text-white">
             {message.text}
           </div>
         ) : (
-          <div className={cn("rounded-2xl px-4 py-2.5", variant.bubble)}>
+          <div className={cn("rounded-2xl", variant.bubble === VARIANTS.answer.bubble ? variant.bubble : cn("px-4 py-2.5", variant.bubble))}>
             {Label && (
               <p className={cn("mb-1.5 flex items-center gap-1.5 text-[12px] font-medium", Label.className)}>
                 <Label.icon className="h-3.5 w-3.5" />
@@ -81,13 +82,25 @@ export default function ChatBubble({ message }) {
         )}
 
         {!isUser && message.warnings?.length > 0 && (
-          <div className="space-y-1">
-            {message.warnings.map((w, i) => (
-              <p key={i} className="text-[12px] text-warning-600">
-                ⚠ {w}
-              </p>
-            ))}
-          </div>
+          // One collapsed line (long sync notices crowded small screens); the full text is a click away.
+          <details className="group text-[12px] text-warning-600">
+            <summary className="flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden">
+              <span className="shrink-0">⚠</span>
+              <span className="min-w-0 truncate group-open:hidden">
+                {message.warnings.length === 1 ? message.warnings[0] : `${message.warnings.length} data notices`}
+              </span>
+              <span className="hidden group-open:inline">
+                {message.warnings.length === 1 ? "Data notice" : `${message.warnings.length} data notices`}
+              </span>
+              <span className="shrink-0 text-ink-400 group-open:hidden">· show</span>
+              <span className="hidden shrink-0 text-ink-400 group-open:inline">· hide</span>
+            </summary>
+            <div className="mt-1 space-y-1">
+              {message.warnings.map((w, i) => (
+                <p key={i}>⚠ {w}</p>
+              ))}
+            </div>
+          </details>
         )}
 
         {!isUser && message.freshness && <FreshnessBadge freshness={message.freshness} />}

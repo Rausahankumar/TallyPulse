@@ -25,19 +25,61 @@ function normalizeText(raw) {
 }
 
 const READ_TIMEOUT_MS = 5000;
+const SUGGEST_MAX = 3; // "did you mean" shows at most this many names
+const SUGGEST_MIN_SCORE = 0.7; // average best-word similarity (0..1) a stored name needs to be offered
 const ENTITY_RESOLVER_UNAVAILABLE = "ENTITY_RESOLVER_UNAVAILABLE";
 const PREFIX_MIN_FIRST_WORD = 4; // a shorter first word ("a", "mr", "new") is too generic to stand for a stored name
 
-function defaultSources(tenantId) {
-  const Sale = require("../../models/sales.model");
-  const Purchase = require("../../models/purchase.model");
-  const StockItemMaster = require("../../models/stockItemMaster.model");
-  return {
-    customer: () => Sale.distinct("header.partyName", { tenantId }).maxTimeMS(READ_TIMEOUT_MS),
-    supplier: () => Purchase.distinct("header.partyName", { tenantId }).maxTimeMS(READ_TIMEOUT_MS),
-    product: () => StockItemMaster.distinct("itemName", { tenantId }).maxTimeMS(READ_TIMEOUT_MS),
-    productGroup: () => StockItemMaster.distinct("stockGroupName", { tenantId }).maxTimeMS(READ_TIMEOUT_MS),
+// `models` is injectable for tests ({Sale, Purchase, StockItemMaster}); production loads the real ones.
+function defaultSources(tenantId, models) {
+  const { Sale, Purchase, StockItemMaster } = models || {
+    Sale: require("../../models/sales.model"),
+    Purchase: require("../../models/purchase.model"),
+    StockItemMaster: require("../../models/stockItemMaster.model"),
   };
+  const names = (Model, field) => Model.distinct(field, { tenantId }).maxTimeMS(READ_TIMEOUT_MS);
+  return {
+    customer: () => names(Sale, "header.partyName"),
+    supplier: () => names(Purchase, "header.partyName"),
+    // The query engine's "product" is the item name on the voucher line (inventory.itemName), so the names that really appear on this
+    // tenant's sales and purchase lines come first; the Stock Item master only adds items that have no voucher yet. Without this, a
+    // tenant whose master is not synced could not name a single product.
+    product: async () => {
+      const [sold, bought, master] = await Promise.all([names(Sale, "inventory.itemName"), names(Purchase, "inventory.itemName"), names(StockItemMaster, "itemName")]);
+      return [...sold, ...bought, ...master];
+    },
+    productGroup: () => names(StockItemMaster, "stockGroupName"),
+  };
+}
+
+// Edit distance between two short words (two-row dynamic programming).
+function editDistance(a, b) {
+  if (a === b) return 0;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// 0..1: how alike two words are. A typed word that is the start of a stored word (or the reverse) counts as a near match.
+function wordSimilarity(a, b) {
+  if (a === b) return 1;
+  const longest = Math.max(a.length, b.length);
+  const shortest = Math.min(a.length, b.length);
+  if (shortest >= 3 && (a.startsWith(b) || b.startsWith(a))) return 0.9;
+  return 1 - editDistance(a, b) / longest;
+}
+
+// How well a stored name fits what was typed: every typed word is matched to its closest stored word and the results are averaged;
+// a stored name with many more words than were typed scores a little lower.
+function nameScore(typedWords, storedWords) {
+  let total = 0;
+  for (const w of typedWords) total += Math.max(...storedWords.map((s) => wordSimilarity(w, s)));
+  const average = total / typedWords.length;
+  return average * (0.9 + 0.1 * Math.min(1, typedWords.length / storedWords.length));
 }
 
 /**
@@ -106,7 +148,26 @@ function createEntityResolver({ tenantId, sources } = {}) {
     return { matches };
   }
 
+  // "Did you mean": the closest stored names (at most SUGGEST_MAX) for a name that did not resolve. Same tenant data and the same
+  // dimensions as resolveEntity; nothing here ever picks a name for the caller - it only lists candidates to show the user.
+  async function suggest({ entity, hintDim, text }) {
+    const typed = normalizeText(text || "").split(" ").filter(Boolean);
+    if (!typed.length) return [];
+    let dims = entity === "sales" ? ["customer", "product", "productGroup"] : entity === "purchase" ? ["supplier", "product", "productGroup"] : ["customer", "supplier", "product", "productGroup"];
+    if (hintDim) dims = dims.filter((d) => d === hintDim);
+    const scored = [];
+    for (const dim of dims) {
+      for (const [key, value] of await index(dim)) {
+        const score = nameScore(typed, key.split(" "));
+        if (score >= SUGGEST_MIN_SCORE) scored.push({ dim, value, score });
+      }
+    }
+    scored.sort((x, y) => y.score - x.score || x.value.length - y.value.length || (x.value < y.value ? -1 : 1));
+    return scored.slice(0, SUGGEST_MAX).map(({ dim, value }) => ({ dim, value }));
+  }
+
+  resolveEntity.suggest = suggest;
   return resolveEntity;
 }
 
-module.exports = { createEntityResolver, ENTITY_RESOLVER_UNAVAILABLE };
+module.exports = { createEntityResolver, defaultSources, ENTITY_RESOLVER_UNAVAILABLE };

@@ -10,10 +10,12 @@
 // user, and assumptions/caveats are listed rather than hidden.
 // --------------------------------------------------
 
-const { CATALOG } = require("./semanticCatalog");
-const { rangeText } = require("../analytics/coverage");
+const { CATALOG, LIMITS } = require("./semanticCatalog");
+const { rangeText, fmtDay } = require("../analytics/coverage");
 
-const MAX_DISPLAY_ROWS = 25;
+// Every row the engine returns is listed (the engine itself never returns more than maxLimit); the frontend
+// table collapses long lists, so the answer never has to drop rows to stay readable.
+const MAX_DISPLAY_ROWS = LIMITS.maxLimit;
 const MAX_NOTES = 8;
 
 const isMoney = (metricId) => {
@@ -47,9 +49,32 @@ function pctOf(c) {
 const datesOf = (r) => (r && r.from && r.to ? ` (${rangeText(r)})` : "");
 const label = (id) => (CATALOG.metrics[id] ? CATALOG.metrics[id].label : id);
 
+// A custom range as a person would say it: whole calendar months by name ("August 2025", "April 2025 to June 2025"), anything else as the
+// ISO dates the question gave. The dates themselves never change.
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const isoParts = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso));
+  return m ? { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) } : null;
+};
+function customRangeText(from, to) {
+  if (from === to) return from;
+  const a = isoParts(from);
+  const b = isoParts(to);
+  const wholeMonths = a && b && a.d === 1 && b.d === new Date(Date.UTC(b.y, b.m, 0)).getUTCDate() && (a.y < b.y || (a.y === b.y && a.m <= b.m));
+  if (!wholeMonths) return `${from} to ${to}`;
+  const first = `${MONTH_NAMES[a.m - 1]} ${a.y}`;
+  const last = `${MONTH_NAMES[b.m - 1]} ${b.y}`;
+  return first === last ? first : `${first} to ${last}`;
+}
+
+// The planner's free-text assumptions may name metrics by their internal id ("invoiceAmount", "invoiceAmount.delta"): show the label.
+const REF_SUFFIX_TEXT = { delta: " change", deltaPct: " % change", previous: " (previous period)" };
+const METRIC_REF_RE = new RegExp("\\b(" + Object.keys(CATALOG.metrics).join("|") + ")(?:\\.(delta|deltaPct|previous))?\\b", "g");
+const plainMetricNames = (text) => String(text).replace(METRIC_REF_RE, (_, id, suffix) => `${label(id).toLowerCase()}${suffix ? REF_SUFFIX_TEXT[suffix] : ""}`);
+
 function periodText(plan, result) {
   const p = plan.period;
-  if (p.kind === "custom") return p.from === p.to ? p.from : `${p.from} to ${p.to}`;
+  if (p.kind === "custom") return customRangeText(p.from, p.to);
   if (p.kind === "specific_fy") return `FY ${p.fy}${result.period && result.period.isPartial ? " (to date)" : ""}`;
   return `${(result.period && result.period.label) || p.kind.replace(/_/g, " ")}${p.kind === "all_time" ? "" : datesOf(result.period)}`;
 }
@@ -65,7 +90,7 @@ function compareText(plan, result) {
   if (!c) return null;
   if (plan.compare && plan.compare.mode === "custom" && plan.compare.period) {
     const p = plan.compare.period;
-    return p.from === p.to ? p.from : `${p.from} to ${p.to}`;
+    return customRangeText(p.from, p.to);
   }
   return `${c.label || (plan.compare && plan.compare.mode.replace(/_/g, " "))}${datesOf(c)}`;
 }
@@ -94,7 +119,7 @@ const touchesProduct = (plan) => (plan.groupBy || []).some((g) => g.dim === "pro
 /**
  * @returns {{text:string, warnings:string[], zero:boolean}}
  */
-function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumptions = [], contextNotes = [] }) {
+function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumptions = [], contextNotes = [], dataThrough = null }) {
   const lines = [];
   const entity = CATALOG.entities[plan.entity].label;
   const parts = [entity, periodText(plan, result)];
@@ -106,7 +131,7 @@ function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumpti
   const cmpLabel = compareText(plan, result);
 
   if (zero) {
-    lines.push("", "No matching records were found for this question.");
+    lines.push("", "No matching records were found for this question." + (dataThrough ? ` The latest voucher in this company is dated ${fmtDay(dataThrough)}.` : ""));
   } else if (plan.mode === "list") {
     lines.push("");
     (result.rows || []).slice(0, MAX_DISPLAY_ROWS).forEach((r, i) => {
@@ -147,7 +172,7 @@ function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumpti
   // ---- notes: how it was interpreted + engine assumptions + basis
   // coverage / period-scope / follow-up facts first: they change how every figure above must be read
   const notes = contextNotes.map((n) => n.message);
-  for (const a of plannerAssumptions) notes.push(`Interpretation (AI-assisted): ${a}`);
+  for (const a of plannerAssumptions) notes.push(`Interpretation (AI-assisted): ${plainMetricNames(a)}`);
   for (const a of definitionNotes) notes.push(a.message);
   if (Object.values(result.amountBasis || {}).includes("line_item_pre_tax") && (plan.entity === "sales" || plan.entity === "purchase") && touchesProduct(plan)) notes.push(productLevelNote(plan.entity));
   if (RETURN_ENTITIES.has(plan.entity)) notes.push(RETURNS_NOTE);
@@ -185,4 +210,4 @@ function formatNonAnswer(result) {
   return canned || result.reason || "Could you clarify the question?";
 }
 
-module.exports = { formatQueryAnswer, formatNonAnswer, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };
+module.exports = { formatQueryAnswer, formatNonAnswer, plainMetricNames, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };

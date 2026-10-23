@@ -144,7 +144,7 @@ try {
 
   section("5. Long answer");
   h = md(LONG);
-  check("capped list rendered (25 rows) + 'more rows' line, nothing dropped or invented", (h.match(/<li/g) || []).length === 25 && /15 more rows not shown/.test(visible(h)), visible(h).slice(-300));
+  check("every returned row rendered (40), no 'more rows' line, nothing dropped or invented", (h.match(/<li/g) || []).length === 40 && !/more rows not shown/.test(visible(h)), visible(h).slice(-300));
 
   section("6. User prompt display");
   const q = "top 10 customers grew or declined — q2 FY-2025 vs q1 FY-2025 **not bold** # not heading";

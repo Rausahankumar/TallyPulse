@@ -42,7 +42,8 @@ function createAdjustmentNotePersistence({ noteType }) {
     }
 
     const voucherStatus = sync.isDeleted ? "deleted" : "cancelled";
-    const updated = await AdjustmentNote.findOneAndUpdate(lookup, { $set: { voucherStatus, ...(sync.alterId != null ? { tallyAlterId: sync.alterId } : {}) } }, { returnDocument: "after" }).lean();
+    // A note cancelled or deleted after it was stored as a return stops being one.
+    const updated = await AdjustmentNote.findOneAndUpdate(lookup, { $set: { voucherStatus, classification: "unclassified", ...(sync.alterId != null ? { tallyAlterId: sync.alterId } : {}) } }, { returnDocument: "after" }).lean();
     if (!updated) {
       return { created: false, duplicate: false, updated: false, message: `No existing ${label} found to mark ${voucherStatus} for tenantId ${tenantId} (nothing was ever synced for this voucher).`, tenantId, voucherNo, status: "skipped" };
     }
@@ -62,7 +63,10 @@ function createAdjustmentNotePersistence({ noteType }) {
       try {
         const ledgerNames = (parsedVoucher.inventory || []).map((l) => l.accountingAllocationLedger).filter(Boolean);
         const roleMap = await resolveAccountRoles(tenantId, ledgerNames);
-        const classification = classifyAdjustmentNote(parsedVoucher, noteType, roleMap);
+        // A cancelled or deleted voucher is never a return (business counts are active-only): it is stored with the
+        // "unclassified" value, which the classifier documents as "never counted as any return".
+        const inactive = Boolean(parsedVoucher.sync && (parsedVoucher.sync.isCancelled || parsedVoucher.sync.isDeleted));
+        const classification = inactive ? "unclassified" : classifyAdjustmentNote(parsedVoucher, noteType, roleMap);
         mappedDoc = mapAdjustmentNote(parsedVoucher, { tenantId, companyGuid, noteType, classification });
       } catch (mapError) {
         return await handleUnmappable({ tenantId, voucherNo, parsedVoucher, mapError });

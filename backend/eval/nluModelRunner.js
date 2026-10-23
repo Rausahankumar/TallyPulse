@@ -32,6 +32,9 @@ function parseModelSpecs(list) {
   for (const raw of String(list || "").split(",").map((s) => s.trim()).filter(Boolean)) {
     const spec = raw.toLowerCase() === "claude" ? { provider: "claude", model: null, label: "claude" } : null;
     let parsed = spec;
+    // "nvidia:vendor/model" -> the NVIDIA API Catalog (eval/nvidiaClient.js). Only with this explicit prefix: a bare id stays OpenRouter.
+    const nv = !parsed && raw.match(/^nvidia:([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)$/);
+    if (nv) parsed = { provider: "nvidia", model: nv[1], label: `nvidia:${nv[1]}` };
     if (!parsed) {
       const m = raw.match(MODEL_SPEC);
       if (!m) throw new Error(`Unrecognised model "${raw}": use "claude" or an OpenRouter id like "vendor/model-name".`);

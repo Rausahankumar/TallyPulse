@@ -15,12 +15,12 @@
 // the answer.
 // --------------------------------------------------
 
-const { CATALOG } = require("./semanticCatalog");
+const { CATALOG, LIMITS } = require("./semanticCatalog");
 const { rangeText } = require("../analytics/coverage");
 const { fmtValue, fmtSigned, pctOf, periodText } = require("./answerFormatter");
 
 const PRESENTATION_VERSION = 1;
-const MAX_TABLE_ROWS = 25;
+const MAX_TABLE_ROWS = LIMITS.maxLimit; // all returned rows; the chat table shows the first few and a "Show all"
 const MAX_CHART_POINTS = 10;
 
 const SHORT = {

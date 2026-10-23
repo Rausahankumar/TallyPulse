@@ -319,6 +319,11 @@ function parseTallyVoucher(voucher) {
         ? explicitDiscountAmount
         : deriveDiscountAmount(discountPercentage, { quantity: billedQuantity.quantity, rate: rateInfo.rate, amount });
 
+      // Tally's billed quantity, on the PARSED line only (the mappers never store it; `quantity` is the actual quantity). It is a
+      // diagnostic: the voucher-line back-fill dry run counts lines where it differs from the actual quantity (free goods).
+      const billedField = entry.billedqty !== undefined ? parseQuantity(entry.billedqty) : null;
+      const billedQty = billedField && Number.isFinite(billedField.quantity) ? billedField.quantity : null;
+
       const itemName = safeString(entry.stockitemname ?? entry.stockItemName ?? entry.itemName ?? entry.name ?? entry.stockitem).trim();
 
       // The GST fields this line itself carried (HSN, taxability, rate rows). Only attached when the
@@ -332,6 +337,7 @@ function parseTallyVoucher(voucher) {
         amount,
         discountPercentage,
         discountAmount,
+        ...(billedQty !== null ? { billedQuantity: billedQty } : {}),
         ...(gst ? { gst } : {}),
       };
     })
@@ -382,7 +388,9 @@ function parseTallyVoucher(voucher) {
   // for the backfill of historical documents already stored with the old,
   // wrong total.
   const partyLedgerTotal = computePartyLedgerTotal(parsedLedgers, partyName);
-  const voucherTotalAmount = partyLedgerTotal !== null ? partyLedgerTotal : (inventoryTotal || ledgerTotal || 0);
+  // The fallback is a magnitude like the party-ledger path (net, then absolute): a Purchase's items arrive NEGATIVE, and
+  // a stored voucher total is always absolute (purchaseAmount sums it as-is), so a signed subtotal would read as -total.
+  const voucherTotalAmount = partyLedgerTotal !== null ? partyLedgerTotal : (Math.abs(inventoryTotal) || ledgerTotal || 0);
 
   // Sync-identity fields. These are read directly off the raw voucher and
   // never throw, regardless of whether the header/inventory/ledger fields
@@ -438,6 +446,7 @@ function extractOpenCompanies(rawTallyResponse) {
 
 module.exports = {
   parseTallyVoucher,
+  deriveDiscountAmount,
   extractOpenCompanies,
   parseTallyDate,
   parseQuantity,

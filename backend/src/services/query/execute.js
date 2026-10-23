@@ -150,6 +150,79 @@ function newPartyWarnings(info, activity, period) {
   return out;
 }
 
+// ---------- customerCount: distinct party names resolved against the Ledger master ----------
+// Name policy: a sales party name is matched to this tenant's live ledgers by EXACT, case-sensitive equality (both sides are stored
+// trimmed; Tally ledger names are unique within a company). No fuzzy matching, no aliases. A name counts as a customer only when it
+// matches exactly ONE live ledger and that ledger's partyRole is "debtor". Everything else is excluded and disclosed with counts.
+
+const CUSTOMER_COUNT_BASIS = {
+  code: "customer_count_basis",
+  message: "Customers are counted from the synced Tally Ledger master: a sales party counts only when its name matches exactly one debtor ledger (Sundry Debtors). Cash, bank and other parties are not counted.",
+};
+
+async function defaultFindPartyLedgers(tenantId, names, timeoutMs) {
+  const LedgerMaster = require("../../models/ledgerMaster.model");
+  const live = { tenantId, removedAt: null };
+  const [latest, ledgers] = await Promise.all([
+    LedgerMaster.findOne(live, { syncedAt: 1, _id: 0 }).sort({ syncedAt: -1 }).maxTimeMS(timeoutMs).lean(),
+    names.length
+      ? LedgerMaster.find({ ...live, name: { $in: names } }, { name: 1, partyRole: 1, _id: 0 })
+          .limit(2 * LIMITS.maxPartyNames + 1)
+          .maxTimeMS(timeoutMs)
+          .lean()
+      : [],
+  ]);
+  if (!latest) return { masterMissing: true };
+  return { masterMissing: false, ledgers, syncedAt: latest.syncedAt };
+}
+
+const distinctMetricIds = (n) => n.metrics.filter((id) => CATALOG.metrics[id].aggregation && CATALOG.metrics[id].aggregation.op === "distinct");
+
+function partyNamesIn(results, ids) {
+  const names = new Set();
+  for (const rows of Object.values(results)) for (const r of rows) for (const id of ids) for (const nm of Array.isArray(r[id]) ? r[id] : []) if (typeof nm === "string") names.add(nm);
+  return names;
+}
+
+// name -> "debtor" | "non_debtor" | "unmatched" | "ambiguous"
+function classifyParties(names, ledgers) {
+  const byName = new Map();
+  for (const l of ledgers) {
+    if (!byName.has(l.name)) byName.set(l.name, []);
+    byName.get(l.name).push(l.partyRole);
+  }
+  const out = new Map();
+  for (const nm of names) {
+    const roles = byName.get(nm) || [];
+    out.set(nm, roles.length === 0 ? "unmatched" : roles.length > 1 ? "ambiguous" : roles[0] === "debtor" ? "debtor" : "non_debtor");
+  }
+  return out;
+}
+
+// Replaces every distinct metric's name set with the number of its debtor names, in place, before any assembly (so totals, deltas,
+// having, sort and limit all see the resolved count).
+function applyPartyCounts(results, ids, status) {
+  for (const rows of Object.values(results)) for (const r of rows) for (const id of ids) r[id] = (Array.isArray(r[id]) ? r[id] : []).filter((nm) => status.get(nm) === "debtor").length;
+}
+
+function customerCountWarnings(status, syncedAt, period) {
+  const out = [];
+  const of = (kind) => [...status].filter(([, s]) => s === kind).map(([nm]) => nm).sort();
+  const parts = [
+    [of("non_debtor"), "on a cash, bank or other non-debtor ledger"],
+    [of("unmatched"), "with no matching ledger in the synced Ledger master"],
+    [of("ambiguous"), "shared by more than one ledger (ambiguous)"],
+  ].filter(([list]) => list.length);
+  if (parts.length) {
+    const total = parts.reduce((t, [list]) => t + list.length, 0);
+    out.push({ code: "customer_count_excluded_parties", message: `${total} party name${total === 1 ? "" : "s"} in these sales ${total === 1 ? "is" : "are"} not counted as customers: ${parts.map(([list, why]) => `${list.length} ${why} (${nameList(list)})`).join("; ")}.` });
+  }
+  if (syncedAt && syncedAt < period.to) {
+    out.push({ code: "ledger_master_as_of", message: `The ledger master was last refreshed on ${syncedAt.toISOString().slice(0, 10)}; customers whose ledger was created or changed after that may not be counted.` });
+  }
+  return out;
+}
+
 function isTimeout(error) {
   return !!error && (error.code === 50 || /exceeded time limit|MaxTimeMSExpired/i.test(String(error.message || "")));
 }
@@ -376,6 +449,7 @@ function fail(stage, errors, extra = {}) {
  * @param {Function} [context.runAggregate] injectable (model, pipeline, options) => Promise<rows>
  * @param {Function} [context.findGroupItemNames] injectable (tenantId, filter) => Promise<string[]>
  * @param {Function} [context.loadStockGroupMap] injectable (tenantId) => Promise<Map(item -> group)>
+ * @param {Function} [context.findPartyLedgers] injectable (tenantId, names) => Promise<{masterMissing, ledgers:[{name, partyRole}], syncedAt}>
  * @param {Function} [context.findNewParties] injectable (tenantId, period) => Promise<{masterMissing, names, ambiguous, bulkDays, undated, syncedAt}>
  */
 async function executeQuery(rawPlan, context = {}) {
@@ -429,6 +503,26 @@ async function executeQuery(rawPlan, context = {}) {
     const settled = await Promise.all(compiled.queries.map((q) => runAggregate(q.model, q.pipeline, q.options)));
     const results = Object.fromEntries(compiled.queries.map((q, i) => [q.key, settled[i]]));
 
+    // customerCount: resolve every distinct party name once (one bounded Ledger master read), then replace the name sets by counts.
+    let partyInfo = null;
+    const distinctIds = distinctMetricIds(n);
+    if (distinctIds.length) {
+      const names = partyNamesIn(results, distinctIds);
+      if (names.size > LIMITS.maxPartyNames) {
+        return fail("execution", [{ code: "result_too_large", path: "metrics", message: `More than ${LIMITS.maxPartyNames} different parties are involved; choose a shorter period or add a filter.` }], { warnings: validation.warnings });
+      }
+      const found = await (context.findPartyLedgers || ((tid, list) => defaultFindPartyLedgers(tid, list, timeoutMs)))(tenantId, [...names]);
+      if (found.masterMissing) {
+        return fail("execution", [{ code: "ledger_master_missing", path: "metrics", message: "The Tally ledger master has not been synced for this company yet, so customers cannot be counted." }], { warnings: validation.warnings });
+      }
+      if (found.ledgers.length > 2 * LIMITS.maxPartyNames) {
+        return fail("execution", [{ code: "result_too_large", path: "metrics", message: "Too many ledgers match these parties to count them reliably; choose a shorter period or add a filter." }], { warnings: validation.warnings });
+      }
+      const status = classifyParties(names, found.ledgers);
+      applyPartyCounts(results, distinctIds, status);
+      partyInfo = { status, syncedAt: found.syncedAt };
+    }
+
     let assembled;
     let mapping = null;
 
@@ -458,6 +552,13 @@ async function executeQuery(rawPlan, context = {}) {
         const totals = n.totals ? { values: metricValues(n, results.totals_current[0]), previousValues: metricValues(n, results.totals_previous[0]) } : null;
         assembled = finalizeInMemory(n, toRows(n, results.rows_current), toRows(n, results.rows_previous), totals);
       }
+    } else if (compiled.inMemory && n.groupBy.length) {
+      // Grouped distinct count without a comparison: having/sort/limit on the RESOLVED counts; the total is its own query, never a sum.
+      if (results.rows.length > LIMITS.maxCompareGroups) {
+        return fail("execution", [{ code: "result_too_large", path: "", message: `The breakdown spans more than ${LIMITS.maxCompareGroups} groups; add a filter or use a shorter period.` }], { warnings: validation.warnings });
+      }
+      const totals = n.totals ? { values: metricValues(n, results.totals && results.totals[0]) } : null;
+      assembled = finalizeInMemory(n, toRows(n, results.rows), null, totals);
     } else {
       assembled = assemblePlain(n, results);
     }
@@ -468,6 +569,8 @@ async function executeQuery(rawPlan, context = {}) {
       const activity = await newPartyActivity(runAggregate, compiled.queries[0].model, tenantId, n.period, newPartyNames);
       warnings = [...warnings, ...newPartyWarnings(newPartyInfo, activity, n.period)];
     }
+    if (partyInfo) warnings = [...warnings, ...customerCountWarnings(partyInfo.status, partyInfo.syncedAt, n.period)];
+    const assumptions = partyInfo ? [...validation.assumptions, CUSTOMER_COUNT_BASIS] : validation.assumptions;
 
     return {
       ok: true,
@@ -485,7 +588,7 @@ async function executeQuery(rawPlan, context = {}) {
       rowLimit: n.limit,
       mapping,
       warnings,
-      assumptions: validation.assumptions,
+      assumptions,
       diagnostics: { catalogVersion: catalog.CATALOG_VERSION, complexity: n.complexity, queryCount: compiled.queries.length, timeoutMs },
     };
   } catch (error) {

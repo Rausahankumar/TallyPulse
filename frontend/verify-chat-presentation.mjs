@@ -102,6 +102,15 @@ section("Trend");
   check("line chart container + a Month | Sales | Invoices table (an invoice count is never labelled Orders)", html.includes('role="img"') && /trend over 5 periods/.test(html) && html.includes(">Month<") && html.includes(">Invoices<") && !html.includes(">Orders<"));
   check("every month's exact value is listed, then the engine's total", vals.every((v) => html.includes(fmtMoney(v))) && html.includes("Total") && html.includes(fmtMoney(24441477.91)));
   check("month labels read 'Apr 2025' ... 'Aug 2025'", ["Apr 2025", "May 2025", "Jun 2025", "Jul 2025", "Aug 2025"].every((l) => html.includes(l)));
+
+  // A daily series for a month: every day arrives, the table opens on the first 10 with a "Show all" toggle, total still shown.
+  const days = Array.from({ length: 31 }, (_, i) => `2025-08-${String(i + 1).padStart(2, "0")}`);
+  const dayRows = days.map((d, i) => ({ key: { date: { bucket: "day", start: d, label: d } }, values: { invoiceAmount: 1000 + i, invoiceCount: 1 } }));
+  const daily = render(message(plan({ groupBy: [{ dim: "date", bucket: "day" }] }), base({ groupBy: [{ dim: "date", bucket: "day" }], rows: dayRows, totals: { values: { invoiceAmount: 31465, invoiceCount: 31 } } })));
+  const bodyRows = count(daily.split("<tbody>")[1].split("</tbody>")[0], /<tr/g);
+  check("31 daily rows: 10 shown first, 'Show all 31 rows' toggle, total kept", bodyRows === 10 && daily.includes("Show all 31 rows") && daily.includes(fmtMoney(31465)), bodyRows);
+  const short = render(message(plan({ groupBy: [{ dim: "date", bucket: "day" }] }), base({ groupBy: [{ dim: "date", bucket: "day" }], rows: dayRows.slice(0, 12), totals: { values: { invoiceAmount: 12066, invoiceCount: 12 } } })));
+  check("a 12-row table is shown whole, no toggle", count(short.split("<tbody>")[1].split("</tbody>")[0], /<tr/g) === 12 && !short.includes("Show all"));
 }
 
 section("Comparison");

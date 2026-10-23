@@ -76,7 +76,10 @@ function diffPlans(actual, expected) {
   if (e.invalid) return [{ field: "expected", expected: "valid expected plan", actual: `corpus bug: ${e.errors.join(",")}` }];
   const out = [];
   for (const k of ["entity", "mode", "period", "comparison"]) if (a[k] !== e[k]) out.push({ field: k, expected: e[k], actual: a[k] });
-  if (a.limit !== e.limit) out.push({ field: "limit", expected: e.limit, actual: a.limit, minor: typeof a.limit === "number" && typeof e.limit === "number" && a.limit > e.limit });
+  // A scalar aggregate (aggregate mode, no groupBy) returns totals only: the engine never applies the row limit to it
+  // (execute.js assemblePlain returns before using n.limit), so a different limit there is not a difference in the answer.
+  const scalarAggregate = (p) => p.mode === "aggregate" && p.groupBy.length === 0;
+  if (a.limit !== e.limit && !(scalarAggregate(a) && scalarAggregate(e))) out.push({ field: "limit", expected: e.limit, actual: a.limit, minor: typeof a.limit === "number" && typeof e.limit === "number" && a.limit > e.limit });
   // metrics: every expected metric must be present; an extra metric is minor only if it shares the grain (invoice / line / return) of an expected one
   const grain = (m) => (CATALOG.metrics[m] ? CATALOG.metrics[m].grain : null);
   const missing = e.metrics.filter((m) => !a.metrics.includes(m));

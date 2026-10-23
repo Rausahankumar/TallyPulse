@@ -17,7 +17,7 @@ const { storedDayStart, storedDayEnd, parseCalendarDay } = require("../analytics
 // incremental sync will not re-read them (their AlterID has not changed), so this reads them once more, by explicit AlterID.
 //
 // What it may write: ONLY three things per item line - discountPercentage, discountAmount and the `gst` snapshot
-// (a whitelist, enforced below and tested). It never touches amount, quantity, rate, item name, the header, the ledgers,
+// (a whitelist, enforced below and tested). It also COUNTS, without writing, lines whose billed quantity differs from the actual one. It never touches amount, quantity, rate, item name, the header, the ledgers,
 // the voucher status or the AlterID, so invoice totals and every revenue figure are exactly what they were.
 //
 // Safety (same discipline as voucher recovery, which it mirrors):
@@ -61,7 +61,7 @@ function emptyResult(voucherType, apply) {
     vouchersToUpdate: 0,
     vouchersUpdated: 0,
     linesToUpdate: 0,
-    lines: { withDiscount: 0, discountAmountDerived: 0, discountAmountNotDerivable: 0, withTaxAmounts: 0, withoutComputedFields: 0 },
+    lines: { withDiscount: 0, discountAmountDerived: 0, discountAmountNotDerivable: 0, withTaxAmounts: 0, withoutComputedFields: 0, withBilledQuantity: 0, billedDiffersFromActual: 0, billedQuantityMissingInTally: 0 },
     skipped: { notReturnedByTally: 0, changedInTally: 0, lineMismatch: 0, unexpectedVoucher: 0, changedDuringRun: 0 },
     batches: { attempted: 0, succeeded: 0, failed: 0 },
     nextAfterAlterId: null,
@@ -96,6 +96,12 @@ function buildSet(storedLines, parsedLines, counters) {
     if (!near(s.discountAmount || 0, p.discountAmount, 1e-9)) set[`inventory.${i}.discountAmount`] = p.discountAmount;
     // The snapshot is written when the line has none yet, or when Tally now supplies the computed amounts the stored one lacks.
     if (p.gst && (!s.gst || (p.gst.amounts && !s.gst.amounts))) set[`inventory.${i}.gst`] = p.gst;
+    // Diagnostic only (nothing is written for it): how often Tally's billed quantity differs from the actual quantity that is
+    // stored, i.e. free goods. A full FY 2025-26 dry run found no such line, so the billed quantity is not stored.
+    if (p.billedQuantity !== undefined) {
+      counters.withBilledQuantity += 1;
+      if (!near(p.billedQuantity, p.quantity, 0.0005)) counters.billedDiffersFromActual += 1;
+    } else counters.billedQuantityMissingInTally += 1;
   });
   for (const path of Object.keys(set)) {
     if (!ALLOWED_SET_PATH.test(path)) throw new Error(`Back-fill refused to write ${path}: only discount and gst fields may change.`);

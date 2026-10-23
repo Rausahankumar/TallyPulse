@@ -1,5 +1,7 @@
 # TallyPulse code reference (auto-generated from the source)
 
+> **Snapshot, not maintained.** This file was last generated on 2026-10-15. Its generator (`gen_ref.js`) is not in the repository, so it cannot be regenerated and does not reflect later changes. For the current map of the code use [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), and check the source before relying on any detail here.
+
 Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har function kya karta hai (code ke apne comments se), aur wo kis dusri file ka kaun sa function call karta hai.
 
 > Ye file `gen_ref.js` se banai gayi hai. Comments code se uthaye gaye hain, isliye English me hain. Simple Hindi/Hinglish samjhane wala hissa alag file `CODE_WALKTHROUGH_HINGLISH.md` me hai.
@@ -71,7 +73,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **7. Tally rules / masters**
 
-- `src/services/tally/adjustmentNoteClassifier.js` (76 lines, 2 functions)
+- `src/services/tally/adjustmentNoteClassifier.js` (120 lines, 3 functions)
 - `src/services/tally/companyOwnership.js` (222 lines, 7 functions)
 - `src/services/tally/ledgerMaster.js` (243 lines, 12 functions)
 - `src/services/tally/stockItemGst.js` (350 lines, 11 functions)
@@ -97,7 +99,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/sync/reconciliation.js` (254 lines, 3 functions)
 - `src/services/sync/reconciliationWorker.js` (360 lines, 10 functions)
 - `src/services/sync/selfHeal.js` (186 lines, 2 functions)
-- `src/services/sync/tallySyncWorker.js` (767 lines, 12 functions)
+- `src/services/sync/tallySyncWorker.js` (791 lines, 12 functions)
 - `src/services/sync/voucherLineBackfill.js` (280 lines, 10 functions)
 - `src/services/sync/voucherPersistence.js` (287 lines, 1 functions)
 - `src/services/sync/voucherRecovery.js` (383 lines, 5 functions)
@@ -131,18 +133,18 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 **14. AI query engine**
 
 - `src/services/query/answerCache.js` (204 lines, 4 functions)
-- `src/services/query/answerFormatter.js` (189 lines, 17 functions)
+- `src/services/query/answerFormatter.js` (212 lines, 20 functions)
 - `src/services/query/compile.js` (364 lines, 23 functions)
 - `src/services/query/dataVersion.js` (230 lines, 12 functions)
-- `src/services/query/entityResolver.js` (113 lines, 3 functions)
+- `src/services/query/entityResolver.js` (174 lines, 6 functions)
 - `src/services/query/execute.js` (502 lines, 31 functions)
 - `src/services/query/followUp.js` (45 lines, 3 functions)
-- `src/services/query/planner.js` (598 lines, 24 functions)
+- `src/services/query/planner.js` (658 lines, 27 functions)
 - `src/services/query/presentation.js` (280 lines, 17 functions)
-- `src/services/query/queryChat.js` (377 lines, 14 functions)
-- `src/services/query/queryPlan.schema.js` (296 lines, 7 functions)
+- `src/services/query/queryChat.js` (383 lines, 14 functions)
+- `src/services/query/queryPlan.schema.js` (307 lines, 8 functions)
 - `src/services/query/semanticCatalog.js` (697 lines, 8 functions)
-- `src/services/query/turnTelemetry.js` (147 lines, 13 functions)
+- `src/services/query/turnTelemetry.js` (150 lines, 13 functions)
 - `src/services/query/usageStore.js` (100 lines, 9 functions)
 - `src/services/query/validator.js` (407 lines, 15 functions)
 
@@ -505,7 +507,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 # 5. Models (MongoDB tables)
 
 ## `src/models/adjustmentNote.model.js`
-**Used by:** `src/services/sync/adjustmentNotePersistence.js`
+**Used by:** `src/services/tally/adjustmentNoteClassifier.js`, `src/services/sync/adjustmentNotePersistence.js`
 
 
 ## `src/models/aiTurnUsage.model.js`
@@ -533,7 +535,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 
 ## `src/models/purchase.model.js`
-**Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/analytics/insights.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`, `src/services/query/entityResolver.js`
+**Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/analytics/insights.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`
 
 **Imports:** `src/models/gstSchemas.js`
 
@@ -543,13 +545,13 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 
 ## `src/models/sales.model.js`
-**Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallySalesImport.js`, `src/services/analytics/insights.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`, `src/services/analytics/salesAnalytics.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/query/entityResolver.js`
+**Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallySalesImport.js`, `src/services/analytics/insights.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`, `src/services/analytics/salesAnalytics.js`, `src/services/analytics/stockGroupAnalytics.js`
 
 **Imports:** `src/models/gstSchemas.js`
 
 
 ## `src/models/stockItemMaster.model.js`
-**Used by:** `src/services/tally/stockItemGst.js`, `src/services/tally/stockItemMaster.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/query/entityResolver.js`, `src/services/query/execute.js`
+**Used by:** `src/services/tally/stockItemGst.js`, `src/services/tally/stockItemMaster.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/query/execute.js`
 
 **Imports:** `src/models/gstSchemas.js`
 
@@ -675,17 +677,21 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 # 7. Tally rules / masters
 
 ## `src/services/tally/adjustmentNoteClassifier.js`
-**Used by:** `src/services/sync/adjustmentNotePersistence.js`
+**Used by:** `src/services/sync/adjustmentNotePersistence.js`, `src/services/sync/tallySyncWorker.js`
 
-**Imports:** `src/models/ledgerMaster.model.js`
+**Imports:** `src/models/ledgerMaster.model.js`, `src/models/adjustmentNote.model.js`
 
-**Exports:** `classifyAdjustmentNote`, `resolveAccountRoles`, `NOTE_ROLE`, `NOTE_CLASSIFICATION`
+**Exports:** `classifyAdjustmentNote`, `resolveAccountRoles`, `reclassifyAdjustmentNotes`, `NOTE_ROLE`, `NOTE_CLASSIFICATION`
 
 - **`classifyAdjustmentNote()`** — line 33
   - Purpose: @param {Object} parsedVoucher - from adjustmentNoteParser.parseAdjustmentNoteVoucher @param {"credit"|"debit"} noteType @param {Map<string,string>} accountRoleByLedgerName - THIS tenant's LedgerMaster name -> accountRole, pre-resolved by the caller (one bounded query per voucher's distinct ledger names - see resolveAccountRoles below).
 - **`resolveAccountRoles()`** _(async)_ — line 54
   - Purpose: One bounded, tenant-scoped, indexed lookup ({tenantId, name} index) per distinct ledger name a batch of notes actually references - never a full LedgerMaster scan, and never a Tally call (LedgerMaster is sync-time data). Ambiguous (same-name) ledgers resolve to "other" (never guessed), same fail-closed posture as ledgerMaster.js's own new-party resolution.
   - Calls other files: `src/models/ledgerMaster.model.js → find()`
+- **`reclassifyAdjustmentNotes()`** _(async)_ — line 87
+  - Purpose: A note is classified when it is STORED, from the Ledger master's account roles. Notes stored while the Ledger master was empty (or before a ledger existed in it) all became "value_adjustment", so returns read zero. Once the master has the roles, this re-reads the stored lines (accountingAllocationLedger) and UPGRADES those notes with the same rule as classifyAdjustmentNote. No Tally call. Upgrade only, on purpose: "v
+  - Calls in this file: `classifyAdjustmentNote()`, `resolveAccountRoles()`
+  - Calls other files: `src/models/adjustmentNote.model.js → find()`, `src/models/adjustmentNote.model.js → bulkWrite()`
 
 ## `src/services/tally/companyOwnership.js`
 **Used by:** `src/services/tally/ledgerMaster.js`, `src/services/tally/stockItemGst.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/sync/reconciliation.js`, `src/services/sync/tallySyncWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/import/tallySalesImport.js`, `src/services/auth/tallyCompanyGuard.js`
@@ -1131,42 +1137,42 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/sync/tallySyncWorker.js`
 **Used by:** `server.js`
 
-**Imports:** `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/ledgerMaster.js`, `src/models/company.js`, `src/models/syncCheckpoint.model.js`
+**Imports:** `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/ledgerMaster.js`, `src/services/tally/adjustmentNoteClassifier.js`, `src/models/company.js`, `src/models/syncCheckpoint.model.js`
 
 **Exports:** `startTallySyncWorker`, `stopTallySyncWorker`, `runSyncForAllCompanies`, `runSyncForCompanyModule`, `runMasterRefreshForCompany`, `resolveMasterRefreshMs`, `SALES_SYNC_MODULE`, `PURCHASE_SYNC_MODULE`, `CREDIT_NOTE_SYNC_MODULE`, `DEBIT_NOTE_SYNC_MODULE`
 
-- **`resolveMasterRefreshMs()`** — line 138
+- **`resolveMasterRefreshMs()`** — line 142
   - Purpose: (no comment in code — see name and calls below)
-- **`resolveTallyBaseUrl()`** — line 152
+- **`resolveTallyBaseUrl()`** — line 156
   - Purpose: (no comment in code — see name and calls below)
-- **`ensureCheckpointExists()`** _(async)_ — line 162
+- **`ensureCheckpointExists()`** _(async)_ — line 166
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`acquireLock()`** _(async)_ — line 183
+- **`acquireLock()`** _(async)_ — line 187
   - Purpose: Atomically acquire the per-{company, voucher type} lock. Returns the checkpoint doc if acquired, or null if another run currently holds a non-stale lock (in which case this tick simply skips that combination).
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`releaseLock()`** _(async)_ — line 204
+- **`releaseLock()`** _(async)_ — line 208
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`runSyncForCompanyModule()`** _(async)_ — line 234
+- **`runSyncForCompanyModule()`** _(async)_ — line 238
   - Purpose: Runs one incremental sync pass for a single {company, sync module} combination. Never throws — failures are recorded on the checkpoint and returned in the result so the caller can log them and move on.
   - Calls in this file: `resolveTallyBaseUrl()`, `ensureCheckpointExists()`, `acquireLock()`, `releaseLock()`
   - Calls other files: `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → computeBatchWindow()`, `src/services/sync/batchWindow.js → findMissingAlterIds()`, `src/services/import/tallySalesImport.js → extractVoucherCollection()`, `src/services/auth/tallyCompanyGuard.js → verifyOpenTallyCompany()`, `src/services/tally/companyOwnership.js → assertBatchOwnership()`, `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`
-- **`runMasterRefreshForCompany()`** _(async)_ — line 579
+- **`runMasterRefreshForCompany()`** _(async)_ — line 587
   - Purpose: Refreshes one company's Stock Item and Ledger masters when they are due (see MASTER_REFRESH_MS). Never throws. - The open-company guard runs first (one light read): if another company is open or Tally is unreachable nothing is requested and the refresh stays due, so the next tick looks again. Both refreshes also verify the GUID ownership of everything Tally returns, and fail closed (they write nothing, and never clea
   - Calls in this file: `resolveTallyBaseUrl()`
-- **`logMasterRefresh()`** — line 610
+- **`logMasterRefresh()`** — line 629
   - Purpose: (no comment in code — see name and calls below)
-- **`runSyncForAllCompanies()`** _(async)_ — line 631
+- **`runSyncForAllCompanies()`** _(async)_ — line 654
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `runSyncForCompanyModule()`, `logMasterRefresh()`
   - Calls other files: `src/models/company.js → find()`
-- **`buildCronExpression()`** — line 709
+- **`buildCronExpression()`** — line 733
   - Purpose: (no comment in code — see name and calls below)
-- **`startTallySyncWorker()`** — line 717
+- **`startTallySyncWorker()`** — line 741
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `runSyncForAllCompanies()`, `buildCronExpression()`
-- **`stopTallySyncWorker()`** — line 748
+- **`stopTallySyncWorker()`** — line 772
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/sync/voucherLineBackfill.js`
@@ -1756,24 +1762,32 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/services/analytics/coverage.js → rangeText()`
 - **`label()`** — line 48
   - Purpose: (no comment in code — see name and calls below)
-- **`periodText()`** — line 50
+- **`isoParts()`** — line 53
   - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `datesOf()`
-- **`keyText()`** — line 57
+- **`customRangeText()`** — line 57
   - Purpose: (no comment in code — see name and calls below)
-- **`compareText()`** — line 63
+  - Calls in this file: `isoParts()`
+- **`plainMetricNames()`** — line 71
   - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `datesOf()`
-- **`isZero()`** — line 73
+- **`periodText()`** — line 73
   - Purpose: (no comment in code — see name and calls below)
-- **`productLevelNote()`** — line 91
+  - Calls in this file: `datesOf()`, `customRangeText()`
+- **`keyText()`** — line 80
   - Purpose: (no comment in code — see name and calls below)
-- **`touchesProduct()`** — line 92
+- **`compareText()`** — line 86
   - Purpose: (no comment in code — see name and calls below)
-- **`formatQueryAnswer()`** — line 97
+  - Calls in this file: `datesOf()`, `customRangeText()`
+- **`isZero()`** — line 96
+  - Purpose: (no comment in code — see name and calls below)
+- **`productLevelNote()`** — line 114
+  - Purpose: (no comment in code — see name and calls below)
+- **`touchesProduct()`** — line 115
+  - Purpose: (no comment in code — see name and calls below)
+- **`formatQueryAnswer()`** — line 120
   - Purpose: @returns {{text:string, warnings:string[], zero:boolean}}
-  - Calls in this file: `fmtMoney()`, `fmtValue()`, `fmtSigned()`, `pctOf()`, `label()`, `periodText()`, `keyText()`, `compareText()`, `isZero()`, `productLevelNote()`, `touchesProduct()`
-- **`formatNonAnswer()`** — line 178
+  - Calls in this file: `fmtMoney()`, `fmtValue()`, `fmtSigned()`, `pctOf()`, `label()`, `plainMetricNames()`, `periodText()`, `keyText()`, `compareText()`, `isZero()`, `productLevelNote()`, `touchesProduct()`
+  - Calls other files: `src/services/analytics/coverage.js → fmtDay()`
+- **`formatNonAnswer()`** — line 201
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/query/compile.js`
@@ -1888,18 +1902,23 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/entityResolver.js`
 **Used by:** `src/services/query/queryChat.js`
 
-**Imports:** `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`
-
-**Exports:** `createEntityResolver`, `ENTITY_RESOLVER_UNAVAILABLE`
+**Exports:** `createEntityResolver`, `defaultSources`, `ENTITY_RESOLVER_UNAVAILABLE`
 
 - **`normalizeText()`** — line 16
   - Purpose: Lower-case, punctuation-free, single-spaced form used to compare entity names. 
-- **`defaultSources()`** — line 31
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls other files: `src/models/sales.model.js → distinct()`, `src/models/purchase.model.js → distinct()`, `src/models/stockItemMaster.model.js → distinct()`
-- **`createEntityResolver()`** — line 47
+- **`defaultSources()`** — line 34
+  - Purpose: `models` is injectable for tests ({Sale, Purchase, StockItemMaster}); production loads the real ones.
+- **`editDistance()`** — line 56
+  - Purpose: Edit distance between two short words (two-row dynamic programming).
+- **`wordSimilarity()`** — line 68
+  - Purpose: 0..1: how alike two words are. A typed word that is the start of a stored word (or the reverse) counts as a near match.
+  - Calls in this file: `editDistance()`
+- **`nameScore()`** — line 78
+  - Purpose: How well a stored name fits what was typed: every typed word is matched to its closest stored word and the results are averaged; a stored name with many more words than were typed scores a little lower.
+  - Calls in this file: `wordSimilarity()`
+- **`createEntityResolver()`** — line 89
   - Purpose: @param {{tenantId: *, sources?: object}} opts `sources` is injectable for tests ({dim: async () => string[]}).
-  - Calls in this file: `normalizeText()`, `defaultSources()`
+  - Calls in this file: `normalizeText()`, `defaultSources()`, `nameScore()`
 
 ## `src/services/query/execute.js`
 **Used by:** `src/services/query/answerCache.js`
@@ -2017,61 +2036,68 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **Exports:** `planQuestion`, `uncalculableTermRefusal`, `createAnthropicPlannerClient`, `getPlannerPrompt`, `buildCatalogDigest`, `PLANNER_TOOL_NAME`, `PLANNER_MAX_TOKENS`, `PLANNER_MAX_QUESTION_CHARS`, `PLANNER_ATTEMPT_TIMEOUT_MS`, `PLANNER_MAX_RETRIES`, `PLANNER_DEADLINE_MS`, `DECLINE_CODES`, `REVENUE_ASSUMPTION`
 
-- **`isUnsafeQuestion()`** — line 49
+- **`isUnsafeQuestion()`** — line 52
   - Purpose: The safety gate applied before any Claude call. 
-- **`mentionsRevenue()`** — line 62
+- **`unsafeReason()`** — line 60
   - Purpose: (no comment in code — see name and calls below)
-- **`normalizeTerms()`** — line 72
+- **`mentionsRevenue()`** — line 73
+  - Purpose: (no comment in code — see name and calls below)
+- **`normalizeTerms()`** — line 83
   - Purpose: Product decisions D1-D3 (final). Net sales / turnover = invoice sales AFTER returns and BEFORE tax; invoice sales = BEFORE tax and BEFORE returns. The engine has no invoice-level total before tax and cannot combine sales with returns in one figure, so these terms are REFUSED with the catalog's own reason - never answered with a nearby number (the sales total includes tax; revenue is the item lines only). An "order" i
-- **`carriesVoucherTotal()`** — line 112
+- **`carriesVoucherTotal()`** — line 123
   - Purpose: The amounts that are invoice TOTALS including tax (catalog amountBasis): a list shows them as its amount column.
-- **`mentionsOrders()`** — line 122
+- **`mentionsOrders()`** — line 133
   - Purpose: (no comment in code — see name and calls below)
-- **`catalogReason()`** — line 128
+- **`catalogReason()`** — line 139
   - Purpose: (no comment in code — see name and calls below)
-- **`uncalculableTermRefusal()`** — line 137
+- **`uncalculableTermRefusal()`** — line 148
   - Purpose: A refusal when the question uses a term the engine cannot calculate (D1-D3) and the model nevertheless produced a plan; else null. @param {string} question the user's question @param {object} plan the plan the model produced (schema-parsed) @param {object|null} [previousPlan] the previous turn's plan, for a follow-up that names no noun of its own
   - Calls in this file: `mentionsRevenue()`, `normalizeTerms()`, `carriesVoucherTotal()`, `mentionsOrders()`, `catalogReason()`, `isRevenuePlan()`
-- **`needsMeaning()`** — line 187
+- **`withDefaultSort()`** — line 170
+  - Purpose: (no comment in code — see name and calls below)
+- **`needsMeaning()`** — line 212
   - Purpose: A metric carries its catalog description when it is a summed amount or quantity: that is where the basis (tax-inclusive invoice total vs pre-tax item value) matters. Counts and ratios are self-explanatory from their ids.
-- **`buildCatalogDigest()`** — line 189
+- **`buildCatalogDigest()`** — line 214
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `needsMeaning()`
-- **`getPlannerPrompt()`** — line 220
+- **`getPlannerPrompt()`** — line 246
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `buildCatalogDigest()`
   - Calls other files: `src/services/query/queryPlan.schema.js → queryPlanJsonSchema()`
-- **`cleanText()`** — line 255
+- **`cleanText()`** — line 281
   - Purpose: Anything Claude wrote is untrusted display text: no control chars, bounded, never fed to the engine.
-- **`isPlainObject()`** — line 259
+- **`isPlainObject()`** — line 285
   - Purpose: (no comment in code — see name and calls below)
-- **`addUsage()`** — line 263
+- **`addUsage()`** — line 289
   - Purpose: (no comment in code — see name and calls below)
-- **`newUsage()`** — line 270
+- **`newUsage()`** — line 296
   - Purpose: (no comment in code — see name and calls below)
-- **`isRevenuePlan()`** — line 276
+- **`isRevenuePlan()`** — line 302
   - Purpose: (no comment in code — see name and calls below)
-- **`statedYears()`** — line 282
+- **`statedYears()`** — line 308
   - Purpose: Years the user actually wrote: 2025, '25, 2025-26, 24-25 (both years of an FY label).
-- **`readPreviousPlan()`** — line 296
+- **`readPreviousPlan()`** — line 322
   - Purpose: The previous STRUCTURED plan of the conversation (follow-ups). It is untrusted input: it must pass the same strict schema as any plan, otherwise it is ignored (the question is then planned exactly as without one). Only the plan - never chat text, answers, tool results or figures - and it is shown to Claude without its default fields.
   - Calls other files: `src/services/query/queryPlan.schema.js → parseQueryPlan()`
-- **`previousPlanMessage()`** — line 309
+- **`previousPlanMessage()`** — line 335
   - Purpose: (no comment in code — see name and calls below)
-- **`plannedYears()`** — line 320
+- **`plannedYears()`** — line 346
   - Purpose: Years in the previous plan's own dates were stated by the user in an earlier turn (and validated then), so a follow-up that keeps that period is not "inventing" a year.
-- **`datesStated()`** — line 337
+- **`datesStated()`** — line 363
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `statedYears()`, `plannedYears()`
-- **`isNewPartyPlan()`** — line 354
+- **`isNewPartyPlan()`** — line 380
   - Purpose: (no comment in code — see name and calls below)
-- **`failed()`** — line 358
+- **`failed()`** — line 384
   - Purpose: (no comment in code — see name and calls below)
-- **`planQuestion()`** _(async)_ — line 372
+- **`planQuestion()`** _(async)_ — line 398
   - Purpose: @param {string} question @param {object} options @param {Function} options.claudeClient async ({system, messages, tools, tool_choice, max_tokens}) => Anthropic-shaped response @param {Function} [options.resolveEntity] tenant-scoped resolver (server-supplied); re-verifies every name Claude used @param {Date} [options.referenceDate] only for running the semantic validator
-  - Calls in this file: `isUnsafeQuestion()`, `mentionsRevenue()`, `uncalculableTermRefusal()`, `getPlannerPrompt()`, `cleanText()`, `isPlainObject()`, `addUsage()`, `newUsage()`, `isRevenuePlan()`, `readPreviousPlan()`, `previousPlanMessage()`, `datesStated()`, `isNewPartyPlan()`, `failed()`
+  - Calls in this file: `normalizeTerms()`, `catalogReason()`, `planQuestionCore()`
+- **`planQuestionCore()`** _(async)_ — line 408
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `isUnsafeQuestion()`, `unsafeReason()`, `mentionsRevenue()`, `uncalculableTermRefusal()`, `withDefaultSort()`, `getPlannerPrompt()`, `cleanText()`, `isPlainObject()`, `addUsage()`, `newUsage()`, `isRevenuePlan()`, `readPreviousPlan()`, `previousPlanMessage()`, `datesStated()`
   - Calls other files: `src/services/query/queryPlan.schema.js → parseQueryPlan()`, `src/services/query/validator.js → validateQueryPlan()`
-- **`createAnthropicPlannerClient()`** — line 539
+- **`createAnthropicPlannerClient()`** — line 599
   - Purpose: Production planner client: same request shape the fake client receives. Lazily reads the key. Bounded: explicit maxRetries (never the SDK default), a per-attempt timeout, and an overall deadline that aborts the in-flight request and rejects with code PLANNER_DEADLINE_EXCEEDED. `sdkOptions` exists only so tests can point a real SDK client at a local stub (never api.anthropic.com).
 
 ## `src/services/query/presentation.js`
@@ -2161,15 +2187,15 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/services/analytics/coverage.js → fmtDay()`
 - **`plannerFailureMessage()`** — line 143
   - Purpose: Honest, fixed text for a planner that failed. Only the entity-check message carries planner output, and that text is already sanitised and length-capped by the planner.
-- **`recordExecution()`** — line 155
+- **`recordExecution()`** — line 161
   - Purpose: Telemetry only. Engine timing is known when the executor reports it (production wiring); otherwise null.
-- **`tryAnswerWithQueryEngine()`** _(async)_ — line 181
+- **`tryAnswerWithQueryEngine()`** _(async)_ — line 187
   - Purpose: @param {object} p @param {{tenantId:string}} p.context authorization-verified context from the middleware @param {string} p.userMessage @param {Array} [p.conversationHistory] only its length is used (a previous plan can exist only after an earlier turn); never sent to Claude @param {object} [p.previousQuery] the previous assistant message's stored query state (followUp.buildQueryState)
   - Calls in this file: `finishTurnMetrics()`, `answerTurn()`
   - Calls other files: `src/services/query/followUp.js → readQueryState()`
-- **`finishTurnMetrics()`** — line 207
+- **`finishTurnMetrics()`** — line 213
   - Purpose: Classifies the finished turn from what the turn itself reported (meta) - no re-derivation of routing.
-- **`answerTurn()`** _(async)_ — line 227
+- **`answerTurn()`** _(async)_ — line 233
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `getSharedExecutor()`, `getPlannerClient()`, `getTenantResolver()`, `createTurnDates()`, `baseResponse()`, `completePeriodNote()`, `futureVouchersNote()`, `plannerFailureMessage()`, `recordExecution()`
   - Calls other files: `src/services/query/validator.js → validateQueryPlan()`, `src/services/analytics/coverage.js → assessCoverage()`, `src/services/query/planner.js → planQuestion()`, `src/services/query/answerFormatter.js → formatQueryAnswer()`, `src/services/query/answerFormatter.js → formatNonAnswer()`, `src/services/query/presentation.js → buildPresentation()`, `src/services/query/followUp.js → readQueryState()`, `src/services/query/followUp.js → buildQueryState()`
@@ -2192,10 +2218,12 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: (no comment in code — see name and calls below)
 - **`fail()`** — line 237
   - Purpose: (no comment in code — see name and calls below)
-- **`parseQueryPlan()`** — line 247
+- **`normalizeNewPartyFilters()`** — line 245
+  - Purpose: new_in_period has exactly one legal value, "period" (the rule is "created inside the query's own period"). The planner model sometimes sends an EMPTY value with it (nothing to say), which made the whole plan invalid ("New customers in November 2025" failed on that alone). A blank value carries no meaning, so it is set to "period" here. Any other value (a name, a month, a number) is NOT guessed at: it is still refused
+- **`parseQueryPlan()`** — line 258
   - Purpose: Structural validation of a candidate plan (an object - never a string). Returns {ok:true, plan} with defaults applied, or {ok:false, errors:[{path, code, message}]} - a stable shape safe to feed back to a planner or log. Never throws.
-  - Calls in this file: `flattenIssues()`, `findForbiddenKey()`, `fail()`
-- **`queryPlanJsonSchema()`** — line 277
+  - Calls in this file: `flattenIssues()`, `findForbiddenKey()`, `fail()`, `normalizeNewPartyFilters()`
+- **`queryPlanJsonSchema()`** — line 288
   - Purpose: JSON Schema for the planner tool input (Phase 1F). Input-io so defaulted fields are optional. 
 
 ## `src/services/query/semanticCatalog.js`
@@ -2244,19 +2272,19 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`timeResolver()`** — line 46
   - Purpose: Pass-through resolver wrapper: same arguments, same result, same error - only timed and counted. 
   - Calls in this file: `now()`
-- **`timeEngineDeps()`** — line 66
+- **`timeEngineDeps()`** — line 69
   - Purpose: Answer-cache deps with the engine call timed (same functions, arguments and results). 
   - Calls in this file: `now()`
-- **`sink()`** — line 81
+- **`sink()`** — line 84
   - Purpose: (no comment in code — see name and calls below)
-- **`setTelemetrySink()`** — line 83
+- **`setTelemetrySink()`** — line 86
   - Purpose: Tests only: replace the sink (returns the previous one). 
-- **`buildTurnEvent()`** — line 90
+- **`buildTurnEvent()`** — line 93
   - Purpose: Build the allow-listed event. Pure; exported so tests can inspect exactly what would be logged. 
-- **`emitTurnEvent()`** — line 108
+- **`emitTurnEvent()`** — line 111
   - Purpose: Emit one event. Never throws: telemetry failure must not affect the chat turn. 
   - Calls in this file: `sink()`, `buildTurnEvent()`
-- **`emitChatTurn()`** — line 127
+- **`emitChatTurn()`** — line 130
   - Purpose: Controller hook: adds the turn-level facts (latency, status, date context) to the query-engine metrics and emits once. Never throws.
   - Calls in this file: `emitTurnEvent()`
 

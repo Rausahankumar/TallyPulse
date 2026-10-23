@@ -38,6 +38,7 @@ const { tryAnswerWithQueryEngine: realTryAnswer, getTenantResolver } = require("
 // P-SF: the engine now reads ONE tenant date context per turn. Synthetic (fake-resolver) turns have no database,
 // so they get a fixed one (latest voucher 2025-12-08 = the fake freshness date; history from 2024-04-01).
 const { buildDateContext } = require("./src/services/analytics/referenceDate");
+const { fmtDay } = require("./src/services/analytics/coverage");
 const SYNTH_DATES = buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } }, new Date(2025, 11, 8, 18));
 const tryAnswerWithQueryEngine = (a) => realTryAnswer(a && a.deps && a.deps.resolveEntity && !a.deps.getDateContext ? { ...a, deps: { ...a.deps, getDateContext: async () => SYNTH_DATES } } : a);
 const { formatQueryAnswer, formatNonAnswer, fmtMoney } = require("./src/services/query/answerFormatter");
@@ -280,6 +281,13 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     eng = engine(okScalar());
     r = await turn("what about ghost traders?", { deps: { plannerClient: p, execute: eng } });
     check("C11. a name the tenant does not have is refused (entity re-verification), never executed", r.handled === true && eng.calls.length === 0 && r.structured.details.queryEngine.code === "planner_entity_not_resolved");
+    // the same refusal offers the closest stored names when the resolver can suggest them (through the telemetry wrapper too)
+    const suggesting = Object.assign((a) => fakeResolver(a), { suggest: async () => [{ dim: "customer", value: "Ghost Traders Co" }, { dim: "customer", value: "Ghost & Sons" }, { dim: "customer", value: "Gost Traders" }] });
+    p = planner(() => planFor({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Traders" }] }));
+    eng = engine(okScalar());
+    r = await turn("what about ghost traders?", { deps: { plannerClient: p, execute: eng, resolveEntity: suggesting } });
+    check("C11b. the refusal says what the closest stored names are (\"did you mean\"), still without running anything", r.handled === true && eng.calls.length === 0 && r.structured.details.queryEngine.code === "planner_entity_not_resolved" && /did not match a known customer\. Did you mean "Ghost Traders Co", "Ghost & Sons" or "Gost Traders"\?$/.test(r.structured.answer), r.structured.answer);
+    check("C11c. without suggestions the text is the old one", /Please check the name and try again\.$/.test((await turn("what about ghost traders?", { deps: { plannerClient: planner(() => planFor({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Traders" }] })), execute: engine(okScalar()) } })).structured.answer));
     p = planner(() => new Error("API down"));
     r = await turn("and by product?", { deps: { plannerClient: p, execute: engine(okScalar()) } });
     check("C12. a planner failure on a follow-up is an honest answer, never a second Claude call", r.handled === true && r.structured.details.queryEngine.status === "planner_failed");
@@ -290,7 +298,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     // a clarification carries the previous plan forward (the last question answered is still the previous one)
     p = planner(() => toolReply({ decline: { code: "needs_clarification", message: "Which measure?" } }));
     r = await turn("and why?", { deps: { plannerClient: p, execute: engine(okScalar()) } });
-    check("C14. a clarification keeps the stored plan for the next follow-up (server-side, not enumerable)", r.handled === true && r.queryContext === state && !Object.keys(r).includes("queryContext"));
+    check("C14. a clarification keeps the stored plan for the next follow-up, plus the question it asks about (server-side, not enumerable)", r.handled === true && JSON.stringify(r.queryContext.plan) === JSON.stringify(state.plan) && r.queryContext.basis === state.basis && r.queryContext.pending === "and why?" && !Object.keys(r).includes("queryContext"), JSON.stringify(r.queryContext));
 
     // a stopped request never reaches the planner
     const ac = new AbortController();
@@ -325,6 +333,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const zero = engine(okScalar({ totals: { values: { invoiceAmount: 0, invoiceCount: 0 } } }));
     r = await ask("total sales last month", { plannerClient: P(), execute: zero });
     check("zero result: says so plainly, state zero_result", r.handled && /No matching records/.test(r.structured.answer) && r.structured.details.toolCalls[0].state === "zero_result");
+    check("zero result: the chat passes the company's latest voucher date, so the user sees how far the data goes", r.structured.answer.includes(`No matching records were found for this question. The latest voucher in this company is dated ${fmtDay(SYNTH_DATES.latestVoucher)}.`), r.structured.answer);
 
     for (const [label, args] of [["missing context", { context: null, userMessage: "sales last month" }], ["no tenantId", { context: {}, userMessage: "sales last month" }], ["non-string tenantId", { context: { tenantId: { $ne: "" } }, userMessage: "sales last month" }], ["non-string message", { context: CTX, userMessage: { q: 1 } }], ["numeric message", { context: CTX, userMessage: 42 }]]) {
       const r2 = await tryAnswerWithQueryEngine({ ...args, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
@@ -378,7 +387,21 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
 
     const cmp = okScalar({ comparison: { mode: "custom", label: "Custom comparison range" }, totals: { values: { invoiceAmount: 200, invoiceCount: 4 }, comparison: { invoiceAmount: { previous: 100, delta: 100, deltaPct: 100 }, invoiceCount: { previous: 4, delta: 0, deltaPct: 0 } } } });
     f = formatQueryAnswer({ plan: planOf({ compare: { mode: "custom", period: { kind: "custom", from: "2025-07-01", to: "2025-07-31" } } }), result: cmp });
-    check("comparison line: previous, signed change, percent, comparison period", /Compared with 2025-07-01 to 2025-07-31: previous ₹100\.00, change \+₹100\.00 \(\+100\.0%\)/.test(f.text), f.text);
+    check("comparison line: previous, signed change, percent, comparison period (a whole month is named)", /Compared with July 2025: previous ₹100\.00, change \+₹100\.00 \(\+100\.0%\)/.test(f.text), f.text);
+    // period wording: whole calendar months by name, everything else as the dates given
+    const head = (from, to, res = okScalar()) => formatQueryAnswer({ plan: planOf({ period: { kind: "custom", from, to } }), result: res }).text.split("\n")[0];
+    check("a whole calendar month is named, not shown as two ISO dates", /Sales — August 2025$/.test(head("2025-08-01", "2025-08-31")) && /February 2024$/.test(head("2024-02-01", "2024-02-29")), head("2025-08-01", "2025-08-31"));
+    check("several whole months are named at both ends", /April 2025 to June 2025$/.test(head("2025-04-01", "2025-06-30")) && /December 2025 to February 2026$/.test(head("2025-12-01", "2026-02-28")));
+    check("a partial month, a single day and a range that ends mid-month keep the exact dates", /2025-08-05 to 2025-08-31$/.test(head("2025-08-05", "2025-08-31")) && /2025-08-01 to 2025-08-30$/.test(head("2025-08-01", "2025-08-30")) && /Sales — 2025-08-15$/.test(head("2025-08-15", "2025-08-15")));
+    check("the 1st-to-the-1st of a month is not a whole month", /2025-08-01$/.test(head("2025-08-01", "2025-08-01")));
+    const assumed = formatQueryAnswer({ plan: pl, result: okScalar(), plannerAssumptions: ["Compared by invoiceAmount.delta and invoiceCount; amounts are lineAmount.previous", "Used purchaseAmount for suppliers"] });
+    check("internal metric ids in the model's interpretation lines are shown by their label", /Interpretation \(AI-assisted\): Compared by invoice amount change and invoice count; amounts are line amount \(pre-tax\) \(previous period\)/.test(assumed.text) && /Used purchase amount for suppliers/.test(assumed.text) && !/invoiceAmount|invoiceCount|lineAmount|purchaseAmount/.test(assumed.text), assumed.text);
+    check("text that only looks like an id is left alone", /Interpretation \(AI-assisted\): myinvoiceAmountX and invoiceAmounts/.test(formatQueryAnswer({ plan: pl, result: okScalar(), plannerAssumptions: ["myinvoiceAmountX and invoiceAmounts"] }).text));
+    const none = okScalar({ totals: { values: { invoiceAmount: 0, invoiceCount: 0 } } });
+    const emptyWith = formatQueryAnswer({ plan: pl, result: none, dataThrough: new Date("2025-12-08T00:00:00") });
+    check("an empty result tells the user how far the company's vouchers go", emptyWith.zero === true && /No matching records were found for this question. The latest voucher in this company is dated 8 Dec 2025.$/m.test(emptyWith.text), emptyWith.text);
+    check("...and without that date the old sentence is unchanged", /No matching records were found for this question.$/m.test(formatQueryAnswer({ plan: pl, result: none }).text));
+    check("a non-empty answer never gets that sentence", !/latest voucher/.test(formatQueryAnswer({ plan: pl, result: okScalar(), dataThrough: new Date("2025-12-08T00:00:00") }).text));
     const cmpNull = okScalar({ comparison: { mode: "like_for_like", label: "x" }, totals: { values: { invoiceAmount: 200, invoiceCount: 4 }, comparison: { invoiceAmount: { previous: 0, delta: 200, deltaPct: null } } } });
     f = formatQueryAnswer({ plan: planOf({ compare: { mode: "like_for_like" } }), result: cmpNull });
     check("deltaPct null renders n/a, never NaN/Infinity", /n\/a/.test(f.text) && !/NaN|Infinity|undefined|null/.test(f.text));
@@ -389,7 +412,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const rows = Array.from({ length: 30 }, (_, i) => ({ key: { customer: `Customer ${i + 1}` }, values: { invoiceAmount: 1000 - i, invoiceCount: i + 1 } }));
     const grouped = okScalar({ groupBy: [{ dim: "customer" }], rows, totals: { values: { invoiceAmount: 99999, invoiceCount: 999 } }, truncated: true, rowLimit: 30 });
     f = formatQueryAnswer({ plan: planOf({ groupBy: [{ dim: "customer" }], limit: 30 }), result: grouped });
-    check("grouped rows numbered, capped at 25 with a 'more rows' note, truncation disclosed", /^1\. Customer 1 —/m.test(f.text) && /^25\. Customer 25/m.test(f.text) && !/^26\./m.test(f.text) && /and 5 more rows/.test(f.text) && /more exist/.test(f.text));
+    check("grouped rows numbered, every returned row listed (30), truncation disclosed", /^1\. Customer 1 —/m.test(f.text) && /^30\. Customer 30 —/m.test(f.text) && !/more rows not shown/.test(f.text) && /more exist/.test(f.text));
     const series = okScalar({ groupBy: [{ dim: "date", bucket: "month" }], metrics: ["invoiceAmount"], rows: [{ key: { date: { bucket: "month", start: "2025-04-01", label: "2025-04" } }, values: { invoiceAmount: 5 } }], totals: { values: { invoiceAmount: 5 } } });
     f = formatQueryAnswer({ plan: planOf({ groupBy: [{ dim: "date", bucket: "month" }], metrics: ["invoiceAmount"] }), result: series });
     check("date bucket rows use the bucket label", /1\. 2025-04 — ₹5\.00/.test(f.text) && /by month/.test(f.text));
@@ -807,6 +830,56 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const rule = prompt.split("\n").find((l) => /"Revenue" has one fixed meaning/.test(l)) || "";
     check("planner prompt defines revenue as the pre-tax item value (entity sales, lineAmount) and declines the rest", /pre-tax value of the items sold/.test(rule) && /lineAmount/.test(rule) && /never invoiceAmount/.test(rule) && /decline/.test(rule));
     check("  -> the prompt is a single static block (cache-friendly, no per-tenant text)", !/tenant|companyGuid/i.test(prompt));
+  }
+
+  // ============================================================ M. clarifications keep the question; warnings shown once
+  section("M. a reply to a clarification keeps the question; warnings are not repeated under the answer");
+  {
+    const HIST2 = [{ role: "user", content: "q" }, { role: "assistant", content: "clarify" }];
+    const reply = (text, previousQuery, deps) => tryAnswerWithQueryEngine({ context: CTX, userMessage: text, conversationHistory: HIST2, previousQuery, deps: { resolveEntity: fakeResolver, getFreshness: fresh, ...deps } });
+    // turn 1: financial or calendar year? -> the open question is stored on that turn
+    let p = planner(() => toolReply({ decline: { code: "needs_clarification", message: "Financial year or calendar year?" } }));
+    let r = await ask("How did sales do this year?", { plannerClient: p, execute: engine(okScalar()) });
+    const asked = r.queryContext;
+    check("M1. a clarification stores the question it asks about (no plan existed yet)", !!asked && asked.pending === "How did sales do this year?" && asked.plan === undefined, JSON.stringify(asked));
+    // turn 2: "2024-25" -> planned WITH the question; the year counts as stated; the engine answers; not asked again
+    p = planner(() => toolReply({ plan: planOf({ period: { kind: "specific_fy", fy: "2024-25" } }) }));
+    let e = engine(okScalar());
+    r = await reply("2024-25", asked, { plannerClient: p, execute: e });
+    check("M2. the reply reaches the planner together with the question it answers", p.requests[0].messages[0].content === "How did sales do this year? (clarification: 2024-25)", p.requests[0].messages[0].content);
+    check("M3. answered for FY 2024-25 (metric and subject kept, not asked again)", r.structured.details.queryEngine.status === "answered" && e.calls.length === 1 && e.calls[0].plan.period.fy === "2024-25" && r.telemetry.followUp === "clarification" && !r.queryContext.pending, JSON.stringify(r.structured.details.queryEngine));
+    // a missing year: the year guard asks, the reply supplies it, the same plan is then accepted
+    const march = planOf({ period: { kind: "custom", from: "2025-03-01", to: "2025-03-31" } });
+    p = planner(() => toolReply({ plan: march }));
+    r = await ask("Why did sales drop in March?", { plannerClient: p, execute: engine(okScalar()) });
+    check("M4. a year the user never wrote -> year_missing clarification, the question kept", r.structured.details.queryEngine.code === "year_missing" && r.queryContext.pending === "Why did sales drop in March?", JSON.stringify(r.queryContext));
+    p = planner(() => toolReply({ plan: march }));
+    e = engine(okScalar());
+    r = await reply("2025", r.queryContext, { plannerClient: p, execute: e });
+    check("M5. the reply '2025' completes it: March 2025 is answered, not refused again", r.structured.details.queryEngine.status === "answered" && e.calls.length === 1 && p.requests[0].messages[0].content === "Why did sales drop in March? (clarification: 2025)");
+    // a second clarification keeps the whole exchange; a term clarification does not carry the question
+    p = planner(() => toolReply({ decline: { code: "needs_clarification", message: "Financial year 2025-26 or calendar 2025?" } }));
+    r = await reply("2025", asked, { plannerClient: p, execute: engine(okScalar()) });
+    check("M6. asked again: the stored question now includes the first reply", r.queryContext.pending === "How did sales do this year? (clarification: 2025)", JSON.stringify(r.queryContext));
+    r = await ask("How many orders did I get last month?", { plannerClient: planner(() => toolReply({ plan: planOf({ metrics: ["invoiceCount"] }) })), execute: engine(okScalar()) });
+    check("M7. a term clarification (orders are not invoices) stores no pending question (its words would trigger it again)", r.structured.details.queryEngine.status === "needs_clarification" && !r.queryContext, JSON.stringify(r.queryContext));
+    // a stored pending text is untrusted: too long or not a string -> ignored, the reply is planned alone
+    p = planner(() => toolReply({ plan: planOf({}) }));
+    await reply("sales last month", { v: 1, pending: "x".repeat(700) }, { plannerClient: p, execute: engine(okScalar()) });
+    check("M8. an oversized stored question is ignored (the reply is planned on its own)", p.requests[0].messages[0].content === "sales last month");
+
+    // warnings: what the answer text already says is not repeated under it
+    const count = (out, msg) => (out.structured.answer.split(msg).length - 1) + out.structured.warnings.filter((w) => w === msg).length;
+    r = await ask("Sales in March 2023", { plannerClient: planner(() => toolReply({ plan: planOf({ period: { kind: "custom", from: "2023-03-01", to: "2023-03-31" } }) })), execute: engine(okScalar()) });
+    check("M9. a period before the synced history: missing data said ONCE (not again as a warning), never a zero", r.structured.details.queryEngine.status === "outside_coverage" && /missing data, not zero/.test(r.structured.answer) && count(r, r.structured.answer) === 1 && r.structured.warnings.length === 0, JSON.stringify(r.structured.warnings));
+    r = await ask("Sales from 15 March 2024 to 30 April 2024", { plannerClient: planner(() => toolReply({ plan: planOf({ period: { kind: "custom", from: "2024-03-15", to: "2024-04-30" } }) })), execute: engine(okScalar()) });
+    const note = (r.structured.answer.match(/Coverage: [^\n]*/) || [""])[0];
+    check("M10. a partly covered period: the coverage note is in the answer once and not repeated as a warning", !!note && r.structured.answer.split(note).length === 2 && !r.structured.warnings.includes(note), JSON.stringify(r.structured.warnings));
+    const staleMsg = "Data was last synced 2000 minutes ago (2025-12-07T00:00:00.000Z), which is beyond the 120-minute freshness threshold.";
+    r = await ask("Sales last month", { plannerClient: planner(() => toolReply({ plan: planOf({}) })), execute: engine(okScalar()), getFreshness: async () => ({ state: "stale", dataAsOf: new Date("2025-12-07T00:00:00Z"), message: staleMsg }) });
+    check("M11. a stale sync is still warned, exactly once, and the answer is marked stale", count(r, staleMsg) === 1 && r.structured.warnings.includes(staleMsg) && r.structured.details.toolCalls[0].state === "stale_data");
+    r = await ask("Sales last month", { plannerClient: forbidden, execute: engine(okScalar()), getFreshness: async () => ({ state: "never_synced", dataAsOf: null, message: "No Sales sync has ever run for this company yet." }) });
+    check("M12. never synced: said once, no figure, Claude not called", count(r, r.structured.answer) === 1 && r.structured.warnings.length === 0 && !/₹/.test(r.structured.answer) && forbidden.requests.length === 0);
   }
 
   // ============================================================ K. no network

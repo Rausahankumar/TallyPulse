@@ -461,6 +461,24 @@ async function runBackfillPart() {
     const pAfter = await Purchase.findOne({ tenantId: TENANT_A }).lean();
     check("purchase-done", "the purchase line gets a POSITIVE discount amount; its negative stored amount is unchanged", [pRun.vouchersUpdated, pAfter.inventory[0].discountPercentage, pAfter.inventory[0].discountAmount, pAfter.inventory[0].amount === pBefore.inventory[0].amount, pAfter.inventory[0].amount], [1, 21, 1931.16, true, -7264.84]);
     check("purchase-only-allowed", "nothing but the three allowed fields changed on the purchase either", frozen(pAfter), frozen(pBefore));
+
+    // ---------------------------------------------------------- billed quantity (source-provided, never derived or overwritten)
+    console.log("\n=== 7. Billed quantity from Tally: counted in the dry run, never stored or written ===");
+    check("whitelist-billed", "billedQuantity is never a writable path", [ALLOWED_SET_PATH.test("inventory.4.billedQuantity"), ALLOWED_SET_PATH.test("inventory.billedQuantity")], [false, false]);
+    const freeLine = fullLine({ stockitemname: "Synthetic Free Item", actualqty: " 12 EA", billedqty: " 10 EA", rate: "100/EA", amount: "1000", discount: " 0", computedassessablevalue: "1000", computedcgst: "90", computedsgst: "90" });
+    const bq1 = rawVoucher(71, { alterId: 7101, lines: [freeLine] }); // 10 billed + 2 free
+    const bq2 = rawVoucher(72, { alterId: 7102 }); // 440 billed = 440 actual
+    const bq3 = rawVoucher(73, { alterId: 7103, lines: [fullLine({ billedqty: undefined })] }); // Tally sends no billed quantity
+    for (const raw of [bq1, bq2, bq3]) await Sale.create(mapTallySale(parseTallyVoucher(asOld(raw)), { tenantId: TENANT_A }));
+    const bqStored = await Sale.find({ tenantId: TENANT_A, tallyAlterId: { $gte: 7101, $lte: 7103 } }).sort({ tallyAlterId: 1 }).lean();
+    check("billed-not-stored", "the sync stores the ACTUAL quantity (12) and no billed quantity", [bqStored[0].inventory[0].quantity, bqStored.every((d) => d.inventory.every((l) => !("billedQuantity" in l)))], [12, true]);
+    const bqTally = new Map([bq1, bq2, bq3].map((r) => [Number(r.alterid), r]));
+    const bqSnap = await snapshot(Sale, TENANT_A);
+    const bqDry = await run({ apply: false, afterAlterId: 7100, deps: { verifyCompany: okGuard, classify: okClassify, fetchByAlterIds: fakeTally(bqTally) } });
+    check("billed-dry", "dry run counts: 2 lines carry a billed quantity in Tally, 1 differs from the actual quantity (free goods), 1 line has none; nothing written", [bqDry.status, bqDry.candidates, bqDry.lines.withBilledQuantity, bqDry.lines.billedDiffersFromActual, bqDry.lines.billedQuantityMissingInTally, await snapshot(Sale, TENANT_A) === bqSnap], ["dry_run", 3, 2, 1, 1, true]);
+    const bqApply = await run({ apply: true, afterAlterId: 7100, deps: { verifyCompany: okGuard, classify: okClassify, fetchByAlterIds: fakeTally(bqTally) } });
+    const bqAfter = await Sale.find({ tenantId: TENANT_A, tallyAlterId: { $gte: 7101, $lte: 7103 } }).sort({ tallyAlterId: 1 }).lean();
+    check("billed-apply-no-field", "apply writes only the discount and GST fields: no line gains a billed quantity, the actual 12 stays", [bqApply.vouchersUpdated, bqAfter.every((d) => d.inventory.every((l) => !("billedQuantity" in l))), bqAfter[0].inventory[0].quantity, !!bqAfter[0].inventory[0].gst.amounts], [3, true, 12, true]);
   } finally {
     await cleanup();
   }

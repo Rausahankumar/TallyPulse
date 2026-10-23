@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { X } from "lucide-react";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
@@ -8,6 +8,7 @@ import { useCompany } from "../../context/useCompany";
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { activeCompany, switchNonce } = useCompany();
+  const { pathname } = useLocation();
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface">
@@ -33,7 +34,11 @@ export default function AppLayout() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar onOpenMenu={() => setMobileOpen(true)} />
+        {/* Ask AI gives the top bar's height to the conversation on desktop: the sidebar's account menu
+            carries the company switcher there. Below lg the bar stays (it holds the menu button). */}
+        <div className={pathname === "/ask-ai" ? "lg:hidden" : undefined}>
+          <Topbar onOpenMenu={() => setMobileOpen(true)} />
+        </div>
         <main className="scroll-thin flex-1 overflow-y-auto p-4 sm:p-6">
           {/* Keying on tenantId + switchNonce forces every routed page to
               fully unmount/remount on a company switch — the simplest

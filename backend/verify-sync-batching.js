@@ -19,7 +19,7 @@
  * Sections: UNIT (batch math), QUERY (odbcService request bodies against
  * the stub), WORKER (drain / small backlog / failure / probe failure /
  * lock / multi-company / legacy module), MASTERS (the slow, per-company
- * Stock Item + Ledger master refresh that runs after the voucher modules:
+ * Stock Item + Ledger master refresh that runs BEFORE the voucher modules:
  * when it is due, the open-company guard, one request at a time, retry
  * after a failure, never throws, runs inside the all-companies tick).
  *
@@ -411,7 +411,7 @@ async function workerTests(stub) {
 }
 
 // ==================== MASTERS ====================
-// Stock Item + Ledger masters are refreshed by the same worker, per company, on a slow cadence, AFTER that company's voucher modules.
+// Stock Item + Ledger masters are refreshed by the same worker, per company, on a slow cadence, BEFORE that company's voucher modules.
 async function masterTests(stub) {
   const H = 3600 * 1000;
   const MIN = 60 * 1000;
@@ -423,12 +423,14 @@ async function masterTests(stub) {
     const log = [];
     const stockArgs = [];
     const ledgerArgs = [];
+    const noteArgs = [];
     const deps = {
       verifyCompany: async () => { log.push("guard"); return o.guard || { ok: true, reason: "ok" }; },
       refreshStockItems: async (p) => { log.push("stock"); stockArgs.push(p); if (o.stockThrows) throw new Error("boom stock"); return o.stock || { ok: true, totalFetched: 3, written: 1, unchanged: 2 }; },
       refreshLedgers: async (p) => { log.push("ledgers"); ledgerArgs.push(p); return o.ledgers || { ok: true, totalFetched: 4, written: 0, removed: 0, unchanged: true }; },
+      reclassifyNotes: async (p) => { log.push("notes"); noteArgs.push(p); if (o.notesThrows) throw new Error("boom notes"); return o.notes || { ok: true, scanned: 150, upgrades: 0 }; },
     };
-    return { log, stockArgs, ledgerArgs, deps };
+    return { log, stockArgs, ledgerArgs, noteArgs, deps };
   };
   const go = (company, s, at, extra = {}) => runMasterRefreshForCompany(company, { now: T0 + at, intervalMs: 6 * H, deps: s.deps, ...extra });
 
@@ -437,18 +439,18 @@ async function masterTests(stub) {
     const c = mkCompany();
     const s = scenario();
     const r = await go(c, s, 0);
-    check("the first tick refreshes both masters, one request at a time, in order: guard, Stock Items, Ledgers", r.ok === true && s.log.join(",") === "guard,stock,ledgers", s.log.join(","));
+    check("the first tick refreshes both masters, one request at a time, in order: guard, Stock Items, Ledgers, then the note re-check", r.ok === true && s.log.join(",") === "guard,stock,ledgers,notes", s.log.join(","));
     const url = c.tallyConnection.baseUrl;
     check("each refresh gets this company's own tenantId, GUID and Tally URL; Stock Item GST history is NOT part of it",
       JSON.stringify([s.stockArgs[0], s.ledgerArgs[0]]) === JSON.stringify([{ tenantId: c.tenantId, companyGuid: c.companyGuid, baseUrl: url, includeGst: false }, { tenantId: c.tenantId, companyGuid: c.companyGuid, baseUrl: url }]));
     const r2 = await go(c, s, 1 * H);
-    check("one hour later nothing is due: no request at all", r2.skipped === true && r2.reason === "not_due" && s.log.length === 3);
+    check("one hour later nothing is due: no request at all", r2.skipped === true && r2.reason === "not_due" && s.log.length === 4);
     const r3 = await go(c, s, 6 * H - 1);
-    check("still not due one millisecond before the 6th hour", r3.skipped === true && s.log.length === 3);
+    check("still not due one millisecond before the 6th hour", r3.skipped === true && s.log.length === 4);
     const r4 = await go(c, s, 6 * H);
-    check("due again at 6 hours", r4.ok === true && s.log.length === 6);
+    check("due again at 6 hours", r4.ok === true && s.log.length === 8);
     const r5 = await go(c, s, 6 * H + MIN, { force: true });
-    check("force refreshes even when it is not due", r5.ok === true && s.log.length === 9);
+    check("force refreshes even when it is not due", r5.ok === true && s.log.length === 12);
   }
 
   console.log("\n=== MASTERS: the open-company guard ===");
@@ -492,6 +494,38 @@ async function masterTests(stub) {
     check("the retry delay never exceeds a short refresh interval (10 min interval: not due at 9, due at 11)", a.skipped === true && b.ok === false);
   }
 
+  console.log("\n=== MASTERS: the Credit/Debit Note re-check after a good refresh ===");
+  {
+    const c = mkCompany();
+    const s = scenario();
+    const r = await go(c, s, 0);
+    check("once both masters are good the note re-check runs once, for this tenant, and may write", r.ok === true && s.log.join(",") === "guard,stock,ledgers,notes" && JSON.stringify(s.noteArgs) === JSON.stringify([{ tenantId: c.tenantId, apply: true }]), s.log.join(","));
+    check("its result is returned with the refresh", r.notes && r.notes.ok === true && r.notes.scanned === 150);
+    const badLedgers = scenario({ ledgers: { ok: false, reason: "x" } });
+    await go(mkCompany(), badLedgers, 0);
+    const badStock = scenario({ stock: { ok: false, reason: "x" } });
+    await go(mkCompany(), badStock, 0);
+    check("the re-check is NOT run when a master refresh failed (it must only trust a known-good Ledger master)", badLedgers.log.join(",") === "guard,stock,ledgers" && badStock.log.join(",") === "guard,stock,ledgers");
+
+    const t = mkCompany();
+    const thrown = scenario({ notesThrows: true });
+    const rt = await go(t, thrown, 0);
+    check("an exception in the note re-check does not turn the master refresh into a failure; it is reported", rt.ok === true && rt.notes.ok === false && /boom notes/.test(rt.notes.reason), JSON.stringify(rt.notes));
+    const early = await go(t, thrown, 20 * MIN);
+    const later = await go(t, thrown, 31 * MIN);
+    check("...and the re-check is retried after 30 minutes, not after the full 6 hours", early.skipped === true && later.ok === true && thrown.log.filter((x) => x === "notes").length === 2);
+
+    const t2 = mkCompany();
+    const reported = scenario({ notes: { ok: false, reason: "db busy" } });
+    await go(t2, reported, 0);
+    check("a re-check that reports ok false is also retried after 30 minutes", (await go(t2, reported, 29 * MIN)).skipped === true && (await go(t2, reported, 31 * MIN)).ok === true);
+
+    const t3 = mkCompany();
+    const fine = scenario();
+    await go(t3, fine, 0);
+    check("a successful re-check keeps the normal 6 hour schedule", (await go(t3, fine, 2 * H)).skipped === true && (await go(t3, fine, 6 * H)).ok === true);
+  }
+
   console.log("\n=== MASTERS: switching it off, and the setting ===");
   {
     const s = scenario();
@@ -529,8 +563,8 @@ async function masterTests(stub) {
       return { ok: true, stockItems: { totalFetched: 1, written: 0, unchanged: 1 }, ledgers: { totalFetched: 1, written: 0, removed: 0, unchanged: true } };
     };
     await runSyncForAllCompanies({ intervalSeconds: 60, modules: [orderedMod], masterRefresh });
-    check("a company's vouchers are synced BEFORE its masters are refreshed", order.indexOf("vouchers") >= 0 && order.indexOf("vouchers") < order.indexOf(`masters:${G1}`), order.join(","));
-    check("the voucher sync of the open company was not affected by the master step", (await Purchase.countDocuments({ tenantId: T1 })) === 3);
+    check("a company's masters are refreshed BEFORE its vouchers (a Credit/Debit Note is classified from the Ledger master when it is stored)", order.indexOf(`masters:${G1}`) >= 0 && order.indexOf(`masters:${G1}`) < order.indexOf("vouchers"), order.join(","));
+    check("the voucher sync of the open company still ran and stored its vouchers although its master step threw", (await Purchase.countDocuments({ tenantId: T1 })) === 3);
     check("every active company gets its master step, even after the first company's refresh threw", seen.includes(G1) && seen.includes(G2), seen.join(","));
     check("one company at a time: never two master refreshes at once", maxActive === 1, String(maxActive));
     const again = [];

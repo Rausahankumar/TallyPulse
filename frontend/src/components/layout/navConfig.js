@@ -18,7 +18,7 @@ export const NAV_ITEMS = [
   { to: "/products", label: "Products", icon: Package },
   { to: "/customers", label: "Customers", icon: Users },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
-  { to: "/ask-ai", label: "Ask AI", icon: Sparkles, badge: "New" },
+  { to: "/ask-ai", label: "Ask AI", icon: Sparkles },
   { to: "/sync", label: "Sync & Data", icon: RefreshCw },
   { to: "/reports", label: "Reports", icon: FileText },
   { to: "/settings", label: "Settings", icon: Settings },

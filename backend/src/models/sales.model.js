@@ -52,6 +52,7 @@ const salesSchema = new mongoose.Schema(
           trim: true,
         },
 
+        // Tally's ACTUAL quantity (free goods included); the billed quantity is not stored
         quantity: {
           type: Number,
           required: true,

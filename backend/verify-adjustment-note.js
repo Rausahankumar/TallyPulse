@@ -26,7 +26,7 @@ const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 
 const { parseAdjustmentNoteVoucher } = require("./src/services/parser/adjustmentNoteParser");
 const { mapAdjustmentNote } = require("./src/services/mapper/adjustmentNoteMapper");
-const { classifyAdjustmentNote, resolveAccountRoles } = require("./src/services/tally/adjustmentNoteClassifier");
+const { classifyAdjustmentNote, resolveAccountRoles, reclassifyAdjustmentNotes } = require("./src/services/tally/adjustmentNoteClassifier");
 const { createAdjustmentNotePersistence } = require("./src/services/sync/adjustmentNotePersistence");
 const { runSyncForCompanyModule, CREDIT_NOTE_SYNC_MODULE, DEBIT_NOTE_SYNC_MODULE } = require("./src/services/sync/tallySyncWorker");
 const { clearVoucherTypeClassificationCache } = require("./src/services/tally/voucherTypeClassifier");
@@ -47,13 +47,18 @@ const T2 = "TEST-TENANT-adj-note-2";
 const G1 = "gggggggg-1111-2222-3333-444444444444";
 const G2 = "gggggggg-5555-6666-7777-888888888888";
 
+const T3 = "verify-adjnote-reclassify-tenant";
+const T3_OTHER = "verify-adjnote-reclassify-other";
+// Separate tenant that reuses T1's voucher GUIDs: proves a cancellation for T1 never touches it.
+const T_ISO = "TEST-TENANT-adj-note-isolation";
+
 async function cleanup() {
-  const ids = { $in: [T1, T2] };
+  const ids = { $in: [T1, T2, T3, T3_OTHER, T_ISO] };
   await Promise.all([AdjustmentNote.deleteMany({ tenantId: ids }), LedgerMaster.deleteMany({ tenantId: ids }), SyncCheckpoint.deleteMany({ tenantId: ids })]);
 }
 
 // ---------------------------------------------------------------- raw voucher fixture (matches the diagnostic's confirmed shape)
-function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount = -1000, lines, agstRef = null, cancelled = false, companyGuid = G1 }) {
+function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount = -1000, lines, agstRef = null, cancelled = false, deleted = false, companyGuid = G1 }) {
   const guid = `${companyGuid}-note${i}`;
   return {
     metadata: { type: "Voucher", vchtype: noteType === "credit" ? "Credit Note" : "Debit Note" },
@@ -65,7 +70,7 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
     guid,
     alterid: String(alter),
     iscancelled: cancelled,
-    isdeleted: false,
+    isdeleted: deleted,
     inventoryentries: lines.map((l, idx) => ({
       stockitemname: l.itemName,
       actualqty: `${l.quantity} Pcs`,
@@ -81,7 +86,8 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
         ispartyledger: true,
         billallocations: agstRef ? [{ name: agstRef, billtype: "Agst Ref", amount: String(partyLedgerAmount) }] : [{ name: "", billtype: "New Ref", amount: String(partyLedgerAmount) }],
       },
-      { ledgername: lines[0].accountLedger, amount: String(-partyLedgerAmount), isdeemedpositive: { type: "Logical", value: partyLedgerAmount < 0 }, ispartyledger: false },
+      // The counter-ledger entry needs a line to name it; a sparse fixture (lines: []) has none, so it gets only the party entry.
+      ...(lines.length ? [{ ledgername: lines[0].accountLedger, amount: String(-partyLedgerAmount), isdeemedpositive: { type: "Logical", value: partyLedgerAmount < 0 }, ispartyledger: false }] : []),
     ],
   };
 }
@@ -184,6 +190,103 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
     r = await processCredit(cnCancelledFull, T1, G1);
     check("a cancelled note with a full header is still stored, marked cancelled (audit trail preserved)", r.status === "created");
     check("...voucherStatus is cancelled, never active", (await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note13` }).lean()).voucherStatus === "cancelled");
+    // Store time: a cancelled note must not get a return classification, even when its ledger says Sales Accounts.
+    check("...and a cancelled credit note is never classified as a return (stored as unclassified)", (await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note13` }).lean()).classification === "unclassified");
+
+    const dnCancelledFull = rawNote({ i: 18, alter: 613, noteType: "debit", cancelled: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Purchase Return AC" }] });
+    r = await processDebit(dnCancelledFull, T1, G1);
+    check("a cancelled debit note (purchase ledger) is stored as unclassified, not purchase_return", r.status === "created" && (await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note18` }).lean()).classification === "unclassified");
+
+    const dn18 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note18` }).lean();
+    check("the cancelled debit note is voucherStatus cancelled AND classification unclassified", !!dn18 && dn18.voucherStatus === "cancelled" && dn18.classification === "unclassified", JSON.stringify(dn18 && { v: dn18.voucherStatus, c: dn18.classification }));
+
+    // Active -> cancelled later (update path): the stored return must stop being one.
+    const cnActiveThenCancelled = rawNote({ i: 17, alter: 611, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    r = await processCredit(cnActiveThenCancelled, T1, G1);
+    check("an active credit note is stored", r.status === "created" && (await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note17` }).lean()).voucherStatus === "active");
+    const cnNowCancelled = rawNote({ i: 17, alter: 612, noteType: "credit", cancelled: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    r = await processCredit(cnNowCancelled, T1, G1);
+    const nowCancelled = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note17` }).lean();
+    check("the same note cancelled later: voucherStatus cancelled and classification unclassified", r.status === "updated" && nowCancelled.voucherStatus === "cancelled" && nowCancelled.classification === "unclassified", JSON.stringify({ status: r.status, v: nowCancelled.voucherStatus, c: nowCancelled.classification }));
+
+    const n17Count = await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note17` });
+    check("the cancelled note is still exactly one voucher (updated in place, no duplicate)", n17Count === 1, `count=${n17Count}`);
+    check("the cancelled note has tallyAlterId 612 (the cancellation's alter id)", nowCancelled.tallyAlterId === 612, `alter=${nowCancelled.tallyAlterId}`);
+
+    // An active note that is only a value adjustment (no Sales/Purchase ledger) keeps value_adjustment.
+    const cnFreight = rawNote({ i: 19, alter: 614, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Freight Ledger" }] });
+    r = await processCredit(cnFreight, T1, G1);
+    check("an active value-adjustment note stays value_adjustment (not unclassified, not a return)", (await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note19` }).lean()).classification === "value_adjustment");
+
+    // Tombstone path: an active return stored earlier, then a sparse cancellation for the same voucher.
+    const cnTombstoneBase = rawNote({ i: 21, alter: 616, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    r = await processCredit(cnTombstoneBase, T1, G1);
+    check("the tombstone base return is stored active", r.status === "created");
+    // Same GUID under a separate tenant: the T1 cancellation below must leave this one exactly as it is.
+    await processCredit(cnTombstoneBase, T_ISO, G1);
+    const isoBefore = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note21` }).lean();
+    const tombBefore = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note21` }).lean();
+    const cnTombstoneSparse = { ...rawNote({ i: 21, alter: 617, noteType: "credit", cancelled: true, lines: [] }), partyname: "", partyledgername: "", ledgerentries: [] };
+    r = await processCredit(cnTombstoneSparse, T1, G1);
+    const tomb = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note21` }).lean();
+    check("the sparse cancellation returns the tombstone outcome (updated, not created)", r.updated === true && r.created === false, JSON.stringify({ created: r.created, updated: r.updated, message: r.message }));
+    check("the tombstone leaves exactly one voucher for this GUID", (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note21` })) === 1);
+    check("the tombstone sets tallyAlterId to 617", tomb && tomb.tallyAlterId === 617, `alter=${tomb && tomb.tallyAlterId}`);
+    check("the tombstone keeps inventory exactly as it was before the cancellation", tomb && JSON.stringify(tomb.inventory) === JSON.stringify(tombBefore.inventory) && tomb.inventory.length === 1);
+    check("the tombstone keeps header.voucherTotalAmount and header.voucherNo unchanged", tomb && tomb.header.voucherTotalAmount === tombBefore.header.voucherTotalAmount && tomb.header.voucherNo === tombBefore.header.voucherNo, JSON.stringify(tomb && tomb.header));
+    const isoAfter = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note21` }).lean();
+    check("tenant isolation: the other tenant's note with the same GUID is untouched by the T1 cancellation", !!isoAfter && isoAfter.voucherStatus === "active" && isoAfter.classification === isoBefore.classification && isoAfter.tallyAlterId === isoBefore.tallyAlterId && JSON.stringify(isoAfter.inventory) === JSON.stringify(isoBefore.inventory), JSON.stringify(isoAfter && { v: isoAfter.voucherStatus, c: isoAfter.classification, a: isoAfter.tallyAlterId }));
+    check("a sparse cancellation of a stored return marks it cancelled and unclassified", !!tomb && tomb.voucherStatus === "cancelled" && tomb.classification === "unclassified", JSON.stringify(tomb && { v: tomb.voucherStatus, c: tomb.classification }));
+
+    // ---- deletion (isdeleted) regression: a deleted voucher is never a return, and its lifecycle is recorded as "deleted".
+    // Precondition: the ledgers really are Sales/Purchase Accounts in this tenant's master, so a voucher that ignored its
+    // deletion status WOULD be classified as a return. Without this, the assertions below could pass for the wrong reason.
+    const salesRetRole = await LedgerMaster.findOne({ tenantId: T1, name: "Sales Return AC", removedAt: null }).lean();
+    const purRetRole = await LedgerMaster.findOne({ tenantId: T1, name: "Purchase Return AC", removedAt: null }).lean();
+    check("precondition: T1's 'Sales Return AC' is a sales_accounts ledger in the master", salesRetRole && salesRetRole.accountRole === "sales_accounts", JSON.stringify(salesRetRole && salesRetRole.accountRole));
+    check("precondition: T1's 'Purchase Return AC' is a purchase_accounts ledger in the master", purRetRole && purRetRole.accountRole === "purchase_accounts", JSON.stringify(purRetRole && purRetRole.accountRole));
+    const cnDeletedFull = rawNote({ i: 40, alter: 630, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    r = await processCredit(cnDeletedFull, T1, G1);
+    const cn30 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note40` }).lean();
+    check("a deleted Credit Note is stored with voucherStatus deleted and is NOT sales_return", r.status === "created" && cn30 && cn30.voucherStatus === "deleted" && cn30.classification !== "sales_return" && cn30.classification === "unclassified", JSON.stringify(cn30 && { v: cn30.voucherStatus, c: cn30.classification }));
+
+    const dnDeletedFull = rawNote({ i: 41, alter: 631, noteType: "debit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Purchase Return AC" }] });
+    r = await processDebit(dnDeletedFull, T1, G1);
+    const dn31 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note41` }).lean();
+    check("a deleted Debit Note is stored with voucherStatus deleted and is NOT sales_return", r.status === "created" && dn31 && dn31.voucherStatus === "deleted" && dn31.classification !== "sales_return" && dn31.classification === "unclassified", JSON.stringify(dn31 && { v: dn31.voucherStatus, c: dn31.classification }));
+
+    // An active stored note that is later deleted (update path): one voucher, lifecycle "deleted", classification unclassified, alter 633.
+    const cnActiveThenDeleted = rawNote({ i: 42, alter: 632, noteType: "credit", lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] });
+    r = await processCredit(cnActiveThenDeleted, T1, G1);
+    const before32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note42` }).lean();
+    check("an active note is stored before it is deleted", r.status === "created" && before32.voucherStatus === "active");
+    r = await processCredit(rawNote({ i: 42, alter: 633, noteType: "credit", deleted: true, lines: [{ itemName: "Item A", quantity: 1, rate: 1, amount: -1, accountLedger: "Sales Return AC" }] }), T1, G1);
+    const after32 = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note42` }).lean();
+    check("the stored active note becomes deleted: exactly one voucher, voucherStatus deleted, classification unclassified, tallyAlterId 633", r.status === "updated" && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note42` })) === 1 && after32.voucherStatus === "deleted" && after32.classification === "unclassified" && after32.tallyAlterId === 633, JSON.stringify({ status: r.status, v: after32.voucherStatus, c: after32.classification, a: after32.tallyAlterId }));
+
+    // Sparse deleted-voucher tombstone of a stored return: existing fields must survive; only lifecycle changes.
+    const baseDel = rawNote({ i: 43, alter: 634, noteType: "credit", lines: [{ itemName: "Item A", quantity: 7, rate: 100, amount: -700, accountLedger: "Sales Return AC" }] });
+    await processCredit(baseDel, T_ISO, G1);
+    const isoDelBefore = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note43` }).lean();
+    r = await processCredit(baseDel, T1, G1);
+    check("the base note for the sparse deleted tombstone is stored", r.status === "created");
+    const delBefore = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note43` }).lean();
+    const sparseDeleted = { ...rawNote({ i: 43, alter: 635, noteType: "credit", deleted: true, lines: [] }), partyname: "", partyledgername: "", ledgerentries: [] };
+    r = await processCredit(sparseDeleted, T1, G1);
+    const delAfter = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note43` }).lean();
+    check("the sparse deleted tombstone reports an update (not a creation)", r.updated === true && r.created === false, JSON.stringify({ created: r.created, updated: r.updated }));
+    check("the sparse deleted tombstone: voucherStatus deleted, classification unclassified, tallyAlterId 635", delAfter && delAfter.voucherStatus === "deleted" && delAfter.classification === "unclassified" && delAfter.tallyAlterId === 635, JSON.stringify(delAfter && { v: delAfter.voucherStatus, c: delAfter.classification, a: delAfter.tallyAlterId }));
+    check("the sparse deleted tombstone keeps voucherNo, voucherTotalAmount, inventory and one voucher", delAfter && delAfter.header.voucherNo === delBefore.header.voucherNo && delAfter.header.voucherTotalAmount === delBefore.header.voucherTotalAmount && JSON.stringify(delAfter.inventory) === JSON.stringify(delBefore.inventory) && delAfter.inventory.length === 1 && (await AdjustmentNote.countDocuments({ tenantId: T1, tallyGuid: `${G1}-note43` })) === 1);
+    const isoDelAfter = await AdjustmentNote.findOne({ tenantId: T_ISO, tallyGuid: `${G1}-note43` }).lean();
+    check("tenant isolation: a deleted voucher for T1 does not change the same GUID under another tenant", !!isoDelAfter && isoDelAfter.voucherStatus === "active" && isoDelAfter.classification === isoDelBefore.classification && isoDelAfter.tallyAlterId === isoDelBefore.tallyAlterId && JSON.stringify(isoDelAfter.inventory) === JSON.stringify(isoDelBefore.inventory), JSON.stringify(isoDelAfter && { v: isoDelAfter.voucherStatus, c: isoDelAfter.classification, a: isoDelAfter.tallyAlterId }));
+
+    // Reclassification after the cancellations, in apply mode: cancelled notes must not be upgraded to a return.
+    const reclassT1 = await reclassifyAdjustmentNotes({ tenantId: T1, apply: true });
+    check("the reclassification run succeeds", reclassT1.ok === true, JSON.stringify({ ok: reclassT1.ok, scanned: reclassT1.scanned, upgrades: reclassT1.upgrades }));
+    const cancelledNotes = await AdjustmentNote.find({ tenantId: T1, tallyGuid: { $in: [`${G1}-note13`, `${G1}-note17`, `${G1}-note18`, `${G1}-note21`] } }).lean();
+    check("after apply, every cancelled or tombstoned note is still unclassified (none upgraded to a return)", cancelledNotes.length === 4 && cancelledNotes.every((n) => n.voucherStatus !== "active" && n.classification === "unclassified"), JSON.stringify(cancelledNotes.map((n) => [n.tallyGuid.slice(-7), n.voucherStatus, n.classification])));
+    const activeFreight = await AdjustmentNote.findOne({ tenantId: T1, tallyGuid: `${G1}-note19` }).lean();
+    check("an active value adjustment is still not upgraded by the same run (no Sales/Purchase ledger)", activeFreight && activeFreight.classification === "value_adjustment");
 
     const cnCancelled = rawNote({ i: 10, alter: 610, noteType: "credit", cancelled: true, lines: [{ itemName: "Item A", quantity: 20, rate: 50, amount: -1000, accountLedger: "Sales Return AC" }] });
     r = await processCredit(cnCancelled, T1, G1);
@@ -209,6 +312,82 @@ function rawNote({ i, alter, noteType, party = "Test Party", partyLedgerAmount =
     await LedgerMaster.insertMany([{ tenantId: T2, companyGuid: G1, ledgerGuid: `${G1}-t2-la1`, name: "Sales Return AC", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() }]);
     r = await processCredit(sameGuidOtherTenant, T2, G1);
     check("the same tallyGuid under a DIFFERENT tenant does not collide", r.status === "created" && (await AdjustmentNote.countDocuments({ tallyGuid: `${G1}-note10` })) === 2);
+
+    // ============================================================ RECLASSIFY
+    section("RECLASSIFY: notes stored while the Ledger master was empty are upgraded to returns (upgrade only, no Tally)");
+    {
+      await LedgerMaster.insertMany([
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r1`, name: "Sales Return AC", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r2`, name: "Purchase Return AC", parentGroup: "Purchase Accounts", partyRole: "other", accountRole: "purchase_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r3`, name: "Freight Ledger", parentGroup: "Indirect Expenses", partyRole: "other", accountRole: "other", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r4`, name: "Dup Ledger", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+        { tenantId: T3, companyGuid: G1, ledgerGuid: `${G1}-r5`, name: "Dup Ledger", parentGroup: "Sales Accounts", partyRole: "other", accountRole: "sales_accounts", syncedAt: new Date() },
+      ]);
+      const mk = (n, noteType, classification, ledgers, extra = {}) => ({
+        tenantId: T3, companyGuid: G1, tallyGuid: `${G1}-rc${n}`, tallyAlterId: 9000 + n, voucherStatus: "active",
+        header: { voucherNo: `RC${n}`, voucherDate: new Date("2025-09-10T00:00:00Z"), voucherType: noteType === "credit" ? "Credit Note" : "Debit Note", voucherTotalAmount: 100, narration: "", partyName: "Party" },
+        noteType, classification, inventory: ledgers.map((l) => ({ itemName: "Item", quantity: 1, rate: 1, amount: -1, accountingAllocationLedger: l })), ledgers: [], ...extra,
+      });
+      const stored = async () => Object.fromEntries((await AdjustmentNote.find({ tenantId: T3 }).lean()).map((d) => [d.header.voucherNo, d.classification]));
+      const noRoles = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("with no notes at all the re-check is a quiet no-op", noRoles.ok && noRoles.scanned === 0 && noRoles.upgrades === 0);
+
+      await AdjustmentNote.insertMany([
+        mk(1, "credit", "value_adjustment", ["Sales Return AC"]), // a sales return stored before the master knew the role
+        mk(2, "debit", "value_adjustment", ["Purchase Return AC"]), // a purchase return, same
+        mk(3, "credit", "value_adjustment", ["Freight Ledger"]), // really a value adjustment
+        mk(4, "credit", "value_adjustment", ["Sales Return AC", "Freight Ledger"]), // mixed lines: never a partial return
+        mk(5, "debit", "value_adjustment", ["Sales Return AC"]), // wrong role for a debit note
+        mk(6, "credit", "value_adjustment", [null]), // no resolvable ledger: no evidence
+        mk(7, "credit", "value_adjustment", ["Dup Ledger"]), // ambiguous ledger name resolves to other
+        mk(8, "credit", "unclassified", []), // no inventory lines: never touched
+        mk(9, "credit", "sales_return", ["Freight Ledger"]), // already stored as a return: never downgraded
+        mk(10, "credit", "value_adjustment", ["Sales Return AC"], { voucherStatus: "cancelled" }), // cancelled: not eligible, so never upgraded (only active vouchers are reclassified)
+        mk(11, "credit", "value_adjustment", ["No Such Ledger"]), // a ledger the master does not know
+      ]);
+      await AdjustmentNote.insertMany([{ ...mk(12, "credit", "value_adjustment", ["Sales Return AC"]), tenantId: T3_OTHER }]);
+      const before = await stored();
+
+      const dry = await reclassifyAdjustmentNotes({ tenantId: T3 });
+      check("dry run (the default): counts the upgrades but writes nothing", dry.ok && dry.applied === false && dry.upgrades === 2 && JSON.stringify(await stored()) === JSON.stringify(before), JSON.stringify(dry));
+      const wet = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      const after = await stored();
+      check("apply: exactly the two provable active returns are upgraded (credit+Sales, debit+Purchase); the cancelled one is not", wet.upgrades === 2 && wet.scanned === 8 && after.RC1 === "sales_return" && after.RC2 === "purchase_return" && after.RC10 === "value_adjustment", JSON.stringify([wet, after]));
+      check("transitions are reported", JSON.stringify(wet.byTransition) === JSON.stringify({ "value_adjustment->sales_return": 1, "value_adjustment->purchase_return": 1 }), JSON.stringify(wet.byTransition));
+      check("everything without proof stays value_adjustment (freight, mixed, wrong role, no ledger, ambiguous name, unknown ledger)", ["RC3", "RC4", "RC5", "RC6", "RC7", "RC11"].every((k) => after[k] === "value_adjustment"), JSON.stringify(after));
+      check("unclassified and an already-stored return are never touched", after.RC8 === "unclassified" && after.RC9 === "sales_return");
+      check("another tenant's note is never touched", (await AdjustmentNote.findOne({ tenantId: T3_OTHER }).lean()).classification === "value_adjustment");
+      const again = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("running it again changes nothing (idempotent)", again.upgrades === 0 && JSON.stringify(await stored()) === JSON.stringify(after));
+
+      // a ledger deleted from Tally later must not rewrite history: the stored return stays
+      await LedgerMaster.updateOne({ tenantId: T3, name: "Sales Return AC" }, { $set: { removedAt: new Date() } });
+      const gone = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      check("a ledger marked removed later does NOT downgrade stored returns", gone.upgrades === 0 && (await stored()).RC1 === "sales_return");
+      await LedgerMaster.updateOne({ tenantId: T3, name: "Sales Return AC" }, { $set: { removedAt: null } });
+
+      // a note whose ledger is later corrected becomes provable; tiny batches page by _id and still reach every note
+      await AdjustmentNote.updateOne({ tenantId: T3, "header.voucherNo": "RC3" }, { $set: { "inventory.0.accountingAllocationLedger": "Sales Return AC" } });
+      const raced = await reclassifyAdjustmentNotes({ tenantId: T3, apply: true, batchSize: 1 });
+      check("small batches (paging by _id) reach every note; the freshly provable one is upgraded", raced.upgrades === 1 && (await stored()).RC3 === "sales_return" && raced.scanned >= 5, JSON.stringify(raced));
+      // a note changed by someone else between the read and the write is not overwritten (the write is conditional on value_adjustment)
+      await AdjustmentNote.insertMany([mk(13, "credit", "value_adjustment", ["Sales Return AC"])]);
+      const realFind = LedgerMaster.find;
+      LedgerMaster.find = function patchedFind(...a) {
+        LedgerMaster.find = realFind;
+        const q = realFind.apply(this, a);
+        return { lean: async () => { const docs = await q.lean(); await AdjustmentNote.updateOne({ tenantId: T3, "header.voucherNo": "RC13" }, { $set: { classification: "purchase_return" } }); return docs; } };
+      };
+      try {
+        await reclassifyAdjustmentNotes({ tenantId: T3, apply: true });
+      } finally {
+        LedgerMaster.find = realFind;
+      }
+      check("a note changed concurrently (after it was read) is not overwritten by the upgrade", (await stored()).RC13 === "purchase_return", JSON.stringify((await stored()).RC13));
+      const noTenant = await reclassifyAdjustmentNotes({ apply: true });
+      check("no tenantId -> refused, nothing written", noTenant.ok === false && noTenant.upgrades === 0);
+      await AdjustmentNote.deleteMany({ tenantId: { $in: [T3, T3_OTHER] } });
+    }
 
     // ============================================================ SYNC / SECURITY
     section("SYNC/SECURITY: runSyncForCompanyModule against a Tally-shaped stub (real worker code path)");

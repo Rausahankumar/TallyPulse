@@ -64,6 +64,12 @@ plannerModule.createAnthropicPlannerClient = () => async (request, opts = {}) =>
   fakePlanner.signals.push(opts.signal || null);
   if (fakePlanner.onCall) fakePlanner.onCall(fakePlanner.calls);
   if (fakePlanner.mode === "plan") return { content: [{ type: "tool_use", id: "p", name: "submit_query_plan", input: { plan: FAKE_PLAN } }], usage: { input_tokens: 10, output_tokens: 5 } };
+  // "analysis": the query planner declines with needs_analysis, the analysis planner answers with a one-step plan
+  if (fakePlanner.mode === "analysis") {
+    return request.tool_choice.name === "submit_query_plan"
+      ? { content: [{ type: "tool_use", id: "p", name: "submit_query_plan", input: { decline: { code: "needs_analysis", message: "This needs several analyses." } } }], usage: { input_tokens: 10, output_tokens: 5 } }
+      : { content: [{ type: "tool_use", id: "a", name: "submit_analysis_plan", input: { analysis: { v: 1, steps: [{ id: "s", kind: "query", plan: FAKE_PLAN }] } } }], usage: { input_tokens: 10, output_tokens: 5 } };
+  }
   if (fakePlanner.mode === "unavailable") throw Object.assign(new Error("no API key"), { code: "AI_NOT_CONFIGURED" });
   // "hang": like the SDK, only settles when the request's signal aborts
   return new Promise((_, reject) => {
@@ -102,8 +108,10 @@ const OTHER_TENANT = "OTHER-TENANT-ID";
 
 // ---------------------------------------------------------------- in-memory Chat store (no Mongo writes)
 let saves = 0;
+let lastSaved = null;
 Chat.prototype.save = async function fakeSave() {
   saves += 1;
+  lastSaved = this;
   if (!this._id) this._id = new mongoose.Types.ObjectId();
   return this;
 };
@@ -262,6 +270,36 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     ev = events[events.length - 1];
     check("planner unavailable: 200 with an honest planner-unavailable answer, path planner_failed", res.statusCode === 200 && ev.path === "planner_failed" && ev.clientAborted === false && /planner is unavailable/i.test(res.body.data.answer), JSON.stringify(ev));
     historyChat = null;
+
+    section("SAVE. An analysis-plan answer (ASK_AI_ANALYSIS on for this process only) is saved and reloads like any answer");
+    const flagBefore = process.env.ASK_AI_ANALYSIS;
+    process.env.ASK_AI_ANALYSIS = "on";
+    try {
+      Object.assign(fakePlanner, { mode: "analysis", calls: 0, signals: [], onCall: null });
+      res = mkRes();
+      saves = 0;
+      lastSaved = null;
+      events.length = 0;
+      await sendChatMessage(mkReq({ body: { message: "EVAL-01 Why did sales change last month?" } }), res);
+      ev = events[events.length - 1];
+      const saved = lastSaved && lastSaved.toObject();
+      check("answered 200 through the real controller: two planner calls (query + analysis), saved once", res.statusCode === 200 && res.body.success === true && fakePlanner.calls === 2 && saves === 1, `${res.statusCode} ${fakePlanner.calls} ${saves}`);
+      check("the saved chat holds the question and the SAME answer the browser received, marked analysis_plan", !!saved && saved.title === "EVAL-01 Why did sales change last month?" && saved.messages.map((m) => m.role).join() === "user,assistant" && saved.messages[0].text === "EVAL-01 Why did sales change last month?" && saved.messages[1].text === res.body.data.answer && /^Analysis: measured results only/.test(saved.messages[1].text) && saved.messages[1].toolCalls[0].toolName === "analysis_plan", JSON.stringify(saved && saved.messages[1]));
+      check("saved under the authorised tenant and user only", !!saved && saved.tenantId === TENANT && String(saved.userId) === USER);
+      // this synthetic tenant has no vouchers: its one step is refused as missing data, so the turn ran nothing (analysis_failed)
+      check("telemetry/usage: route analysis, path analysis_failed (no data ran), 2 Claude calls", ev && ev.route === "analysis" && ev.path === "analysis_failed" && ev.claudeCalls === 2 && /Not run: /.test(res.body.data.answer), JSON.stringify(ev));
+      store.set(String(saved._id), { ...saved, _id: String(saved._id), userId: USER });
+      res = mkRes();
+      await getChat(mkReq({ params: { chatId: String(saved._id) } }), res);
+      check("after a refresh, opening the chat returns the same question and answer", res.statusCode === 200 && res.body.data.messages[1].text === saved.messages[1].text && res.body.data.messages[0].text === saved.messages[0].text);
+      res = mkRes();
+      await getChat(mkReq({ userId: OTHER_USER, params: { chatId: String(saved._id) } }), res);
+      check("another user of the same company cannot open it (404)", res.statusCode === 404);
+      store.delete(String(saved._id));
+    } finally {
+      if (flagBefore === undefined) delete process.env.ASK_AI_ANALYSIS;
+      else process.env.ASK_AI_ANALYSIS = flagBefore;
+    }
 
     section("STOP 6. planQuestion: an already-cancelled request never calls Claude");
     let plannerCalls = 0;

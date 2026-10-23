@@ -215,6 +215,7 @@ async function liveSelfTest() {
     const client = fakeProvider(mode, () => current);
     const tally = {};
     const problems = [];
+    const yearGuarded = [];
     for (const row of rows) {
       current = row;
       const planned = await planQuestion(row.question, { claudeClient: client, resolveEntity: resolver, referenceDate: REF_DATE, maxRepairs: 0 });
@@ -222,10 +223,17 @@ async function liveSelfTest() {
       bump(tally, sc.outcome);
       const wantPlan = row.expected.status === "supported" && row.expected.plan;
       if (mode === "golden" && !["plan_correct", "correct_refusal", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome} ${planned.status}/${planned.code || ""}`);
-      if (mode === "mutated" && wantPlan && !["wrong_but_executable", "provider_failure", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome}`);
+      // A shifted custom range can move into a year the question never states (calendar 2025 -> Dec 2024..Nov 2025); the planner's year
+      // guard then refuses the invented year (year_missing). That is the guard working, so it is accepted - it is still never plan_correct.
+      const yearGuardRefusal = sc.outcome === "false_refusal" && planned.status === "needs_clarification" && planned.code === "year_missing" && planned.source === "date_guard";
+      if (mode === "mutated" && yearGuardRefusal) yearGuarded.push(row.id);
+      if (mode === "mutated" && wantPlan && !yearGuardRefusal && !["wrong_but_executable", "provider_failure", "refusal_accepted"].includes(sc.outcome)) problems.push(`${row.id} ${sc.outcome}`);
     }
     if (mode === "golden") check(`a perfect provider scores every non-gap row correct (${JSON.stringify(tally)})`, problems.length === 0, problems.slice(0, 6).join(" | "));
-    else check(`a provider that answers every question for the PREVIOUS period is caught as wrong_but_executable, never plan_correct (${JSON.stringify(tally)})`, problems.length === 0 && !tally.plan_correct, problems.slice(0, 6).join(" | "));
+    else {
+      check(`a provider that answers every question for the PREVIOUS period is caught as wrong_but_executable (or refused by the year guard when the shift invents an unstated year), never plan_correct (${JSON.stringify(tally)})`, problems.length === 0 && !tally.plan_correct, problems.slice(0, 6).join(" | "));
+      check(`year-guard refusals stay the exception, only on custom ranges (${yearGuarded.join(",") || "none"})`, yearGuarded.length <= 3 && yearGuarded.every((id) => { const r = rows.find((x) => x.id === id); return r.expected.plan.period.kind === "custom"; }), yearGuarded.join(","));
+    }
     console.log(`  ${mode}: ${JSON.stringify(tally)}`);
   }
 }
@@ -360,6 +368,13 @@ async function comparatorSelfTest() {
   const larger = clone(BASES.ranking);
   larger.limit = 10;
   check("limit: a LARGER limit is imprecise (acceptable, never exact); a smaller one is wrong", scored(larger, BASES.ranking).outcome === "plan_imprecise" && diffPlans(larger, BASES.ranking).every((d) => d.minor) && scored({ ...clone(BASES.ranking), limit: 2 }, BASES.ranking).outcome === "wrong_but_executable");
+  // A scalar aggregate (no groupBy) returns totals only and the engine never applies its limit, so any limit there is the same answer.
+  for (const [name, lim] of [["specificFy", 100], ["specificFy", 1], ["comparison", 100]]) {
+    const p = { ...clone(BASES[name]), limit: lim };
+    check(`limit: scalar aggregate "${name}" with limit ${lim} is still exactly correct (no limit diff)`, diffPlans(p, BASES[name]).length === 0 && scored(p, BASES[name]).outcome === "plan_correct", JSON.stringify(diffPlans(p, BASES[name])));
+  }
+  check("limit: a grouped date series keeps its limit difference (the rule is scalar-only)", fieldsOf(diffPlans({ ...clone(BASES.trend), limit: 50 }, BASES.trend)).includes("limit"));
+  check("limit: list mode keeps its limit difference (list returns rows)", fieldsOf(diffPlans({ ...clone(BASES.list), limit: 50 }, BASES.list)).includes("limit") && scored({ ...clone(BASES.list), limit: 50 }, BASES.list).outcome === "plan_imprecise");
 
   // ---- E1: the filter operator, case by case
   const withFilter = (op, value) => ({ ...clone(BASES.filtered), filters: [{ dim: "product", op, value }] });

@@ -5,12 +5,12 @@
  * customer / supplier / product / group name exists for THIS tenant. The planner re-verifies every name Claude used
  * through it.
  *
- * Fully offline: injected sources only - no MongoDB, no Tally, no Anthropic, no network.
+ * Fully offline: injected sources / fake models only - no MongoDB, no Tally, no Anthropic, no network.
  * (These checks used to live inside the router suite; the router is gone, the resolver is not.)
  * Run: node verify-entity-resolver.js
  */
 
-const { createEntityResolver, ENTITY_RESOLVER_UNAVAILABLE } = require("./src/services/query/entityResolver");
+const { createEntityResolver, defaultSources, ENTITY_RESOLVER_UNAVAILABLE } = require("./src/services/query/entityResolver");
 
 let pass = 0;
 let fail = 0;
@@ -150,6 +150,69 @@ const find = (r, text, hintDim = null, entity = null) => r({ entity, hintDim, te
     const bOk = await tB({ entity: "sales", hintDim: "customer", text: "Kestrel Traders" });
     const aAfter = await tA.resolveEntity({ entity: "sales", hintDim: "customer", text: "Kestrel Traders" });
     check("tenant A's outage does not affect B; after recovery A still cannot see B's customer", aDown && bOk.matches.length === 1 && aAfter.matches.length === 0);
+  }
+
+  section("E. products come from the voucher lines (the Stock Item master only adds to them); every read is tenant-scoped");
+  {
+    const calls = [];
+    const fakeModel = (label, byField) => ({
+      distinct: (field, filter) => {
+        calls.push({ label, field, filter });
+        return { maxTimeMS: () => Promise.resolve(byField[field] || []) };
+      },
+    });
+    const models = {
+      Sale: fakeModel("Sale", { "header.partyName": ["Sold To Co"], "inventory.itemName": ["FEVICOL MR [20 GM]", "Shared Item"] }),
+      Purchase: fakeModel("Purchase", { "header.partyName": ["Bought From Co"], "inventory.itemName": ["Bought Only Item", "shared item"] }),
+      StockItemMaster: fakeModel("StockItemMaster", { itemName: ["Master Only Item", "Shared  Item"], stockGroupName: ["Adhesives"] }),
+    };
+    const sources = defaultSources("TENANT-E", models);
+    const r = createEntityResolver({ tenantId: "TENANT-E", sources });
+    const hit = async (text) => (await find(r, text, "product"))[0];
+    check("a product that exists only on a sales line resolves, with the exact stored spelling (brackets included)", (await hit("fevicol mr 20 gm")) && (await hit("fevicol mr 20 gm")).value === "FEVICOL MR [20 GM]");
+    check("a product that exists only on a purchase line resolves", !!(await hit("Bought Only Item")));
+    check("a product that only the Stock Item master knows still resolves (an item with no voucher yet)", !!(await hit("master only item")));
+    check("a name on a sales line and in the master resolves to ONE product, with the voucher spelling", (await find(r, "shared item", "product")).length === 1 && (await hit("shared item")).value === "Shared Item");
+    check("a name nobody has stays unresolved", (await find(r, "Ghost Widget", "product")).length === 0);
+    check("customers and suppliers are still read from the party name of the matching voucher type", (await find(r, "sold to co", "customer")).length === 1 && (await find(r, "bought from co", "supplier")).length === 1 && (await find(r, "sold to co", "supplier")).length === 0);
+    check("the product group still comes from the Stock Item master", (await find(r, "adhesives", "productGroup")).length === 1);
+    check("every read is filtered by this tenant", calls.length >= 6 && calls.every((c) => c.filter && c.filter.tenantId === "TENANT-E"), JSON.stringify(calls.map((c) => c.label + ":" + c.field)));
+    check("the product read covers Sale and Purchase lines and the master", ["Sale:inventory.itemName", "Purchase:inventory.itemName", "StockItemMaster:itemName"].every((k) => calls.some((c) => `${c.label}:${c.field}` === k)));
+    const before = calls.length;
+    await find(r, "bought only item", "product");
+    check("the lists are cached after the first read (no second read for the same dimension)", calls.length === before);
+    const down = createEntityResolver({ tenantId: "TENANT-E", sources: defaultSources("TENANT-E", { ...models, Purchase: { distinct: () => ({ maxTimeMS: () => Promise.reject(new Error("timeout")) }) } }) });
+    let code = null;
+    try { await find(down, "fevicol mr 20 gm", "product"); } catch (e) { code = e.code; }
+    check("if any one of the product reads fails the lookup is 'temporarily unavailable', never a partial list", code === ENTITY_RESOLVER_UNAVAILABLE);
+  }
+
+  section("F. did you mean: the closest stored names for a name that did not resolve (a list for the user, never a pick)");
+  {
+    const r = mk("T-F", {
+      customer: ["Dhingra General Store", "Dhingra Traders", "Dhingra Hardware", "Dhingra Paints", "Sharma Enterprises", "Orbit Co"],
+      supplier: ["Acme Foods Pvt Ltd"],
+      product: ["FEVICOL MR [20 GM]", "FEVICOL SH 50 GM", "Maggi Noodles"],
+    });
+    const sg = (text, hintDim, entity = null) => r.suggest({ entity, hintDim, text }).then((x) => x.map((y) => y.value));
+    check("a missing letter still finds the store", (await sg("Dhingr General Stor", "customer"))[0] === "Dhingra General Store");
+    check("a different order of letters in one word still finds it", (await sg("Sharma Enterprizes", "customer"))[0] === "Sharma Enterprises");
+    check("at most three names are offered", (await sg("Dhingra", "customer")).length === 3);
+    check("the best match comes first and the order is stable", JSON.stringify(await sg("Dhingra", "customer")) === JSON.stringify(await sg("Dhingra", "customer")) && (await sg("dhingra general", "customer"))[0] === "Dhingra General Store");
+    check("equal scores: the shorter name first, then a fixed order (same answer every time)", JSON.stringify(await sg("Dhingra", "customer")) === JSON.stringify(["Dhingra Paints", "Dhingra Traders", "Dhingra Hardware"]), JSON.stringify(await sg("Dhingra", "customer")));
+    const rs = mk("T-F4", { customer: ["Acme Stores", "Acme Store Co"] });
+    check("a better score beats a shorter name (an exact word is worth more than a near one)", (await rs.suggest({ hintDim: "customer", text: "acme store" })).map((x) => x.value).join("|") === "Acme Store Co|Acme Stores");
+    check("a product name with a typo suggests the product", (await sg("Fevicol MR 20GM", "product"))[0] === "FEVICOL MR [20 GM]");
+    check("an unrelated name gets no suggestions", (await sg("Zzzz Qqqq Xxxx", "customer")).length === 0);
+    check("the hint dimension limits the suggestions (a customer name is never offered for a supplier)", (await sg("Dhingra", "supplier")).length === 0 && (await sg("Acme Foods", "supplier")).length === 1);
+    check("entity 'sales' never offers suppliers; 'purchase' never offers customers", (await sg("Acme Foods Pvt", null, "sales")).length === 0 && (await sg("Dhingra", null, "purchase")).length === 0);
+    check("empty text gives nothing", (await sg("", "customer")).length === 0 && (await sg("  --  ", "customer")).length === 0);
+    const rB = mk("T-F2", { customer: ["Other Tenant Traders"] });
+    check("suggestions come only from this tenant's own names", (await rB.suggest({ hintDim: "customer", text: "Dhingra General" })).length === 0);
+    const failing = createEntityResolver({ tenantId: "T-F3", sources: { customer: async () => { throw new Error("db down"); }, supplier: async () => [], product: async () => [], productGroup: async () => [] } });
+    let code = null;
+    try { await failing.suggest({ hintDim: "customer", text: "Dhingra" }); } catch (e) { code = e.code; }
+    check("a failed read while suggesting is reported as unavailable, never as 'no suggestions'", code === ENTITY_RESOLVER_UNAVAILABLE);
   }
 
   console.log(`\nverify-entity-resolver: ${pass} passed, ${fail} failed`);

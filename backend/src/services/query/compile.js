@@ -112,7 +112,10 @@ function accumulators(metrics, entity) {
   const acc = {};
   for (const id of baseMetricsNeeded(metrics)) {
     const a = CATALOG.metrics[id].aggregation;
-    acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: a.abs ? { $abs: `$${a.path}` } : signedPath(a.path, signFactor(a, entity)) };
+    // "distinct": the set of distinct values (party names); the executor turns it into a count after resolving each name in the
+    // Ledger master, so a distinct metric never reaches having/sort/limit in MongoDB (see compileQuery: it is finalized in memory).
+    if (a.op === "distinct") acc[`m_${id}`] = { $addToSet: `$${a.path}` };
+    else acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: a.abs ? { $abs: `$${a.path}` } : signedPath(a.path, signFactor(a, entity)) };
   }
   return acc;
 }
@@ -338,6 +341,10 @@ function compileQuery(n, { tenantId, groupItemNames, newPartyNames } = {}) {
   const add = (key, pipeline) => queries.push({ key, model, pipeline, options: { ...options } });
 
   const rolled = n.mode === "aggregate" && n.groupBy.some((g) => g.dim === "productGroup");
+  // A distinct metric's real value is known only after the executor resolves its names, so its rows are never filtered, sorted or
+  // limited here: the executor does it in memory (like a comparison), and grouped totals come from their own query, never a sum.
+  const inMemory = n.mode === "aggregate" && hasDistinctMetric(n);
+  if (inMemory && rolled) throw new Error("compileQuery: a distinct metric cannot be rolled up.");
 
   if (n.mode === "list") {
     add("list", listPipeline(n, tenantId, ctx));
@@ -352,12 +359,16 @@ function compileQuery(n, { tenantId, groupItemNames, newPartyNames } = {}) {
   } else if (rolled) {
     add("rows", rowsPipeline(n, tenantId, n.period, ctx, { finalize: false, rolled }));
   } else {
-    add("rows", rowsPipeline(n, tenantId, n.period, ctx, { finalize: true, rolled }));
+    add("rows", rowsPipeline(n, tenantId, n.period, ctx, { finalize: !inMemory, rolled }));
     if (n.totals && n.groupBy.length) add("totals", totalsPipeline(n, tenantId, n.period, ctx));
   }
 
   for (const q of queries) assertPipelineSafe(q.pipeline, tenantId);
-  return { model, entity: n.entity, rollup: rolled, queries };
+  return { model, entity: n.entity, rollup: rolled, inMemory, queries };
 }
 
-module.exports = { compileQuery, assertPipelineSafe, escapeRegex, regexCondition, ALLOWED_STAGES };
+function hasDistinctMetric(n) {
+  return n.metrics.some((id) => CATALOG.metrics[id].aggregation && CATALOG.metrics[id].aggregation.op === "distinct");
+}
+
+module.exports = { compileQuery, assertPipelineSafe, escapeRegex, regexCondition, hasDistinctMetric, ALLOWED_STAGES };

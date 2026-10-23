@@ -51,3 +51,13 @@ Suites use synthetic tenants that they create and remove themselves; point `MONG
 ## Documentation
 
 Start with [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) for a map of the code, then the [technical documentation](docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md) for architecture, data model, API and operations. Working rules for AI-assisted development are in [`CLAUDE.md`](CLAUDE.md).
+
+| Document | Status | Use it for |
+|---|---|---|
+| [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | **Maintained** | The short, current map: code layout, data model, rules that must not break, limitations, open items |
+| [`docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md`](docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md) | **Maintained** | Full reference: architecture, API, sync, testing and CI (§13), status and dated work log (§15), risks (§16) |
+| [`docs/SEMANTIC_FOUNDATION.md`](docs/SEMANTIC_FOUNDATION.md) | **Maintained** | What the query engine's time, comparison and party terms mean |
+| [`TallyPulse-Security-Audit.md`](TallyPulse-Security-Audit.md) | Historical record | Audit findings (F-xx) and probe ids (SEC-xx) that code comments and `verify-security-audit.js` cite |
+| [`docs/CODE_WALKTHROUGH_HINGLISH.md`](docs/CODE_WALKTHROUGH_HINGLISH.md), [`docs/TALLY_TO_MONGO_FILES.md`](docs/TALLY_TO_MONGO_FILES.md) | Explanatory | Beginner walkthroughs in Hinglish; check the code or the maintained docs for current detail |
+| [`docs/CODE_REFERENCE.md`](docs/CODE_REFERENCE.md) | Snapshot (2026-10-15) | Per-file function list; its generator is not in the repository, so it is not kept current |
+| `docs/*.excalidraw`, `docs/TallyPulse_Architecture_Handover.pptx` | Snapshots | Architecture diagrams and the handover deck |
