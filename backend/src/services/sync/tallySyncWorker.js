@@ -27,6 +27,8 @@ const { assertBatchOwnership } = require("../tally/companyOwnership");
 const {
   resolveVoucherTypeClassification,
 } = require("../tally/voucherTypeClassifier");
+const { refreshStockItemMasters } = require("../tally/stockItemMaster");
+const { refreshLedgerMasters } = require("../tally/ledgerMaster");
 
 // --------------------------------------------------
 // Background incremental sync worker.
@@ -59,6 +61,13 @@ const {
 // classificationKey selects which side of voucherTypeClassifier's per-
 // company result (sales/purchase) this module's fetch should use — see
 // resolveClassificationForModule below.
+//
+// Master data (Stock Items, Ledgers) is not voucher-shaped: Tally gives no usable
+// change feed for it and deletions are invisible, so it is refreshed in FULL on a
+// much slower cadence (TALLY_MASTER_REFRESH_HOURS, default 6, 0 = off) by
+// runMasterRefreshForCompany, AFTER that company's voucher modules in the same
+// tick, under the same one-request-at-a-time rule. Stock Item GST history is not
+// part of it (about 74 extra reads): that stays a manual command.
 //
 // fetchPendingAlterIds (optional) is the light probe used to bound each
 // tick's batch - see batchWindow.js. A module without it is fetched
@@ -120,8 +129,25 @@ const DEFAULT_SYNC_BATCH_SIZE = resolveBatchSize(process.env.TALLY_SYNC_BATCH_SI
 // 30s axios timeout bounds that separately).
 const LOCK_STALE_MULTIPLIER = 5;
 
+// How often a company's Stock Item and Ledger masters are re-read in full. Configurable via TALLY_MASTER_REFRESH_HOURS
+// (hours; 0 switches the periodic refresh off; a missing, negative or non-numeric value falls back to the default).
+const DEFAULT_MASTER_REFRESH_HOURS = 6;
+// After a failed master refresh the next attempt comes sooner than a full interval, but not on every 60 s tick.
+const MASTER_RETRY_MS = 30 * 60 * 1000;
+
+function resolveMasterRefreshMs(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return DEFAULT_MASTER_REFRESH_HOURS * 3600 * 1000;
+  const hours = Number(value);
+  return Number.isFinite(hours) && hours >= 0 ? hours * 3600 * 1000 : DEFAULT_MASTER_REFRESH_HOURS * 3600 * 1000;
+}
+
+const MASTER_REFRESH_MS = resolveMasterRefreshMs(process.env.TALLY_MASTER_REFRESH_HOURS);
+
 let scheduledTask = null;
 let cycleInProgress = false;
+// companyGuid -> epoch ms of the next master refresh. In memory on purpose: after a restart the first tick simply refreshes
+// once (a few light reads, idempotent writes), so there is no extra persisted state to keep correct.
+const masterNextDue = new Map();
 
 function resolveTallyBaseUrl(company) {
   // undefined -> odbcService falls back to its own DEFAULT_TALLY_URL.
@@ -541,8 +567,74 @@ async function runSyncForCompanyModule(
   }
 }
 
+// Refreshes one company's Stock Item and Ledger masters when they are due (see MASTER_REFRESH_MS). Never throws.
+//
+//   - The open-company guard runs first (one light read): if another company is open or Tally is unreachable nothing is
+//     requested and the refresh stays due, so the next tick looks again. Both refreshes also verify the GUID ownership of
+//     everything Tally returns, and fail closed (they write nothing, and never clear what is stored) on any problem.
+//   - One request at a time, in order: Stock Items, then Ledgers (+ Groups). Stock Item GST history is NOT refreshed here.
+//   - Success: next refresh in `intervalMs`. Failure of either: retry in MASTER_RETRY_MS (30 min), not on every tick.
+//
+// deps (tests): { verifyCompany, refreshStockItems, refreshLedgers }.
+async function runMasterRefreshForCompany(
+  company,
+  { now = Date.now(), force = false, intervalMs = MASTER_REFRESH_MS, deps = {} } = {}
+) {
+  if (!(intervalMs > 0)) return { skipped: true, reason: "disabled" };
+
+  const companyGuid = company.companyGuid;
+  if (!force && (masterNextDue.get(companyGuid) || 0) > now) return { skipped: true, reason: "not_due" };
+
+  const verifyCompany = deps.verifyCompany || verifyOpenTallyCompany;
+  const refreshStockItems = deps.refreshStockItems || refreshStockItemMasters;
+  const refreshLedgers = deps.refreshLedgers || refreshLedgerMasters;
+  const baseUrl = resolveTallyBaseUrl(company);
+  const retryAt = now + Math.min(MASTER_RETRY_MS, intervalMs);
+
+  try {
+    const guard = await verifyCompany(companyGuid, { baseUrl });
+    if (!guard.ok) return { skipped: true, reason: guard.reason };
+
+    const stockItems = await refreshStockItems({ tenantId: company.tenantId, companyGuid, baseUrl, includeGst: false });
+    const ledgers = await refreshLedgers({ tenantId: company.tenantId, companyGuid, baseUrl });
+    const ok = Boolean(stockItems && stockItems.ok && ledgers && ledgers.ok);
+
+    masterNextDue.set(companyGuid, ok ? now + intervalMs : retryAt);
+    return { ok, stockItems, ledgers };
+  } catch (error) {
+    masterNextDue.set(companyGuid, retryAt);
+    return { ok: false, error: error && error.message ? error.message : String(error) };
+  }
+}
+
+function logMasterRefresh(company, result) {
+  if (!result || result.skipped) return;
+
+  if (!result.ok) {
+    const why =
+      result.error ||
+      [result.stockItems, result.ledgers]
+        .filter((r) => r && r.ok === false)
+        .map((r) => r.reason)
+        .join(" | ");
+    console.error(`[tallySyncWorker] ${company.companyGuid} (masters): refresh failed - ${why}; will retry later.`);
+    return;
+  }
+
+  const s = result.stockItems;
+  const l = result.ledgers;
+  console.log(
+    `[tallySyncWorker] ${company.companyGuid} (masters): stock items fetched=${s.totalFetched} written=${s.written} unchanged=${s.unchanged}; ledgers fetched=${l.totalFetched} written=${l.written} removed=${l.removed}${l.unchanged ? " (unchanged)" : ""}`
+  );
+}
+
 async function runSyncForAllCompanies(
-  { intervalSeconds = DEFAULT_INTERVAL_SECONDS } = {}
+  {
+    intervalSeconds = DEFAULT_INTERVAL_SECONDS,
+    // overridable for tests: which voucher modules to run, and the master refresh step
+    modules = SYNC_MODULES,
+    masterRefresh = runMasterRefreshForCompany,
+  } = {}
 ) {
   if (cycleInProgress) {
     console.log(
@@ -557,7 +649,7 @@ async function runSyncForAllCompanies(
     const companies = await Company.find({ isActive: true }).lean();
 
     for (const company of companies) {
-      for (const syncModule of SYNC_MODULES) {
+      for (const syncModule of modules) {
       try {
         const startedAt = Date.now();
         const result = await runSyncForCompanyModule(company, syncModule, {
@@ -596,6 +688,17 @@ async function runSyncForAllCompanies(
           error.message
         );
       }
+      }
+
+      // Masters last: a slow or failing master read can never delay or block this company's voucher sync, and it only
+      // does anything when the company is due (default every 6 hours; see runMasterRefreshForCompany).
+      try {
+        logMasterRefresh(company, await masterRefresh(company));
+      } catch (error) {
+        console.error(
+          `[tallySyncWorker] Unexpected error refreshing masters for company ${company.companyGuid}:`,
+          error.message
+        );
       }
     }
   } finally {
@@ -654,6 +757,8 @@ module.exports = {
   stopTallySyncWorker,
   runSyncForAllCompanies,
   runSyncForCompanyModule,
+  runMasterRefreshForCompany,
+  resolveMasterRefreshMs,
   SALES_SYNC_MODULE,
   PURCHASE_SYNC_MODULE,
   CREDIT_NOTE_SYNC_MODULE,

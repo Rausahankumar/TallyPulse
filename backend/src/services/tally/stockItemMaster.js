@@ -137,8 +137,18 @@ async function refreshStockItemMasters({
   // Tenant-scoped bulk upsert, keyed by {tenantId, tallyGuid} (identity),
   // so a Stock Item renamed in Tally updates the SAME document rather
   // than leaving a stale duplicate under its old name.
+  //
+  // Only items that are NEW or whose name / Stock Group CHANGED are written. This is refreshed periodically by
+  // tallySyncWorker.js, and an unchanged list must cost no writes (and no TenantDataVersion bump, which would empty the
+  // answer cache for nothing). Nothing reads StockItemMaster.syncedAt, so leaving it on unchanged items is harmless.
   const now = new Date();
-  const ops = items.map((item) => ({
+  const stored = await StockItemMaster.find({ tenantId }, { tallyGuid: 1, itemName: 1, stockGroupName: 1, _id: 0 }).lean();
+  const storedByGuid = new Map(stored.map((d) => [d.tallyGuid, d]));
+  const changedItems = items.filter((item) => {
+    const prev = storedByGuid.get(item.tallyGuid);
+    return !prev || prev.itemName !== item.itemName || prev.stockGroupName !== item.stockGroupName;
+  });
+  const ops = changedItems.map((item) => ({
     updateOne: {
       filter: { tenantId, tallyGuid: item.tallyGuid },
       update: {
@@ -154,7 +164,7 @@ async function refreshStockItemMasters({
     },
   }));
 
-  const result = await StockItemMaster.bulkWrite(ops, { ordered: false });
+  const result = ops.length ? await StockItemMaster.bulkWrite(ops, { ordered: false }) : { upsertedCount: 0, modifiedCount: 0 };
 
   const gst = includeGst && typeof gstFetcher === "function"
     ? await refreshStockItemGst({ tenantId, companyGuid, baseUrl, items, fetcher: gstFetcher, now })
@@ -165,6 +175,7 @@ async function refreshStockItemMasters({
     written: (result.upsertedCount || 0) + (result.modifiedCount || 0),
     totalFetched: rawForOwnership.length,
     usable: items.length,
+    unchanged: items.length - changedItems.length,
     unusable: unusable.length,
     distinctStockGroups: new Set(items.map((i) => i.stockGroupName)).size,
     resolvedAt: now,

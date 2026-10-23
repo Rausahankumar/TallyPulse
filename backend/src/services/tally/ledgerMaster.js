@@ -179,7 +179,13 @@ async function refreshLedgerMasters({ tenantId, companyGuid, baseUrl, force = fa
   const base = { totalFetched: ledgersRaw.length, usable: ledgers.length, unusable, undated, maxAlterId };
 
   if (!force && stored.length === ledgers.length && storedMaxAlterId === maxAlterId && toRemove === 0) {
-    return { ok: true, unchanged: true, written: 0, removed: 0, ...base, resolvedAt: new Date() };
+    // Nothing changed, but the list WAS just checked against Tally. The newest syncedAt is what the answers report as "the
+    // ledger master was last refreshed on ..." (query/execute.js), and tallySyncWorker.js now refreshes this periodically,
+    // so record the check on ONE live document instead of rewriting every ledger: otherwise a master that simply had no
+    // change for a week would be reported as a week old.
+    const checkedAt = new Date();
+    await LedgerMaster.updateOne({ tenantId, removedAt: null }, { $set: { syncedAt: checkedAt } });
+    return { ok: true, unchanged: true, written: 0, removed: 0, ...base, resolvedAt: checkedAt };
   }
   if (stored.length > 0 && toRemove / stored.length > MAX_REMOVAL_RATIO) {
     return buildFailureResult(`Refusing refresh: ${toRemove} of ${stored.length} stored ledgers are missing from Tally's list (more than ${MAX_REMOVAL_RATIO * 100}%).`);
