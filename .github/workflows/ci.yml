@@ -176,6 +176,27 @@ jobs:
             verify-chat-management.js \
             verify-nlu-eval.js ; do
             echo "::group::$f"
-            node "$f"
+            out=$(mktemp)
+            rc=0
+            node "$f" >"$out" 2>&1 || rc=$?
+            cat "$out"
             echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL $f (exit $rc)"
+              exit 1
+            fi
+            # verify-analytics-and-ai.js runs its data checks on a synthetic fixture and repeats them on the real
+            # WE FOUR tenant when present; CI has no real tenant, so it prints one SKIP per such section and is
+            # reported PARTIAL, not PASS. A SKIP in any other suite fails the job.
+            if grep -qE '^[[:space:]]*SKIP' "$out"; then
+              if [ "$f" = "verify-analytics-and-ai.js" ]; then
+                echo "PARTIAL $f (real-data repeats skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))"
+              else
+                echo "FAIL $f (a required check was skipped)"
+                exit 1
+              fi
+            else
+              echo "PASS $f"
+            fi
+            rm -f "$out"
           done
