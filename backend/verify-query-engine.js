@@ -824,12 +824,23 @@ const EXAMPLES = [
     }
 
     // ================================================================
-    section("8. Real-data smoke (WE FOUR) - independent aggregation, NOT the parity suite");
+    section("8. Reference date with no date passed (synthetic tenant A) + real-data smoke (WE FOUR) - independent aggregation, NOT the parity suite");
     // ================================================================
     {
+      // The reference-date rule needs no real data, so it runs on the synthetic tenant A (seeded above) and is checked in CI too.
+      const quarter = await executeQuery({ ...base, period: { kind: "current_quarter" }, compare: { mode: "like_for_like" }, metrics: ["invoiceAmount"] }, { tenantId: T_A });
+      // Decision 1 (2026-09-28): with no date passed, the engine uses the AI reporting rule - TODAY (was: the tenant's
+      // latest voucher). The current quarter therefore ends today, whatever the tenant's data holds.
+      const today = new Date();
+      const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const latestA = await Sale.findOne({ tenantId: T_A }).sort({ "header.voucherDate": -1 }).lean();
+      check("precondition: tenant A's latest voucher is not dated today (so 'today, not the latest voucher' is a real distinction)", !!latestA && latestA.header.voucherDate.toISOString().slice(0, 10) !== ymdLocal(today), latestA && latestA.header.voucherDate.toISOString());
+      check("relative period resolves via the reporting reference date (current quarter to date, comparison range echoed)", quarter.ok && quarter.assumptions.some((a) => a.code === "period_anchored_to_latest_data") && !!quarter.comparison.from);
+      check("the reference date is today, not the tenant's latest voucher (current quarter ends today)", ymdLocal(new Date(quarter.period.to)) === ymdLocal(today), quarter.period.to);
+
       const we = await Company.findOne({ companyName: "WE FOUR" }).lean();
       if (!we) {
-        console.log("  SKIPPED - the real WE FOUR tenant is not present in this database (this smoke check runs only where it exists)");
+        console.log("  SKIPPED - the three real-data checks need the real WE FOUR tenant, which is not present in this database (they run only where it exists)");
       } else {
         const tid = we.tenantId;
         const sc = { tenantId: tid, voucherStatus: "active" };
@@ -842,13 +853,6 @@ const EXAMPLES = [
         const [top] = await Sale.aggregate([{ $match: sc }, { $group: { _id: "$header.partyName", t: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { t: -1, _id: 1 } }, { $limit: 1 }]);
         const engTop = await executeQuery({ ...base, period: { kind: "all_time" }, groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 1 }, { tenantId: tid });
         check("top customer equals an independent aggregation", engTop.ok && engTop.rows[0].key.customer === top._id && near(engTop.rows[0].values.invoiceAmount, top.t, 1e-4));
-        const quarter = await executeQuery({ ...base, period: { kind: "current_quarter" }, compare: { mode: "like_for_like" }, metrics: ["invoiceAmount"] }, { tenantId: tid });
-        // Decision 1 (2026-09-28): with no date passed, the engine uses the AI reporting rule - TODAY (was: the tenant's
-        // latest voucher). The current quarter therefore ends today, whatever the tenant's data holds.
-        const today = new Date();
-        const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        check("relative period on real data resolves via the reporting reference date (current quarter to date, comparison range echoed)", quarter.ok && quarter.assumptions.some((a) => a.code === "period_anchored_to_latest_data") && !!quarter.comparison.from);
-        check("the reference date is today, not the tenant's latest voucher (current quarter ends today)", ymdLocal(new Date(quarter.period.to)) === ymdLocal(today), quarter.period.to);
       }
     }
 
