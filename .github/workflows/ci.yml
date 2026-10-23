@@ -134,7 +134,20 @@ jobs:
       # against them locally.
       - name: Run self-contained verify-*.js suites
         run: |
-          set -e
+          failed=0
+          partial=""
+          # Suites whose real-tenant oracle sections still skip here (CI has no WE FOUR / Nirmal data); their synthetic
+          # sections run and must pass, and each is reported PARTIAL, never PASS. Any other SKIP fails the job.
+          #   verify-query-engine.js     section 8: three all-time totals / top customer on real data (the reference-date
+          #                              checks of that section run on synthetic tenant A)
+          #   verify-return-analytics.js section G: engine = Mongo oracle on real Credit/Debit Notes (B1-B6 cover the
+          #                              same metrics on synthetic notes)
+          #   verify-return-ranking.js   section D: real top-N rankings and Nirmal's empty rankings (the default limit
+          #                              and truncation run on synthetic notes)
+          PARTIAL="verify-query-engine.js verify-return-analytics.js verify-return-ranking.js"
+          # Entirely real-data: compares the engine with the existing analytics on WE FOUR. Not run here; its synthetic
+          # counterpart verify-query-parity-synthetic.js runs below.
+          NOT_RUN="verify-query-parity.js"
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
@@ -176,6 +189,9 @@ jobs:
             verify-cost-forensic.js \
             verify-chat-management.js \
             verify-nlu-eval.js ; do
+            case " $NOT_RUN " in
+              *" $f "*) echo "NOT RUN $f (real-data only; needs the WE FOUR tenant)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
+            esac
             echo "::group::$f"
             out=$(mktemp)
             rc=0
@@ -184,20 +200,24 @@ jobs:
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
               echo "FAIL $f (exit $rc)"
-              exit 1
-            fi
-            # verify-analytics-and-ai.js runs its data checks on a synthetic fixture and repeats them on the real
-            # WE FOUR tenant when present; CI has no real tenant, so it prints one SKIP per such section and is
-            # reported PARTIAL, not PASS. A SKIP in any other suite fails the job.
-            if grep -qE '^[[:space:]]*SKIP' "$out"; then
-              if [ "$f" = "verify-analytics-and-ai.js" ]; then
-                echo "PARTIAL $f (real-data repeats skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))"
-              else
-                echo "FAIL $f (a required check was skipped)"
-                exit 1
-              fi
+              failed=1
+            elif grep -qE '^[[:space:]]*SKIP' "$out"; then
+              case " $PARTIAL " in
+                *" $f "*)
+                  n=$(grep -cE '^[[:space:]]*SKIP' "$out")
+                  echo "PARTIAL $f (real-data sections skipped: $n)"
+                  echo "::warning title=PARTIAL $f::$n real-data section(s) skipped; not a full pass"
+                  partial="$partial $f"
+                  ;;
+                *) echo "FAIL $f (a required check was skipped)"; failed=1 ;;
+              esac
             else
               echo "PASS $f"
             fi
             rm -f "$out"
           done
+          {
+            echo "### Verification suites"
+            echo "- PARTIAL (synthetic sections passed, real-data sections skipped):${partial:- none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $failed
