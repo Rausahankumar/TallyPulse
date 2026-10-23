@@ -14,15 +14,15 @@ import { separateListTrailers } from "../../lib/markdownText";
 // built-in URL sanitizer (strips javascript:/data: and other unsafe schemes) before this component ever
 // sees them, and are additionally forced to open safely (rel="noopener noreferrer").
 const COMPONENTS = {
-  h1: ({ children }) => <h3 className="mt-3 mb-1.5 text-[15px] font-semibold text-ink-900 first:mt-0">{children}</h3>,
-  h2: ({ children }) => <h3 className="mt-3 mb-1.5 text-[14.5px] font-semibold text-ink-900 first:mt-0">{children}</h3>,
-  h3: ({ children }) => <h4 className="mt-2.5 mb-1 text-[13.5px] font-semibold text-ink-900 first:mt-0">{children}</h4>,
-  h4: ({ children }) => <h4 className="mt-2 mb-1 text-[13.5px] font-semibold text-ink-800 first:mt-0">{children}</h4>,
-  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+  h1: ({ children }) => <h3 className="mt-4 mb-2 text-[16.5px] font-semibold text-ink-900 first:mt-0">{children}</h3>,
+  h2: ({ children }) => <h3 className="mt-4 mb-2 text-[15.5px] font-semibold text-ink-900 first:mt-0">{children}</h3>,
+  h3: ({ children }) => <h4 className="mt-3.5 mb-1.5 text-[14.5px] font-semibold text-ink-900 first:mt-0">{children}</h4>,
+  h4: ({ children }) => <h4 className="mt-3 mb-1 text-[14.5px] font-semibold text-ink-800 first:mt-0">{children}</h4>,
+  p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold text-ink-900">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
-  ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-0.5 last:mb-0">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-0.5 last:mb-0">{children}</ol>,
+  ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1 marker:text-ink-400 last:mb-0">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1 marker:text-ink-400 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="pl-0.5">{children}</li>,
   hr: () => <hr className="my-2.5 border-surface-border" />,
   blockquote: ({ children }) => (
@@ -39,16 +39,16 @@ const COMPONENTS = {
   // react-markdown v10 no longer tells `code` whether it is inline; inline styling is the default and a
   // fenced block's inner <code> is reset by the `pre` wrapper below.
   code: ({ children }) => (
-    <code className="rounded bg-white/70 px-1 py-0.5 font-mono text-[12px] text-ink-800">{children}</code>
+    <code className="rounded bg-surface-alt px-1 py-0.5 font-mono text-[12px] text-ink-800">{children}</code>
   ),
   pre: ({ children }) => (
-    <pre className="mb-2 overflow-x-auto rounded-lg bg-white/70 p-2.5 text-[12px] last:mb-0 [&_code]:bg-transparent [&_code]:p-0">
+    <pre className="mb-2 overflow-x-auto rounded-lg bg-surface-alt p-2.5 text-[12px] last:mb-0 [&_code]:bg-transparent [&_code]:p-0">
       {children}
     </pre>
   ),
   table: ({ children }) => (
-    <div className="mb-2 overflow-x-auto rounded-lg border border-surface-border last:mb-0">
-      <table className="w-full min-w-max border-collapse text-[12.5px]">{children}</table>
+    <div className="mb-3 overflow-x-auto rounded-lg border border-surface-border last:mb-0">
+      <table className="w-full min-w-max border-collapse text-[13px]">{children}</table>
     </div>
   ),
   thead: ({ children }) => <thead className="bg-surface-alt">{children}</thead>,
@@ -57,12 +57,12 @@ const COMPONENTS = {
   // `style` here is react-markdown/remark-gfm's own alignment output, read straight from the source
   // Markdown's `---:` / `:---` column syntax - never guessed or inferred from cell content.
   th: ({ children, style }) => (
-    <th style={style} className="whitespace-nowrap px-3 py-1.5 text-left font-medium text-ink-700">
+    <th style={style} className="whitespace-nowrap px-3 py-2 text-left font-medium text-ink-700">
       {children}
     </th>
   ),
   td: ({ children, style }) => (
-    <td style={style} className="px-3 py-1.5 align-top break-words text-ink-800">
+    <td style={style} className="px-3 py-2 align-top break-words tabular-nums text-ink-800">
       {children}
     </td>
   ),
@@ -78,7 +78,7 @@ const REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 export default function MarkdownMessage({ text }) {
   if (!text) return null;
   return (
-    <div className="text-[13.5px] leading-relaxed">
+    <div className="text-[14.5px] leading-7 text-ink-800">
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS}>
         {separateListTrailers(text)}
       </ReactMarkdown>

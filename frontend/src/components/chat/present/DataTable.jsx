@@ -7,7 +7,7 @@ export default function DataTable({ columns, rows, totals, highlightCurrent = fa
   const head = "px-2 py-2 sm:px-3 text-[11.5px] font-medium uppercase tracking-wide text-ink-500";
   return (
     <div className="overflow-x-auto rounded-lg border border-surface-border bg-white">
-      <table className="w-full border-collapse text-[12.5px]">
+      <table className="w-full border-collapse text-[13px]">
         <thead className="bg-surface-alt">
           <tr>
             {columns.map((c) => (

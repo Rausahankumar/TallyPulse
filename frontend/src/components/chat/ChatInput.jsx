@@ -16,7 +16,7 @@ export default function ChatInput({ onSend, onStop, sending }) {
   }
 
   return (
-    <form onSubmit={submit} className="flex items-center gap-2 border-t border-surface-border bg-white p-3">
+    <form onSubmit={submit} className="flex items-center gap-2 bg-white px-3 pt-2 pb-1.5">
       <input
         value={value}
         onChange={(e) => setValue(e.target.value)}
