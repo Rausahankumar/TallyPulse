@@ -17,6 +17,8 @@
 // cross-tenant data leak.
 // --------------------------------------------------
 
+const dateRanges = require("./dateRanges");
+
 const VALID_STATUSES = ["active", "cancelled", "deleted"];
 
 // Default analytics scope: only vouchers Tally currently considers real
@@ -48,16 +50,19 @@ function assertValidStatuses(statuses) {
   }
 }
 
-function normalizeDateBound(value, label) {
+// A bound is a PERIOD BOUNDARY: a local calendar day (what periodEngine/dateRanges produce, or a YYYY-MM-DD string). Voucher dates are
+// stored as UTC midnight of their Tally date, so the bound is converted to the stored form of its calendar day (see dateRanges) - a
+// raw instant comparison would move vouchers across a period edge by the server's UTC offset.
+function normalizeDateBound(value, label, edge) {
   if (value === undefined || value === null) return null;
 
-  const parsed = value instanceof Date ? value : new Date(value);
+  const parsed = value instanceof Date ? value : dateRanges.parseCalendarDay(value);
 
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`analyticsScope: invalid ${label} date: "${value}".`);
   }
 
-  return parsed;
+  return edge === "end" ? dateRanges.storedDayEnd(parsed) : dateRanges.storedDayStart(parsed);
 }
 
 /**
@@ -70,9 +75,9 @@ function normalizeDateBound(value, label) {
  *   authenticated/authorized company context, never from user or AI
  *   input.
  * @param {Date|string} [options.from] - inclusive lower bound on
- *   header.voucherDate.
+ *   header.voucherDate: the first calendar day of the period.
  * @param {Date|string} [options.to] - inclusive upper bound on
- *   header.voucherDate.
+ *   header.voucherDate: the last calendar day of the period.
  * @param {string[]} [options.statuses] - which voucherStatus values to
  *   include. Defaults to ["active"] only. Pass explicitly (e.g.
  *   ["active", "cancelled"]) only for views that genuinely need to see
@@ -93,8 +98,8 @@ function buildVoucherMatchStage({ tenantId, from, to, statuses } = {}) {
     voucherStatus: { $in: effectiveStatuses },
   };
 
-  const fromDate = normalizeDateBound(from, "from");
-  const toDate = normalizeDateBound(to, "to");
+  const fromDate = normalizeDateBound(from, "from", "start");
+  const toDate = normalizeDateBound(to, "to", "end");
 
   if (fromDate || toDate) {
     match["header.voucherDate"] = {};

@@ -101,9 +101,10 @@ async function seed() {
     voucher(T_C, "S-C3", "2025-11-07", "Tie B", 0.2, [["ItemB", 1, 0.2]]),
   ]);
   await Purchase.insertMany([
-    voucher(T_A, "P-1", "2025-10-02", "SupplierOne", 5900, [["ItemX", 50, 5000]]),
-    voucher(T_A, "P-2", "2025-09-10", "SupplierTwo", 1180, [["ItemY", 10, 1000]]),
-    voucher(T_B, "P-B1", "2025-10-02", "SupplierOne", 777777, [["ItemX", 1, 700000]]),
+    // Purchase item lines are stored NEGATIVE (Tally's sign for the buying side); the voucher total is an absolute value.
+    voucher(T_A, "P-1", "2025-10-02", "SupplierOne", 5900, [["ItemX", 50, -5000]]),
+    voucher(T_A, "P-2", "2025-09-10", "SupplierTwo", 1180, [["ItemY", 10, -1000]]),
+    voucher(T_B, "P-B1", "2025-10-02", "SupplierOne", 777777, [["ItemX", 1, -700000]]),
   ]);
   await StockItemMaster.insertMany([
     master(T_A, "ItemX", "GroupOne"),
@@ -271,6 +272,17 @@ const EXAMPLES = [
       check("quantity filtered to ONE product has no unit warning", ok2.ok && !ok2.warnings.some((w) => w.code === "warn_mixed_units"));
       const ok3 = V({ ...base, metrics: ["quantity"], filters: [{ dim: "product", op: "contains_ci", value: "Item" }] });
       check("quantity filtered by a product fragment (many products) still warns", ok3.ok && ok3.warnings.some((w) => w.code === "warn_mixed_units"));
+      const retBase = { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_fy" } };
+      const rq1 = V({ ...retBase, metrics: ["returnQuantity"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnQuantity", dir: "desc" }] });
+      check("returnQuantity by customer carries the mixed_units warning (declared in its caveatRules, now enforced)", rq1.ok && rq1.warnings.some((w) => w.code === "warn_mixed_units"), JSON.stringify(rq1.warnings));
+      const rq2 = V({ ...retBase, metrics: ["returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnQuantity", dir: "desc" }] });
+      check("returnQuantity by product has no unit warning", rq2.ok && !rq2.warnings.some((w) => w.code === "warn_mixed_units"));
+      const rq3 = V({ ...retBase, metrics: ["returnQuantity"], filters: [{ dim: "product", op: "eq_ci", value: "ItemX" }] });
+      check("returnQuantity filtered to ONE product has no unit warning", rq3.ok && !rq3.warnings.some((w) => w.code === "warn_mixed_units"));
+      const rq4 = V({ ...retBase, metrics: ["returnQuantity"] });
+      check("returnQuantity across all products warns", rq4.ok && rq4.warnings.some((w) => w.code === "warn_mixed_units"));
+      const rq5 = V({ ...retBase, metrics: ["returnAmount"] });
+      check("a return amount (no quantity) carries no unit warning", rq5.ok && !rq5.warnings.some((w) => w.code === "warn_mixed_units"));
       const inv = V({ ...base, filters: [{ dim: "product", op: "eq_ci", value: "ItemX" }] });
       check("invoice total filtered by a product warns it is the whole invoice, not the product's share", inv.ok && inv.warnings.some((w) => w.code === "warn_invoice_total_not_product_share"));
       const rel = V(base);
@@ -357,6 +369,25 @@ const EXAMPLES = [
         }
       }
       check(`all ${pipelines} pipelines compiled from the ${validated.length} example plans begin EXACTLY with buildVoucherMatchStage({tenantId, range})`, allScoped && pipelines > 40, firstBad);
+    }
+
+    {
+      // Purchase item amounts are stored NEGATIVE (Tally's sign): the catalog's entitySign makes the compiler negate them for the purchase entity only,
+      // as a plain sign flip (not an absolute value), in the direct pipeline and in the productGroup roll-up. Sales and the voucher totals are untouched.
+      const NEG = '{"$multiply":[-1,"$inventory.amount"]}';
+      const pipes = (p) => compileAll(V(p)).queries.map((q) => JSON.stringify(q.pipeline));
+      const pByProduct = pipes({ ...purchaseBase, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      check("the catalog declares the purchase sign on lineAmount (data, not code)", same(catalog.CATALOG.metrics.lineAmount.aggregation.entitySign, { purchase: -1 }) && !("entitySign" in catalog.CATALOG.metrics.invoiceAmount.aggregation) && !("entitySign" in catalog.CATALOG.metrics.purchaseAmount.aggregation));
+      check("purchase lineAmount (grouped and totals pipelines) negates the stored item amount", pByProduct.length === 2 && pByProduct.every((p) => p.includes('"m_lineAmount":{"$sum":' + NEG + "}") && !p.includes("$abs")), pByProduct[0]);
+      const pByGroup = pipes({ ...purchaseBase, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      check("the productGroup roll-up negates both the metric and the roll-up amount that feeds the mapped/unmapped report", pByGroup.every((p) => p.includes('"m_lineAmount":{"$sum":' + NEG + "}") && p.includes('"x_amount":{"$sum":' + NEG + "}")), pByGroup[0]);
+      const sByProduct = pipes({ ...base, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      const sByGroup = pipes({ ...base, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      check("sales lineAmount (direct and roll-up) is NOT negated", [...sByProduct, ...sByGroup].every((p) => !p.includes("$multiply") && p.includes('"$sum":"$inventory.amount"')));
+      const pTotal = pipes({ ...purchaseBase, period: OCT });
+      check("the purchase voucher total (header.voucherTotalAmount, already absolute) is NOT negated", pTotal.every((p) => !p.includes("$multiply") && p.includes('"$sum":"$header.voucherTotalAmount"')));
+      const pQty = pipes({ ...purchaseBase, period: OCT, metrics: ["quantity"], groupBy: [{ dim: "product" }], sort: [{ by: "quantity", dir: "desc" }] });
+      check("purchase quantity is NOT negated (only the amount is signed)", pQty.every((p) => !p.includes("$multiply")));
     }
 
     // seeded fuzz: random plans -> validate -> compile -> prove scope
@@ -618,6 +649,9 @@ const EXAMPLES = [
       check("unmapped lines are excluded from groups and REPORTED (1 line, 100)", g.rows.length === 2 && g.mapping.unmappedLines === 1 && near(g.mapping.unmappedLineAmount, 100) && g.mapping.mappedLines === 3 && near(g.mapping.mappedLineAmount, 2900) && g.mapping.classificationBasis === "current_stock_item_master");
       check("...group totals exclude the unmapped line (2900)", near(g.totals.values.lineAmount, 2900));
       check("quantity by productGroup carries the mixed_units warning", g.warnings.some((w) => w.code === "warn_mixed_units"));
+      const uw = g.warnings.find((w) => w.code === "warn_unmapped_product_group_lines");
+      check("the unmapped lines are DISCLOSED as a warning (1 line, 100 before tax, left out of the groups and their total)", !!uw && /\b1 item line/.test(uw.message) && /100/.test(uw.message) && /left out of these groups and of their total/.test(uw.message), uw && uw.message);
+      check("a product grouping (nothing unmapped) carries no such warning", !p.warnings.some((w) => w.code === "warn_unmapped_product_group_lines"));
 
       const sc = await run({ ...base, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "customer" }, { dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] });
       check("two-dimension grouping (customer x product) returns composite keys", sc.ok && sc.rows.length === 4 && sc.rows[0].key.customer === "Gamma Mart" && sc.rows[0].key.product === "ItemX" && near(sc.rows[0].values.lineAmount, 1400));
@@ -748,6 +782,18 @@ const EXAMPLES = [
       check("purchases by product: ItemX 5000 / qty 50", pr.ok && near(pr.rows[0].values.lineAmount, 5000) && pr.rows[0].values.quantity === 50);
       const pg = await run({ ...purchaseBase, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] });
       check("purchases by productGroup: GroupOne 5000 (tenant A's master, not B's)", pg.ok && pg.rows.length === 1 && pg.rows[0].key.productGroup === "GroupOne");
+      const pl = await run({ ...purchaseBase, period: { kind: "all_time" }, metrics: ["lineAmount"] });
+      check("purchase lineAmount total is POSITIVE (6000) although the stored item amounts are negative", pl.ok && near(pl.totals.values.lineAmount, 6000), JSON.stringify(pl.totals));
+      const plp = await run({ ...purchaseBase, period: { kind: "all_time" }, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      check("purchases by product DESC ranks the largest purchase first (ItemX 5000, then ItemY 1000) - not the smallest", plp.ok && plp.rows.map((r) => r.key.product).join() === "ItemX,ItemY" && near(plp.rows[0].values.lineAmount, 5000) && near(plp.rows[1].values.lineAmount, 1000));
+      const pla = await run({ ...purchaseBase, period: { kind: "all_time" }, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount", dir: "asc" }] });
+      check("...and ASC ranks the smallest first", pla.ok && pla.rows.map((r) => r.key.product).join() === "ItemY,ItemX");
+      const plg = await run({ ...purchaseBase, period: { kind: "all_time" }, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] });
+      check("purchases by productGroup (rolled up in app code) are positive too: GroupOne 5000, GroupTwo 1000, total 6000", plg.ok && near(plg.rows[0].values.lineAmount, 5000) && near(plg.rows[1].values.lineAmount, 1000) && near(plg.totals.values.lineAmount, 6000), JSON.stringify(plg.rows.map((r) => r.values)));
+      const plc = await run({ ...purchaseBase, period: OCT, compare: { mode: "custom", period: SEP }, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "lineAmount.delta", dir: "desc" }] });
+      check("purchase product comparison has the right direction: ItemX +5000 (new), ItemY -1000 (stopped)", plc.ok && plc.rows[0].key.product === "ItemX" && near(plc.rows[0].comparison.lineAmount.delta, 5000) && near(plc.rows[1].comparison.lineAmount.delta, -1000), JSON.stringify(plc.rows.map((r) => r.comparison)));
+      const sl = await run({ ...base, period: OCT, metrics: ["lineAmount"] });
+      check("the sign rule is purchase-only: sales lineAmount is unchanged (3000 = 2400 + 500 + 100)", sl.ok && near(sl.totals.values.lineAmount, 3000), JSON.stringify(sl.totals));
       const pc = await run({ ...purchaseBase, period: OCT, compare: { mode: "custom", period: SEP }, metrics: ["purchaseAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "purchaseAmount.delta", dir: "desc" }] });
       check("purchase comparison: SupplierOne new (+5900, pct null), SupplierTwo stopped (-1180, -100%)", pc.ok && pc.rows[0].key.supplier === "SupplierOne" && pc.rows[0].comparison.purchaseAmount.deltaPct === null && near(pc.rows[1].comparison.purchaseAmount.deltaPct, -100));
     }
@@ -796,6 +842,10 @@ const EXAMPLES = [
       check("roll-up sums items into their group (ItemX + ItemY -> G-One 150 / qty 15)", r.ok && r.rows.length === 1 && r.rows[0].key.productGroup === "G-One" && near(r.rows[0].values.lineAmount, 150) && r.rows[0].values.quantity === 15);
       check("...the unmapped item is EXCLUDED from groups and totals but REPORTED (1 line, 25)", near(r.totals.values.lineAmount, 150) && r.mapping.unmappedLines === 1 && near(r.mapping.unmappedLineAmount, 25) && r.mapping.mappedLines === 6 && near(r.mapping.mappedLineAmount, 150));
       check("the Stock Item master was read exactly once, for the AUTHORIZED tenant only", mapCalls.length === 1 && mapCalls[0] === T_A);
+      const uwarn = r.warnings.find((w) => w.code === "warn_unmapped_product_group_lines");
+      check("...and DISCLOSED to the user as a warning: count and pre-tax amount, left out of the groups and of their total", !!uwarn && /^1 item line \(₹25 before tax\)/.test(uwarn.message) && /left out of these groups and of their total/.test(uwarn.message), uwarn && uwarn.message);
+      const mappedAll = await executeQuery({ ...base, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] }, { tenantId: T_A, loadStockGroupMap: async () => new Map([["ItemX", "G-One"], ["ItemY", "G-One"], ["ItemUnmapped", "G-Two"]]), runAggregate: async () => raw });
+      check("a fully mapped roll-up carries no unmapped-lines warning", mappedAll.ok && mappedAll.mapping.unmappedLines === 0 && !mappedAll.warnings.some((w) => w.code === "warn_unmapped_product_group_lines"));
 
       const plain = await executeQuery({ ...base, period: OCT, metrics: ["invoiceAmount"] }, { tenantId: T_A, ...spyCtx });
       check("queries with no productGroup never touch the master", plain.ok && mapCalls.length === 1 && nameCalls.length === 0);
@@ -821,6 +871,39 @@ const EXAMPLES = [
 
       const overflow = await executeQuery({ ...base, period: OCT, metrics: ["lineAmount"], groupBy: [{ dim: "productGroup" }], sort: [{ by: "lineAmount", dir: "desc" }] }, { tenantId: T_A, loadStockGroupMap: async () => new Map(), runAggregate: async () => Array.from({ length: LIMITS.maxRollupRows + 1 }, (_, i) => ({ key: { productGroup: `i${i}` }, lineAmount: 1, __lines: 1, __amount: 1 })) });
       check("a roll-up beyond maxRollupRows is refused (result_too_large), never silently truncated", overflow.ok === false && overflow.errors[0].code === "result_too_large");
+    }
+
+    // ================================================================
+    section("7c. Business dates land on the right day in ANY server time zone (real executor, stored UTC-midnight vouchers)");
+    // ================================================================
+    {
+      // Fixtures (tenant A, active): Sep 5 = 1180, Sep 25 = 2360, Oct 5 = 590, Oct 15 = 1770, Oct 25 = 1300 (+ a cancelled Oct 10 and a deleted Oct 12).
+      // verify-timezone-boundaries.js proves the same on the compiled match for six zones; this section runs the whole executor against MongoDB
+      // and is meant to be run under different TZ values (TZ=America/New_York node verify-query-engine.js).
+      const total = async (from, to) => {
+        const r = await run({ ...base, period: { kind: "custom", from, to }, metrics: ["invoiceAmount", "invoiceCount"] });
+        return r.ok ? { amount: r.totals.values.invoiceAmount, n: r.totals.values.invoiceCount } : r.errors;
+      };
+      const t = async (from, to, amount, n) => { const x = await total(from, to); return near(x.amount, amount) && x.n === n; };
+      check("a one-day range [Oct 5, Oct 5] returns exactly that day's voucher (590)", await t("2025-10-05", "2025-10-05", 590, 1));
+      check("the day before it [Oct 4, Oct 4] returns nothing", await t("2025-10-04", "2025-10-04", 0, 0));
+      check("the day after it [Oct 6, Oct 6] returns nothing", await t("2025-10-06", "2025-10-06", 0, 0));
+      check("first and last day are both inclusive: [Sep 25, Oct 5] = 2360 + 590", await t("2025-09-25", "2025-10-05", 2950, 2));
+      check("[Oct 5, Oct 15] = 590 + 1770 (both edge days included, Oct 25 and Sep 25 not)", await t("2025-10-05", "2025-10-15", 2360, 2));
+      check("[Oct 16, Oct 24] sits between two vouchers and is empty", await t("2025-10-16", "2025-10-24", 0, 0));
+      check("[Oct 25, Oct 25] returns the voucher dated that day (1300)", await t("2025-10-25", "2025-10-25", 1300, 1));
+      const mtd = await run({ ...base, period: { kind: "current_month" }, metrics: ["invoiceAmount", "invoiceCount"] });
+      check("current_month with the reference date Oct 20 = Oct 1..Oct 20: Oct 5 + Oct 15 (2360); Oct 25 is not in it", mtd.ok && near(mtd.totals.values.invoiceAmount, 2360) && mtd.totals.values.invoiceCount === 2, mtd.ok ? JSON.stringify(mtd.totals) : JSON.stringify(mtd.errors));
+      const prev = await run({ ...base, period: { kind: "previous_month" }, metrics: ["invoiceAmount", "invoiceCount"] });
+      check("previous_month = September: Sep 5 + Sep 25 (3540), Oct 5 is not in it", prev.ok && near(prev.totals.values.invoiceAmount, 3540) && prev.totals.values.invoiceCount === 2, prev.ok ? JSON.stringify(prev.totals) : JSON.stringify(prev.errors));
+      const days = await run({ ...base, period: { kind: "custom", from: "2025-10-01", to: "2025-10-31" }, groupBy: [{ dim: "date", bucket: "day" }], sort: [{ by: "date", dir: "asc" }] });
+      check("daily grouping lands each voucher on its own business date (Oct 5, Oct 15, Oct 25), with only the days that have data", days.ok && days.rows.map((r) => r.key.date.start + "=" + r.values.invoiceAmount).join() === "2025-10-05=590,2025-10-15=1770,2025-10-25=1300", days.ok ? days.rows.map((r) => r.key.date.start).join() : JSON.stringify(days.errors));
+      const months = await run({ ...base, period: { kind: "custom", from: "2025-09-01", to: "2025-10-31" }, groupBy: [{ dim: "date", bucket: "month" }], sort: [{ by: "date", dir: "asc" }] });
+      check("monthly grouping: 2025-09 = 3540 and 2025-10 = 3660 (August 31 / November 1 edges do not leak)", months.ok && months.rows.map((r) => r.key.date.label + "=" + r.values.invoiceAmount).join() === "2025-09=3540,2025-10=3660", months.ok ? months.rows.map((r) => r.key.date.label).join() : JSON.stringify(months.errors));
+      const weeks = await run({ ...base, period: { kind: "custom", from: "2025-10-01", to: "2025-10-31" }, groupBy: [{ dim: "date", bucket: "week" }], sort: [{ by: "date", dir: "asc" }] });
+      check("weekly grouping starts on Monday: Oct 5 (Sun) -> week of 2025-09-29, Oct 15 (Wed) -> 2025-10-13, Oct 25 (Sat) -> 2025-10-20", weeks.ok && weeks.rows.map((r) => r.key.date.start).join() === "2025-09-29,2025-10-13,2025-10-20", weeks.ok ? weeks.rows.map((r) => r.key.date.start).join() : JSON.stringify(weeks.errors));
+      const total1 = await run({ ...base, period: { kind: "custom", from: "2025-10-01", to: "2025-10-31" }, metrics: ["invoiceAmount"] });
+      check("August-total-style check: the October TOTAL (3660) equals the sum of the October DAILY rows (590 + 1770 + 1300)", total1.ok && days.ok && near(total1.totals.values.invoiceAmount, 3660) && near(days.rows.reduce((a, r) => a + r.values.invoiceAmount, 0), 3660));
     }
 
     // ================================================================

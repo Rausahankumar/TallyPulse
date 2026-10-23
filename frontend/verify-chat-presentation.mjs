@@ -99,7 +99,7 @@ section("Trend");
   const vals = [6071377.93, 4223011.26, 4085714.1, 5716599.12, 4344775.5];
   const rows = months.map((m, i) => ({ key: { date: { bucket: "month", start: `${m}-01`, label: m } }, values: { invoiceAmount: vals[i], invoiceCount: 100 + i } }));
   const html = render(message(plan({ period: custom("2025-04-01", "2025-08-31"), groupBy: [{ dim: "date", bucket: "month" }] }), base({ groupBy: [{ dim: "date", bucket: "month" }], rows, totals: { values: { invoiceAmount: 24441477.91, invoiceCount: 510 } } })));
-  check("line chart container + a Month | Sales | Orders table", html.includes('role="img"') && /trend over 5 periods/.test(html) && html.includes(">Month<") && html.includes(">Orders<"));
+  check("line chart container + a Month | Sales | Invoices table (an invoice count is never labelled Orders)", html.includes('role="img"') && /trend over 5 periods/.test(html) && html.includes(">Month<") && html.includes(">Invoices<") && !html.includes(">Orders<"));
   check("every month's exact value is listed, then the engine's total", vals.every((v) => html.includes(fmtMoney(v))) && html.includes("Total") && html.includes(fmtMoney(24441477.91)));
   check("month labels read 'Apr 2025' ... 'Aug 2025'", ["Apr 2025", "May 2025", "Jun 2025", "Jul 2025", "Aug 2025"].every((l) => html.includes(l)));
 }
@@ -109,10 +109,10 @@ section("Comparison");
   const r = base({ comparison: { mode: "custom", label: "Custom comparison range" }, totals: { values: { invoiceAmount: 301438, invoiceCount: 9 }, comparison: { invoiceAmount: { previous: 322427, delta: -20989, deltaPct: -6.5096905656164035 }, invoiceCount: { previous: 11, delta: -2, deltaPct: -18.181818181818183 } } } });
   const p = plan({ period: custom("2025-09-01", "2025-09-30"), compare: { mode: "custom", period: custom("2025-08-01", "2025-08-31") }, filters: [{ dim: "customer", op: "eq_ci", value: "DHINGRA GENERAL STORE" }] });
   const html = render(message(p, r));
-  check("table: Period | Sales | Orders | Avg order with August then September", html.includes(">Period<") && html.includes("Avg order") && (() => { const body = html.slice(html.indexOf("<tbody")); return body.indexOf("August 2025") > -1 && body.indexOf("August 2025") < body.indexOf("September 2025"); })());
+  check("table: Period | Sales | Invoices | Avg invoice with August then September", html.includes(">Period<") && html.includes("Avg invoice") && !html.includes("Avg order") && (() => { const body = html.slice(html.indexOf("<tbody")); return body.indexOf("August 2025") > -1 && body.indexOf("August 2025") < body.indexOf("September 2025"); })());
   check("both periods' exact values are shown", html.includes(fmtMoney(322427)) && html.includes(fmtMoney(301438)));
   check("the change is explicit: amount, wording, percent", html.includes(`${fmtMoney(20989)} less`) && html.includes("-6.5%"));
-  check("the derived column is footnoted", html.includes("Amount ÷ orders") && html.includes("Avg order *"));
+  check("the derived column is footnoted", html.includes("Amount ÷ invoices") && html.includes("Avg invoice *"));
   check("customer scope chip", html.includes("DHINGRA GENERAL STORE") && html.includes("Customer:"));
   check("comparison chart present", html.includes('role="img"') && /Sales: .* versus /.test(html));
 }

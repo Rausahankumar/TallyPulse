@@ -61,12 +61,96 @@ const REVENUE_ASSUMPTION = {
 const REVENUE_RE = /\brevenues?\b/i;
 const mentionsRevenue = (text) => typeof text === "string" && REVENUE_RE.test(text);
 
+// Product decisions D1-D3 (final). Net sales / turnover = invoice sales AFTER returns and BEFORE tax; invoice sales = BEFORE tax and BEFORE returns.
+// The engine has no invoice-level total before tax and cannot combine sales with returns in one figure, so these terms are REFUSED with the
+// catalog's own reason - never answered with a nearby number (the sales total includes tax; revenue is the item lines only). An "order" is not
+// an invoice (D1): an order question is never answered from invoice data. Enforced here, on whatever plan the model produced.
+//
+// The guards read the question after a light normalisation (case, Unicode width, zero-width characters, hyphens/underscores) and do not depend on
+// the plan's shape, except where the question names no noun of its own: a follow-up such as "now exclude tax" is judged against the plan the model
+// produced AND the previous turn's plan, so it cannot turn a tax-inclusive total into a "before tax" figure (or swap in the item-line revenue).
+const normalizeTerms = (value) =>
+  String(value)
+    .normalize("NFKC")
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, "")
+    .toLowerCase()
+    .replace(/[-_\u2010-\u2015]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+// ---- D3: net sales / turnover / "after returns"
+const RETURNS_WORD = "(?:sales\\s+)?(?:returns?|credit\\s+notes?)";
+const NET_SALES_TERMS = [
+  /\bnett?\s?sales?\b/,
+  /\bturn\s?over\b/,
+  // a sales-like noun, then "after / net of / minus ... returns"
+  new RegExp("\\b(?:sales?|invoices?)\\b[^.?!]{0,30}\\b(?:after|net\\s+of|less|minus|excluding|without|deducting|adjusted\\s+for)\\s+(?:the\\s+)?" + RETURNS_WORD + "\\b"),
+  // no noun (a follow-up: "now deduct returns"): only verbs that cannot mean "customers with less/no returns"
+  new RegExp("\\b(?:deduct(?:ing)?|subtract(?:ing)?|net(?:ting)?\\s+of|minus|after|adjust(?:ed|ing)?\\s+for)\\s+(?:the\\s+|all\\s+|any\\s+)?" + RETURNS_WORD + "\\b"),
+  // Hinglish: "returns ke baad", "returns hata ke", "credit note minus karke"
+  new RegExp("\\b(?:returns?|credit\\s+notes?)\\s+(?:ko\\s+|ke\\s+)?(?:baad|hata|nikal|ghata|minus|kam\\s?kar|alag)\\w*"),
+];
+
+// ---- D2: invoice sales / "excluding tax" (before tax)
+const TAX = "(?:[cis]?gst|tax(?:es)?|vat)";
+const TAX_NOUN = "(?:sales?|invoices?|purchases?|billing|bills?)";
+const TAX_OFF = "(?:" + [
+  "(?:excluding|excludes?|excluded|exclusive\\s+of|excl\\.?|before|without|w/o|net\\s+of|less|minus|deduct(?:ing)?|removing)\\s+(?:the\\s+|any\\s+|all\\s+)?" + TAX,
+  "(?:pre|ex)\\s?" + TAX,
+  "(?:bina|baghair|bagair)\\s+" + TAX,
+  TAX + "\\s+(?:ke\\s+)?(?:bina|baghair|bagair)",
+  TAX + "\\s+(?:ko\\s+)?(?:hata|nikal|alag|ghata|minus)\\w*",
+].join("|") + ")\\b";
+const TAX_OFF_RE = new RegExp("\\b" + TAX_OFF);
+const INVOICE_SALES_TERMS = [
+  /\binvoice\s?sales?\b/,
+  new RegExp("\\b" + TAX_NOUN + "\\b[^.?!]{0,30}\\b" + TAX_OFF),
+  new RegExp("\\b" + TAX_OFF + "[^.?!]{0,30}\\b" + TAX_NOUN + "\\b"),
+  /\btaxable\s+(?:sales?|purchases?|value|amount)\b/,
+];
+// The amounts that are invoice TOTALS including tax (catalog amountBasis): a list shows them as its amount column.
+const carriesVoucherTotal = (plan) =>
+  !!plan && (plan.mode === "list" || (plan.metrics || []).some((id) => CATALOG_METRICS[id] && CATALOG_METRICS[id].amountBasis === "voucher_total_incl_tax"));
+
+// ---- D1: orders. Plural "orders" always; singular "order" only in its commerce senses (never "in descending order", "order by", "in order to").
+const ORDER_SORT_SENSE = /\b(?:ascending|descending|alphabetical|alphabetic|chronological|increasing|decreasing|reverse|numerical|sorted|sort)\s+order\b|\bin\s+(?:the\s+)?order\b|\border\s+by\b/g;
+const ORDER_TERMS = [
+  /\borders\b/,
+  /\b(?:an?|the|my|our|each|every|per|many|few|any|some|more|all|no|pending|recent|average|avg|mean|total|number\s+of|count\s+of|no\s+of|purchase|sales?|customer|supplier|repeat|first|last|new|biggest|largest|smallest|single|ek)\s+order\b/,
+  /\border\s+(?:value|size|count|total|amount|number|volume|quantity|frequency|history|book|booking|kitn\w*|kya|ka|ki|ke|aaye|aaya|hue|hua|list|dikha\w*|batao|detail\w*)\b/,
+];
+const mentionsOrders = (t) => {
+  const commerce = t.replace(ORDER_SORT_SENSE, " ");
+  return ORDER_TERMS.some((re) => re.test(commerce));
+};
+const INVOICE_WORD_RE = /\binvoic\w*/; // invoice, invoices, invoiced: the user's own bridge from "orders" to what TallyPulse holds
+const ORDERS_REASON = "TallyPulse has no order data: its counts and averages are of sales or purchase invoices, not orders. If you mean invoices, ask for the number of invoices or the average invoice value.";
+const catalogReason = (id) => ((catalog.CATALOG.unsupported || []).find((u) => u.id === id) || {}).reason || "This cannot be calculated.";
+const CATALOG_METRICS = catalog.CATALOG.metrics;
+
+/**
+ * A refusal when the question uses a term the engine cannot calculate (D1-D3) and the model nevertheless produced a plan; else null.
+ * @param {string} question the user's question
+ * @param {object} plan the plan the model produced (schema-parsed)
+ * @param {object|null} [previousPlan] the previous turn's plan, for a follow-up that names no noun of its own
+ */
+function uncalculableTermRefusal(question, plan, previousPlan = null) {
+  const t = normalizeTerms(question);
+  if (NET_SALES_TERMS.some((re) => re.test(t))) return { status: "unsupported", route: "honest_response", source: "term_guard", code: "net_sales_unsupported", reason: catalogReason("net_of_returns") };
+  // "revenue excluding tax" is its own, defined figure (pre-tax item lines, with its note): the revenue guard governs it, not this one.
+  const definedRevenue = mentionsRevenue(question) && isRevenuePlan(plan);
+  const taxOffOnTotal = !definedRevenue && TAX_OFF_RE.test(t) && (carriesVoucherTotal(plan) || carriesVoucherTotal(previousPlan));
+  if (INVOICE_SALES_TERMS.some((re) => re.test(t)) || taxOffOnTotal) return { status: "unsupported", route: "honest_response", source: "term_guard", code: "invoice_sales_unsupported", reason: catalogReason("tax_breakdown") };
+  if (mentionsOrders(t) && !INVOICE_WORD_RE.test(t)) return { status: "needs_clarification", route: "honest_response", source: "term_guard", code: "orders_not_invoices", reason: ORDERS_REASON };
+  return null;
+}
+
 // "New customer/supplier" needs the ledger master; it cannot be read off a comparison of two periods.
 const NEW_PARTY_REASON = 'A "new customer" (or supplier) is one whose Tally ledger was created in the period and who traded in it. That cannot be read off a comparison of two periods (a returning customer is not new), so ask it directly with one period, for example "new customers this month".';
 // Decision 2 (final, 2026-09-28): "this month vs last month" = month to date vs the COMPLETE previous calendar month.
 const MONTH_FULL_NOTE = { code: "month_vs_complete_previous_month", message: 'This month so far is compared with the complete previous month (the product\'s standard month comparison). Ask for "same period last month" to compare the same days.' };
 
-const { CATALOG, LIMITS } = catalog;
+const { CATALOG } = catalog;
 
 const PLANNER_TOOL_NAME = "submit_query_plan";
 const PLANNER_MAX_TOKENS = 700;
@@ -89,25 +173,47 @@ const NAME_DIMENSIONS = new Set(["customer", "supplier", "product", "productGrou
 
 let memo = null;
 
-function buildCatalogDigest() {
-  const metricLines = Object.values(CATALOG.metrics)
+// What the model is told about the data comes from the catalog (semanticCatalog.js), the single source of truth: each
+// metric's scope, grain and - where its meaning is not obvious from its name - the catalog's own description; the validator
+// rules the schema cannot express; and the list of what cannot be answered. Storage
+// paths, aggregation formulas, parity oracles and developer notes are never sent. Only the planner's own wording (output
+// format, "revenue", name copying, period vocabulary, forecasts/explanations) is written here.
+
+// Validator rules (catalog QUERY_RULES) the model cannot infer from the plan schema; their catalog text is sent as written.
+const NLU_RULE_CODES = ["high_cardinality_requires_sort", "list_mode_shape", "dimension_not_applicable_to_voucher_metric"];
+
+// A metric carries its catalog description when it is a summed amount or quantity: that is where the basis (tax-inclusive invoice
+// total vs pre-tax item value) matters. Counts and ratios are self-explanatory from their ids.
+const needsMeaning = (m) => !!(m.aggregation && m.aggregation.op === "sum");
+
+function buildCatalogDigest(cat = CATALOG) {
+  const limits = cat.limits;
+  const dims = Object.values(cat.dimensions);
+  const metricLines = Object.values(cat.metrics)
     .filter((m) => m.status === "supported")
-    .map((m) => `${m.id} (${m.entities.join("/")}; ${m.grain})`);
-  const dimLines = Object.values(CATALOG.dimensions).map((d) => {
+    .map((m) => `${m.id} [${m.entities.join("/")}; ${m.grain}]${needsMeaning(m) ? `: ${m.description}` : ""}`);
+  const dimLines = dims.map((d) => {
     const extra = d.id === "date" ? ` buckets ${d.buckets.join("|")}` : "";
     return `${d.id} (${d.entities.join("/")}; ${(d.grains || []).join("+")})${extra}`;
   });
+  const rules = NLU_RULE_CODES.map((code) => {
+    const rule = cat.queryRules.find((r) => r.code === code);
+    if (!rule) throw new Error(`The catalog has no query rule ${code}.`);
+    return rule.description;
+  });
+  const unsupported = cat.unsupported.map((u) => `${u.id.replace(/_/g, " ")}${u.examples ? ` (${u.examples.join(", ")})` : ""}`).join("; ");
   return [
     "You translate ONE business question about Sales or Purchase data into ONE query plan by calling submit_query_plan. Never answer in prose. Never state figures.",
-    `Entities: ${Object.values(CATALOG.entities).map((e) => `${e.id} (party dimension: ${e.partyDimension})`).join(", ")}. One entity per plan.`,
-    `Metrics: ${metricLines.join("; ")}.`,
-    `Dimensions (groupBy, max ${LIMITS.maxGroupBy}): ${dimLines.join("; ")}.`,
-    "Rules: invoice-grain metrics (amount/count/average) cannot be grouped or filtered by product or productGroup - use lineAmount/quantity for those. Never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare.",
-    `Period kinds: ${catalog.PERIOD_KINDS.filter((k) => k !== "ytd").join(", ")}; custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. compare modes: ${CATALOG.compare.modes.join(", ")} (custom needs a period). all_time cannot be compared. Financial year is April-March.`,
-    "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + LIMITS.maxLimit + ".",
+    `Entities: ${Object.values(cat.entities).map((e) => `${e.id} (${e.label}; party dimension: ${e.partyDimension})`).join(", ")}. One entity per plan.`,
+    `Metrics [entities; grain] (voucher grain = one value per voucher, line grain = one value per item line):\n${metricLines.join("\n")}`,
+    `Dimensions (groupBy, max ${limits.maxGroupBy}): ${dimLines.join("; ")}.`,
+    `Rules: never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare. Mode "list" returns individual invoices. ${rules.join(" ")}`,
+    `Period kinds: ${cat.periods.kinds.filter((k) => k !== "ytd").join(", ")}; custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. compare modes: ${cat.compare.modes.join(", ")} (custom needs a period). all_time cannot be compared. Financial year is April-March.`,
+    "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + limits.maxLimit + ".",
     '"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount (never invoiceAmount, invoiceCount or averageInvoiceValue). If a revenue question needs purchases or an invoice-level metric, decline.',
+    'Returns: "returns" and "credit notes" mean sales_return; purchase_return only when purchases, suppliers or debit notes are named. "Orders" are not invoices and there is no order data: never answer an order question with an invoice count or average (ask which invoices are meant). Net sales, turnover and invoice sales (before tax) cannot be calculated: decline.',
     "Copy customer/supplier/product/group names exactly as the user wrote them; never invent names. Never add a period the user did not state unless the question clearly implies one.",
-    'If the question needs anything else (tax/GST, profit, returns/credit notes, payments/outstanding, orders, stock valuation, forecasts, explanations) or is truly ambiguous (for example "this year" without saying financial or calendar), do NOT guess: send decline {code, message}. Otherwise send plan, plus up to 3 short assumptions you made.',
+    `If the question needs something this data cannot answer (${unsupported}), or a forecast or an explanation, or is truly ambiguous (for example "this year" without saying financial or calendar), do NOT guess: send decline {code, message}. Otherwise send plan, plus up to 3 short assumptions you made.`,
   ].join("\n");
 }
 
@@ -351,6 +457,10 @@ async function planQuestion(question, options = {}) {
       return failed("planner_invalid_plan", "The planner produced a plan the query engine cannot run.", usage, { errors: errors.slice(0, 5) });
     }
 
+    // ---- D1-D3: net sales / turnover / invoice sales (before tax) / orders are refused, never answered with a nearby figure
+    const termRefusal = uncalculableTermRefusal(text, parsed.plan, previous && previous.plan);
+    if (termRefusal) return { ...termRefusal, usage };
+
     // ---- revenue basis: enforced here, not trusted to the prompt. A revenue question may only become the
     // pre-tax item-value plan (sales + lineAmount, no invoice-level metric); anything else is refused -
     // never answered as the tax-inclusive Sales total.
@@ -472,8 +582,10 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
 
 module.exports = {
   planQuestion,
+  uncalculableTermRefusal,
   createAnthropicPlannerClient,
   getPlannerPrompt,
+  buildCatalogDigest,
   PLANNER_TOOL_NAME,
   PLANNER_MAX_TOKENS,
   PLANNER_MAX_QUESTION_CHARS,

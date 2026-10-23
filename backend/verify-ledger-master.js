@@ -42,7 +42,8 @@ const CG_OTHER = "cccccccc-4444-5555-6666-dddddddddddd";
 const T1 = "TEST-TENANT-ledger-master-1";
 const T2 = "TEST-TENANT-ledger-master-2";
 const T_EMPTY = "TEST-TENANT-ledger-master-empty";
-const ALL_T = [T1, T2, T_EMPTY];
+const T_EDGE = "TEST-TENANT-ledger-master-edge";
+const ALL_T = [T1, T2, T_EMPTY, T_EDGE];
 
 const sv = (value, type = "String") => ({ type, value });
 const group = (name, parent, hex, reserved = "", cg = CG) => ({ metadata: { type: "Group", name, reservedname: reserved }, parent: sv(parent), guid: sv(`${cg}-${hex}`) });
@@ -251,6 +252,32 @@ const lm = (tenantId, name, created, extra = {}) => ({
 
     res = await executeQuery(plan({ period: { kind: "custom", from: "2025-10-01", to: "2025-10-10" } }), { tenantId: T1 });
     check("narrower period changes the set (B created 20-Oct is excluded)", res.ok && same(res.rows.map((row) => row.key.customer), ["New Customer A"]), JSON.stringify(res.rows || res.errors));
+
+    // ---- period EDGES: ledger created dates and voucher dates are both stored as UTC midnight of their calendar day, so the first and the last
+    // day of a period are inside it in ANY server time zone (run with TZ=America/New_York to see the difference)
+    await LedgerMaster.insertMany([
+      lm(T_EDGE, "Edge First Day", "2025-10-10"), // created on the first day of the period
+      lm(T_EDGE, "Edge Last Day", "2025-10-12"), // created on the last day of the period
+      lm(T_EDGE, "Edge Day Before", "2025-10-09"), // created the day before: not new in the period
+      lm(T_EDGE, "Edge Day After", "2025-10-13"), // created the day after: not new in the period
+    ]);
+    await Sale.insertMany([
+      voucher(T_EDGE, "2025-10-10", "Edge First Day", 100),
+      voucher(T_EDGE, "2025-10-12", "Edge First Day", 11),
+      voucher(T_EDGE, "2025-10-12", "Edge Last Day", 222),
+      voucher(T_EDGE, "2025-10-11", "Edge Day Before", 333),
+      voucher(T_EDGE, "2025-10-13", "Edge Day After", 444),
+    ]);
+    const edgePlan = (from, to) => plan({ period: { kind: "custom", from, to } });
+    res = await executeQuery(edgePlan("2025-10-10", "2025-10-12"), { tenantId: T_EDGE });
+    check("period edges: a ledger created on the FIRST day and one created on the LAST day are both new; the day before and the day after are not", res.ok && same(res.rows.map((row) => [row.key.customer, row.values.invoiceAmount]), [["Edge Last Day", 222], ["Edge First Day", 111]]), JSON.stringify(res.rows || res.errors));
+    check("a party whose first voucher is on the first day of the period is not reported as having traded BEFORE it", res.ok && !res.warnings.some((w) => w.code === "new_party_traded_before_ledger"), JSON.stringify(res.warnings || []));
+    res = await executeQuery(edgePlan("2025-10-12", "2025-10-12"), { tenantId: T_EDGE });
+    check("a one-day period [Oct 12, Oct 12]: the ledger created and trading that day is new, nothing else", res.ok && same(res.rows.map((row) => [row.key.customer, row.values.invoiceAmount]), [["Edge Last Day", 222]]), JSON.stringify(res.rows || res.errors));
+    res = await executeQuery(edgePlan("2025-10-10", "2025-10-10"), { tenantId: T_EDGE });
+    check("a one-day period [Oct 10, Oct 10]: only the ledger created and trading that day", res.ok && same(res.rows.map((row) => [row.key.customer, row.values.invoiceAmount]), [["Edge First Day", 100]]), JSON.stringify(res.rows || res.errors));
+    res = await executeQuery(edgePlan("2025-10-13", "2025-10-13"), { tenantId: T_EDGE });
+    check("the day after: only the ledger created and trading on Oct 13", res.ok && same(res.rows.map((row) => [row.key.customer, row.values.invoiceAmount]), [["Edge Day After", 444]]), JSON.stringify(res.rows || res.errors));
 
     res = await executeQuery(plan(), { tenantId: T_EMPTY });
     check("no ledger master for the tenant -> refused (ledger_master_missing), never 'everyone is new'", !res.ok && res.errors[0].code === "ledger_master_missing");

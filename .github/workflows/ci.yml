@@ -164,6 +164,7 @@ jobs:
             verify-analytics-scope.js \
             verify-period-engine.js \
             verify-month-boundary-dates.js \
+            verify-timezone-boundaries.js \
             verify-stock-item-master.js \
             verify-stock-group-analytics.js \
             verify-ledger-master.js \
@@ -188,7 +189,9 @@ jobs:
             verify-ai-usage-persist.js \
             verify-cost-forensic.js \
             verify-chat-management.js \
-            verify-nlu-eval.js ; do
+            verify-nlu-eval.js \
+            verify-openrouter-eval.js \
+            verify-planner-digest.js ; do
             case " $NOT_RUN " in
               *" $f "*) echo "NOT RUN $f (real-data only; needs the WE FOUR tenant)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
             esac

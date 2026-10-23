@@ -4,7 +4,7 @@
  * Presentation model (services/query/presentation.js): a deterministic description of how an ENGINE RESULT is
  * shown (KPI / ranking / trend / comparison / table / empty). Proves that:
  *  - every figure in the model is a value the engine returned, formatted exactly like the text answer
- *  - nothing is computed except the marked, derived "Avg order" (amount / orders of two returned values)
+ *  - nothing is computed except the marked, derived "Avg invoice" (amount / invoices of two returned values)
  *  - the text answer is byte-for-byte what formatQueryAnswer produces (presentation never changes it)
  *  - clarifications / refusals carry no presentation; a failure inside the builder returns null
  * Synthetic fixtures only: no database, no Claude, no network.
@@ -73,7 +73,7 @@ const P = (p, r, extra = {}) => {
     check("kind comparison with the two periods named, previous first", pres.kind === "comparison" && pres.rows[0].cells.period === "August 2025" && pres.rows[1].cells.period === "September 2025" && pres.rows[1].current === true);
     check("both rows carry the engine's values", pres.rows[0].cells.invoiceAmount === fmtMoney(322427) && pres.rows[1].cells.invoiceAmount === fmtMoney(301438) && pres.rows[0].cells.invoiceCount === "11" && pres.rows[1].cells.invoiceCount === "9");
     const avgCol = pres.columns.find((c) => c.key === "avg");
-    check("Avg order is the one derived column: marked derived, amount / orders of the same row", avgCol && avgCol.derived === true && pres.rows[0].cells.avg === fmtMoney(322427 / 11) && pres.rows[1].cells.avg === fmtMoney(301438 / 9));
+    check("Avg invoice is the one derived column: marked derived, labelled invoice (never order), amount / invoices of the same row", avgCol && avgCol.derived === true && avgCol.label === "Avg invoice" && /invoices/.test(avgCol.hint) && !/order/i.test(avgCol.label + avgCol.hint) && pres.rows[0].cells.avg === fmtMoney(322427 / 11) && pres.rows[1].cells.avg === fmtMoney(301438 / 9));
     const c = pres.changes.find((x) => x.metric === "invoiceAmount");
     check("change: engine delta and engine % (never recomputed), wording and direction", c.display === `${fmtMoney(20989)} less` && c.pct === "-6.5%" && c.direction === "down" && c.signed === `-${fmtMoney(20989)}`);
     check("the order-count change is also the engine's", pres.changes.find((x) => x.metric === "invoiceCount").pct === "-18.2%");
@@ -99,7 +99,7 @@ const P = (p, r, extra = {}) => {
 
     const cust = ["Alpha Stores", "Beta Traders", "Gamma Co"].map((n, i) => ({ key: { customer: n }, values: { invoiceAmount: 300000 - i * 50000, invoiceCount: 11 - i } }));
     const cp = P(plan({ groupBy: [{ dim: "customer" }], limit: 3 }), base({ groupBy: [{ dim: "customer" }], rows: cust, totals: { values: { invoiceAmount: 750000, invoiceCount: 30 } } })).pres;
-    check("customer ranking: Rank | Customer | Sales | Orders", cp.columns.map((c) => c.label).join("|") === "#|Customer|Sales|Orders" && cp.rows[2].cells.name === "Gamma Co");
+    check("customer ranking: Rank | Customer | Sales | Invoices (an invoice count is not an order count)", cp.columns.map((c) => c.label).join("|") === "#|Customer|Sales|Invoices" && cp.rows[2].cells.name === "Gamma Co");
     const one = P(plan({ groupBy: [{ dim: "customer" }] }), base({ groupBy: [{ dim: "customer" }], rows: cust.slice(0, 1), totals: { values: { invoiceAmount: 300000, invoiceCount: 11 } } })).pres;
     check("a single row gets the table but no chart", one.kind === "ranking" && one.chart === null && one.rows.length === 1);
     const many = Array.from({ length: 30 }, (_, i) => ({ key: { customer: `C${i + 1}` }, values: { invoiceAmount: 1000 - i, invoiceCount: 1 } }));
@@ -120,10 +120,56 @@ const P = (p, r, extra = {}) => {
     const { pres } = P(plan({ period: custom("2025-04-01", "2025-08-31"), groupBy: [{ dim: "date", bucket: "month" }] }), base({ groupBy: [{ dim: "date", bucket: "month" }], rows, totals: { values: { invoiceAmount: 24441477.91, invoiceCount: 510 } } }));
     check("kind trend with a line chart of the actual monthly values", pres.kind === "trend" && pres.chart.type === "line" && pres.chart.points.map((p) => p.value).join() === vals.join());
     check("x labels are 'Apr 2025' ... 'Aug 2025'", pres.chart.points.map((p) => p.label).join() === "Apr 2025,May 2025,Jun 2025,Jul 2025,Aug 2025");
-    check("monthly table (Month | Sales | Orders) with the engine's total", pres.columns.map((c) => c.label).join("|") === "Month|Sales|Orders" && pres.rows.length === 5 && pres.totals.cells.invoiceAmount === fmtMoney(24441477.91));
+    check("monthly table (Month | Sales | Invoices) with the engine's total", pres.columns.map((c) => c.label).join("|") === "Month|Sales|Invoices" && pres.rows.length === 5 && pres.totals.cells.invoiceAmount === fmtMoney(24441477.91));
     check("a monthly trend is never collapsed into one total", pres.kind !== "kpi" && pres.rows.length === 5);
     const single = P(plan({ groupBy: [{ dim: "date", bucket: "month" }] }), base({ groupBy: [{ dim: "date", bucket: "month" }], rows: rows.slice(0, 1), totals: { values: { invoiceAmount: vals[0], invoiceCount: 100 } } })).pres;
     check("one data point: table only, no line chart", single.chart === null);
+  }
+
+  section("Date plus another dimension: the second dimension is never dropped");
+  {
+    const key = (d, c) => ({ date: { bucket: "day", start: d, label: d }, customer: c });
+    const dateFirst = [["2025-08-01", "Acme"], ["2025-08-01", "Zenith"], ["2025-08-02", "Acme"], ["2025-08-02", "Zenith"]].map(([d, c], i) => ({ key: key(d, c), values: { invoiceAmount: 100 + i, invoiceCount: 1 } }));
+    const gb = [{ dim: "date", bucket: "day" }, { dim: "customer" }];
+    const df = P(plan({ groupBy: gb, sort: [{ by: "date", dir: "asc" }] }), base({ groupBy: gb, rows: dateFirst, totals: { values: { invoiceAmount: 406, invoiceCount: 4 } } }));
+    check("date first + customer: NOT a trend (a trend row has one label and would lose the customer) - a ranking whose columns name both dimensions", df.pres.kind === "ranking" && df.pres.columns[1].label === "Date / Customer", df.pres.kind + " " + JSON.stringify(df.pres.columns));
+    check("every row names its date AND its customer, with the engine's value", df.pres.rows.map((r) => r.cells.name).join("|") === "2025-08-01 / Acme|2025-08-01 / Zenith|2025-08-02 / Acme|2025-08-02 / Zenith" && df.pres.rows[1].cells.invoiceAmount === fmtMoney(101));
+    check("the text answer already named both (unchanged): same row names", df.f.text.includes("2025-08-01 / Zenith"));
+    const custFirst = dateFirst.map((r) => ({ ...r, key: { customer: r.key.customer, date: r.key.date } }));
+    const gb2 = [{ dim: "customer" }, { dim: "date", bucket: "day" }];
+    const cf = P(plan({ groupBy: gb2, sort: [{ by: "invoiceAmount", dir: "desc" }] }), base({ groupBy: gb2, rows: custFirst, totals: { values: { invoiceAmount: 406, invoiceCount: 4 } } })).pres;
+    check("customer first + date: still a ranking naming both (unchanged)", cf.kind === "ranking" && cf.rows[0].cells.name === "Acme / 2025-08-01");
+    const dayRows = ["2025-08-01", "2025-08-03"].map((d, i) => ({ key: { date: { bucket: "day", start: d, label: d } }, values: { invoiceAmount: 10 * (i + 1), invoiceCount: 1 } }));
+    const dg = [{ dim: "date", bucket: "day" }];
+    const dt = P(plan({ groupBy: dg }), base({ groupBy: dg, rows: dayRows, totals: { values: { invoiceAmount: 30, invoiceCount: 2 } } })).pres;
+    check("a lone date grouping is still a trend (August daily sales), with only the days that have data", dt.kind === "trend" && dt.rows.length === 2 && dt.chart.type === "line");
+    const total = P(plan({}), base({})).pres;
+    check("August total (no grouping) is a single KPI, not a series", total.kind === "kpi");
+  }
+
+  section("Limitation notes that follow from the shape of the plan (decisions D5 and D6)");
+  {
+    const lineBasis = { lineAmount: "line_item_pre_tax" };
+    const prodRows = [{ key: { product: "Widget A" }, values: { lineAmount: 500 } }];
+    const noteOf = (p, r) => formatQueryAnswer({ plan: p, result: r }).notes;
+    const byProduct = noteOf(plan({ metrics: ["lineAmount"], groupBy: [{ dim: "product" }] }), base({ grain: "line", metrics: ["lineAmount"], groupBy: [{ dim: "product" }], amountBasis: lineBasis, rows: prodRows, totals: { values: { lineAmount: 500 } } }));
+    check("sales by product (lineAmount): states that product amounts are pre-tax item values that do not add up to total sales", byProduct.some((n) => /Product-level amounts are pre-tax item values/.test(n) && /total sales \(invoice totals\)/.test(n)), byProduct.join(" | "));
+    const filtered = noteOf(plan({ metrics: ["lineAmount"], filters: [{ dim: "product", op: "eq_ci", value: "Widget A" }] }), base({ grain: "line", metrics: ["lineAmount"], amountBasis: lineBasis, totals: { values: { lineAmount: 500 } } }));
+    check("sales of one product (lineAmount, product filter): the same note", filtered.some((n) => /Product-level amounts are pre-tax/.test(n)));
+    const purchases = noteOf(plan({ entity: "purchase", metrics: ["lineAmount"], groupBy: [{ dim: "product" }] }), base({ entity: "purchase", grain: "line", metrics: ["lineAmount"], groupBy: [{ dim: "product" }], amountBasis: lineBasis, rows: prodRows, totals: { values: { lineAmount: 500 } } }));
+    check("purchases by product: the note says purchases, not sales", purchases.some((n) => /total purchases \(invoice totals\)/.test(n)) && !purchases.some((n) => /total sales/.test(n)));
+    const quantityOnly = noteOf(plan({ metrics: ["quantity"], groupBy: [{ dim: "product" }] }), base({ grain: "line", metrics: ["quantity"], groupBy: [{ dim: "product" }], amountBasis: {}, rows: [{ key: { product: "Widget A" }, values: { quantity: 5 } }], totals: { values: { quantity: 5 } } }));
+    check("quantity by product (no amount): no pre-tax note", !quantityOnly.some((n) => /Product-level/.test(n)));
+    const customerLine = noteOf(plan({ metrics: ["lineAmount"], groupBy: [{ dim: "customer" }] }), base({ grain: "line", metrics: ["lineAmount"], groupBy: [{ dim: "customer" }], amountBasis: lineBasis, rows: [{ key: { customer: "Acme" }, values: { lineAmount: 500 } }], totals: { values: { lineAmount: 500 } } }));
+    check("an item-line amount by customer (not product level): the product-level note does not apply", !customerLine.some((n) => /Product-level/.test(n)));
+    const invoices = noteOf(plan({}), base({}));
+    check("the plain sales total carries neither limitation note", !invoices.some((n) => /Product-level|Returns are only/.test(n)));
+    const ret = noteOf(plan({ entity: "sales_return", metrics: ["returnAmount"] }), base({ entity: "sales_return", metrics: ["returnAmount"], amountBasis: { returnAmount: "voucher_total_incl_tax" }, totals: { values: { returnAmount: 1000 } } }));
+    check("sales returns: states that only classified returns are counted and that sales totals are not reduced by them", ret.some((n) => /Returns are only the Credit\/Debit Notes classified as returns/.test(n) && /not reduced by them/.test(n)), ret.join(" | "));
+    const pret = noteOf(plan({ entity: "purchase_return", metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }] }), base({ entity: "purchase_return", grain: "line", metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], amountBasis: { returnLineAmount: "line_item_pre_tax" }, rows: prodRows.map((r) => ({ ...r, values: { returnLineAmount: 5 } })), totals: { values: { returnLineAmount: 5 } } }));
+    check("purchase returns by product: the returns note, and no sales/purchase product-level note", pret.some((n) => /Returns are only/.test(n)) && !pret.some((n) => /Product-level/.test(n)));
+    const pres = buildPresentation({ plan: plan({ metrics: ["lineAmount"], groupBy: [{ dim: "product" }] }), result: base({ grain: "line", metrics: ["lineAmount"], groupBy: [{ dim: "product" }], amountBasis: lineBasis, rows: prodRows, totals: { values: { lineAmount: 500 } } }), notes: byProduct, zero: false });
+    check("the notes reach the presentation model too", pres.notes.some((n) => /Product-level amounts/.test(n)));
   }
 
   section("List, empty state, purchases");

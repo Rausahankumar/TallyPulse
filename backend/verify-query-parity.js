@@ -175,14 +175,26 @@ const engineOrThrow = (res) => {
 
 // ------------------------------------------------------------------ independent (JS) oracle helpers
 
+// A period bound is a LOCAL calendar day and a voucher is dated by the calendar day of its stored (UTC-midnight) date. The oracle compares the two
+// as YYYY-MM-DD strings, so it shares nothing with the engine's conversion and does not move with the server's time zone. MongoDB only pre-selects
+// a window two days wider than the period; the exact test is the string comparison.
+const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const DAY_MS = 86400000;
 async function loadVouchers(Model, tenantId, oraclePeriod) {
   const q = { tenantId, voucherStatus: "active" };
   if (oraclePeriod.from || oraclePeriod.to) {
     q["header.voucherDate"] = {};
-    if (oraclePeriod.from) q["header.voucherDate"].$gte = oraclePeriod.from;
-    if (oraclePeriod.to) q["header.voucherDate"].$lte = oraclePeriod.to;
+    if (oraclePeriod.from) q["header.voucherDate"].$gte = new Date(oraclePeriod.from.getTime() - 2 * DAY_MS);
+    if (oraclePeriod.to) q["header.voucherDate"].$lte = new Date(oraclePeriod.to.getTime() + 2 * DAY_MS);
   }
-  return Model.find(q).select("header inventory").lean();
+  const docs = await Model.find(q).select("header inventory").lean();
+  if (!oraclePeriod.from && !oraclePeriod.to) return docs;
+  const from = oraclePeriod.from ? localDay(oraclePeriod.from) : null;
+  const to = oraclePeriod.to ? localDay(oraclePeriod.to) : null;
+  return docs.filter((v) => {
+    const day = v.header.voucherDate.toISOString().slice(0, 10);
+    return (!from || day >= from) && (!to || day <= to);
+  });
 }
 
 async function loadGroupMap(tenantId) {
@@ -801,7 +813,8 @@ async function runTenant(tenant, { extended }) {
         const m = new Map();
         for (const v of await loadVouchers(Purchase, tenantId, P[pid].oracle)) for (const l of v.inventory) {
           const g = groupMap.get(l.itemName);
-          if (g) sumBy(m, g, { a: l.amount, q: l.quantity });
+          // Tally stores purchase item amounts negative; the engine reports a purchase's line amount as a positive value (catalog entitySign).
+          if (g) sumBy(m, g, { a: -l.amount, q: l.quantity });
         }
         return [...m.entries()].map(([k, x]) => ({ name: k, amount: x.a, qty: x.q }));
       },

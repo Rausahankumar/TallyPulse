@@ -103,11 +103,16 @@ function baseMetricsNeeded(metrics) {
   return out;
 }
 
-function accumulators(metrics) {
+// A metric may declare `entitySign: { <entity>: -1 }`: Tally books that entity's stock entries with the opposite sign (purchase item amounts are
+// stored negative), so the figure is negated to read as a positive value. A plain sign flip - NOT abs - so opposite-signed lines still net.
+const signFactor = (aggregation, entity) => (aggregation.entitySign && aggregation.entitySign[entity] === -1 ? -1 : 1);
+const signedPath = (path, factor) => (factor === -1 ? { $multiply: [-1, `$${path}`] } : `$${path}`);
+
+function accumulators(metrics, entity) {
   const acc = {};
   for (const id of baseMetricsNeeded(metrics)) {
     const a = CATALOG.metrics[id].aggregation;
-    acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: a.abs ? { $abs: `$${a.path}` } : `$${a.path}` };
+    acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: a.abs ? { $abs: `$${a.path}` } : signedPath(a.path, signFactor(a, entity)) };
   }
   return acc;
 }
@@ -212,8 +217,9 @@ function havingMatch(n) {
 //                  product-group roll-up) and does having/sort/limit itself.
 function rowsPipeline(n, tenantId, range, ctx, { finalize, rolled }) {
   const stages = buildPrefix(n, tenantId, range, ctx);
-  const rolledAcc = rolled ? { x_lines: { $sum: 1 }, x_amount: { $sum: "$inventory.amount" } } : {};
-  stages.push({ $group: { _id: groupId(n.groupBy), ...accumulators(n.metrics), ...rolledAcc } });
+  // the roll-up's hidden per-item amount (mapping diagnostic) is a line amount: same sign rule as the lineAmount metric
+  const rolledAcc = rolled ? { x_lines: { $sum: 1 }, x_amount: { $sum: signedPath("inventory.amount", signFactor(CATALOG.metrics.lineAmount.aggregation, n.entity)) } } : {};
+  stages.push({ $group: { _id: groupId(n.groupBy), ...accumulators(n.metrics, n.entity), ...rolledAcc } });
   const derived = derivedFields(n.metrics);
   if (Object.keys(derived).length) stages.push({ $addFields: derived });
 
@@ -233,7 +239,7 @@ function rowsPipeline(n, tenantId, range, ctx, { finalize, rolled }) {
 
 function totalsPipeline(n, tenantId, range, ctx) {
   const stages = buildPrefix(n, tenantId, range, ctx);
-  stages.push({ $group: { _id: null, ...accumulators(n.metrics) } });
+  stages.push({ $group: { _id: null, ...accumulators(n.metrics, n.entity) } });
   const derived = derivedFields(n.metrics);
   if (Object.keys(derived).length) stages.push({ $addFields: derived });
   stages.push(projectValues(n.metrics, { withKey: false }));

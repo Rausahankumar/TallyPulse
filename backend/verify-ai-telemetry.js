@@ -117,7 +117,7 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
 
   section("C. planner decline: status, latency, attempts");
   {
-    const d = await ask("show turnover last month", { plannerClient: fakePlanner({ decline: { code: "not_a_data_query", message: "explanations are not supported" } }) });
+    const d = await ask("show sales last month", { plannerClient: fakePlanner({ decline: { code: "not_a_data_query", message: "explanations are not supported" } }) });
     check("planner decline -> path planner_declined, code recorded, 1 Claude call", d.telemetry.path === "planner_declined" && d.telemetry.plannerCode === "planner_not_a_data_query" && d.telemetry.claudeCalls === 1);
   }
 
@@ -125,11 +125,11 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
   {
     const p = fakePlanner(new Error("529 overloaded"), { delay: 5 });
     const exec = cachedExecutor();
-    const r = await ask("show turnover last month", { plannerClient: p, execute: exec });
+    const r = await ask("show sales last month", { plannerClient: p, execute: exec });
     const t = r.telemetry;
     check("path planner_failed, plannerCode planner_call_failed, handled", r.handled === true && t.path === "planner_failed" && t.plannerStatus === "planner_failed" && t.plannerCode === "planner_call_failed" && t.route === "planner");
     check("user-visible answer is the existing honest message; engine never ran", /planner is unavailable/i.test(r.structured.answer) && exec.engine.calls === 0 && r.structured.details.queryEngine.status === "planner_failed");
-    const timeout = await ask("show turnover last month", { plannerClient: fakePlanner(Object.assign(new Error("deadline"), { code: "PLANNER_DEADLINE_EXCEEDED" })) });
+    const timeout = await ask("show sales last month", { plannerClient: fakePlanner(Object.assign(new Error("deadline"), { code: "PLANNER_DEADLINE_EXCEEDED" })) });
     check("timeout -> plannerCode planner_timeout", timeout.telemetry.path === "planner_failed" && timeout.telemetry.plannerCode === "planner_timeout");
   }
 
@@ -230,7 +230,7 @@ const emitFor = (r, extra = {}) => { telemetry.emitChatTurn({ tenantId: CTX.tena
   {
     const lines = emitted.join("\n");
     const forbidden = [
-      "Sales from Dhingra", "show turnover", "GST on sales", "Dhingra", "General Store", "Maggi", "Acme", "Snacks", "Ghost Traders",
+      "Sales from Dhingra", "show sales", "GST on sales", "Dhingra", "General Store", "Maggi", "Acme", "Snacks", "Ghost Traders",
       "invoiceAmount", "lineAmount", "previous_month", "filters", "eq_ci", // plan contents
       "₹", "Invoice amount", "planner is unavailable", "try again", // answers
       "get_sales_summary", "tool_use", "submit_query_plan", "overloaded", "Mongo", "secret-host", "guid-1", "u1\"", // prompt/tools/errors/ids

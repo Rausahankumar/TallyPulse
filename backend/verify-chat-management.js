@@ -183,7 +183,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     res.closed = true; // what Node reports once the socket is gone; "close" will not be emitted again
     saves = 0;
     events.length = 0;
-    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
+    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show sales last month" } }), res);
     let ev = events[events.length - 1];
     check("no planner call", fakePlanner.calls === 0, fakePlanner.calls);
     check("not saved, nothing written", saves === 0 && res.body === null, `${saves} ${JSON.stringify(res.body)}`);
@@ -194,7 +194,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     res = mkRes();
     saves = 0;
     events.length = 0;
-    let done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
+    let done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show sales last month" } }), res);
     for (let i = 0; i < 200 && fakePlanner.calls === 0; i += 1) await tick(10);
     check("the question reached the planner call (precondition)", fakePlanner.calls === 1, fakePlanner.calls);
     check("the in-flight planner request was given an abort signal", !!fakePlanner.signals[0] && fakePlanner.signals[0].aborted === false);
@@ -215,7 +215,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     fakePlanner.onCall = (n) => {
       if (n === 1) clientStops(res);
     };
-    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
+    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show sales last month" } }), res);
     fakePlanner.onCall = null;
     check("only the one planner call that was already running", fakePlanner.calls === 1, fakePlanner.calls);
     check("not saved, nothing written", saves === 0 && res.body === null);
@@ -228,7 +228,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     saves = 0;
     events.length = 0;
     const before = netCalls;
-    done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
+    done = sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show sales last month" } }), res);
     clientStops(res);
     await done;
     check("the planner was never called after Stop", fakePlanner.calls === 0, fakePlanner.calls);
@@ -241,7 +241,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     res = mkRes();
     saves = 0;
     const b4 = netCalls;
-    done = sendChatMessage(mkReq({ body: { message: "show turnover last month" } }), res);
+    done = sendChatMessage(mkReq({ body: { message: "show sales last month" } }), res);
     clientStops(res);
     await done;
     check("planner never called", fakePlanner.calls === 0 && netCalls === b4, `${fakePlanner.calls} ${netCalls - b4}`);
@@ -252,7 +252,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     res = mkRes();
     saves = 0;
     events.length = 0;
-    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show turnover last month" } }), res);
+    await sendChatMessage(mkReq({ params: { chatId: String(historyChat._id) }, body: { message: "show sales last month" } }), res);
     ev = events[events.length - 1];
     check("answered 200, saved once, one planner call, clientAborted=false", res.statusCode === 200 && res.body.success === true && typeof res.body.data.answer === "string" && res.body.data.answer.length > 0 && saves === 1 && fakePlanner.calls === 1 && ev.clientAborted === false && ev.httpStatus === 200, JSON.stringify(ev));
     Object.assign(fakePlanner, { mode: "unavailable", calls: 0, signals: [] });
@@ -267,7 +267,7 @@ const clientStops = (res) => res.emit("close"); // what the browser's AbortContr
     let plannerCalls = 0;
     const ac = new AbortController();
     ac.abort();
-    const planned = await planQuestion("show turnover last month", { claudeClient: async () => ((plannerCalls += 1), {}), signal: ac.signal, referenceDate: new Date() });
+    const planned = await planQuestion("show sales last month", { claudeClient: async () => ((plannerCalls += 1), {}), signal: ac.signal, referenceDate: new Date() });
     check("0 planner calls, usage.calls 0", plannerCalls === 0 && planned.usage.calls === 0, JSON.stringify(planned.usage));
 
     section("STOP 7. Real SDK planner client vs a local stub: Stop aborts the in-flight request, no retry");

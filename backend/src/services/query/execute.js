@@ -32,6 +32,7 @@ const { computeGrowth } = require("../analytics/salesAnalytics");
 
 const { CATALOG, LIMITS } = catalog;
 const { buildVoucherMatchStage } = require("../analytics/analyticsScope");
+const { storedDayStart, storedDayEnd } = require("../analytics/dateRanges");
 
 // ---------- MongoDB access (injectable for tests) ----------
 
@@ -80,7 +81,7 @@ async function defaultFindNewParties(tenantId, period, timeoutMs) {
   const live = { tenantId, removedAt: null };
   const [latest, docs, undated] = await Promise.all([
     LedgerMaster.findOne(live, { syncedAt: 1, _id: 0 }).sort({ syncedAt: -1 }).maxTimeMS(timeoutMs).lean(),
-    LedgerMaster.find({ ...live, createdDate: { $gte: period.from, $lte: period.to } }, { name: 1, createdDate: 1, _id: 0 })
+    LedgerMaster.find({ ...live, createdDate: { $gte: storedDayStart(period.from), $lte: storedDayEnd(period.to) } }, { name: 1, createdDate: 1, _id: 0 })
       .limit(LIMITS.maxGroupItemNames + 1)
       .maxTimeMS(timeoutMs)
       .lean(),
@@ -125,9 +126,10 @@ const nameList = (list) => list.slice(0, 5).join(", ") + (list.length > 5 ? `, a
 
 function newPartyWarnings(info, activity, period) {
   const out = [];
-  const traded = activity.filter((a) => a.last && a.last >= period.from);
+  const periodStart = storedDayStart(period.from); // voucher dates are stored as UTC midnight of their calendar day
+  const traded = activity.filter((a) => a.last && a.last >= periodStart);
   const tradedSet = new Set(traded.map((a) => a._id));
-  const prior = traded.filter((a) => a.first && a.first < period.from).map((a) => a._id);
+  const prior = traded.filter((a) => a.first && a.first < periodStart).map((a) => a._id);
   if (prior.length) {
     out.push({ code: "new_party_traded_before_ledger", message: `${prior.length} of these parties already had vouchers before this period even though their ledger was created in it (for example a re-created ledger): ${nameList(prior)}.` });
   }
@@ -163,6 +165,17 @@ function periodOut(p) {
 
 function comparisonOut(c) {
   return c ? { mode: c.mode, canonicalMode: c.canonicalMode, from: iso(c.from), to: iso(c.to), label: c.label } : null;
+}
+
+// Lines of items with no Stock Group in the synced master (or whose name differs from the master's) are left out of a productGroup breakdown
+// and of its total. The count and amount were always in `mapping`; this puts them in front of the user as a warning.
+function unmappedWarning(mapping) {
+  const amount = Number(mapping.unmappedLineAmount).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  const lines = mapping.unmappedLines;
+  return {
+    code: "warn_unmapped_product_group_lines",
+    message: `${lines} item line${lines === 1 ? "" : "s"} (₹${amount} before tax) belong to items with no Stock Group in the synced Stock Item master, or whose name differs from the master's, and are left out of these groups and of their total.`,
+  };
 }
 
 function fyLabel(startYear) {
@@ -450,6 +463,7 @@ async function executeQuery(rawPlan, context = {}) {
     }
 
     let warnings = validation.warnings;
+    if (mapping && mapping.unmappedLines > 0) warnings = [...warnings, unmappedWarning(mapping)];
     if (newPartyInfo) {
       const activity = await newPartyActivity(runAggregate, compiled.queries[0].model, tenantId, n.period, newPartyNames);
       warnings = [...warnings, ...newPartyWarnings(newPartyInfo, activity, n.period)];
