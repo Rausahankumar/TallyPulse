@@ -121,7 +121,11 @@ const base = { tenantId: "tenantA", requestId: "req-1", httpStatus: 200, totalMs
     const json = JSON.stringify(r);
     const ALLOWED = Object.keys(require("./src/models/aiTurnUsage.model").schema.paths).filter((k) => k !== "_id");
     check("only schema (allow-listed) fields appear", Object.keys(r).every((k) => ALLOWED.includes(k)), Object.keys(r).filter((k) => !ALLOWED.includes(k)).join());
-    check("no question/prompt/key/auth/tool results/answer/history/raw text", !/ACME|sk-ant|Bearer|SYSTEM|99|history|123/.test(json.replace(/"(inputTokens|outputTokens)":\d+/g, "")), json.slice(0, 200));
+    // ts is the emit time from the real clock (a Date, so it cannot carry text): left out of the scan, or a time such as
+    // 09:58:45.997 matches the "99" sentinel and fails this check at random.
+    check("ts is a Date (the only non-scalar field; it holds the emit time, never input text)", r.ts instanceof Date && !Number.isNaN(r.ts.getTime()), String(r.ts));
+    const scanned = json.replace(/"(inputTokens|outputTokens)":\d+/g, "").replace(/"ts":"[^"]*"/, "");
+    check("no question/prompt/key/auth/tool results/answer/history/raw text", !/ACME|sk-ant|Bearer|SYSTEM|99|history|123/.test(scanned), json.slice(0, 200));
     check("a free-text value in a code field is replaced, never stored", r.failureCategory === "invalid_code" || r.failureCategory === null || !/ACME/.test(String(r.failureCategory)));
     check("no field is an object/array except ts", Object.entries(r).every(([k, v]) => k === "ts" || v === null || typeof v !== "object"));
   }
