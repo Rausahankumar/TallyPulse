@@ -135,9 +135,19 @@ jobs:
       - name: Run self-contained verify-*.js suites
         run: |
           failed=0
-          # Suites whose real-data sections (WE FOUR tenant) skip in CI. Their DB parts run; the skipped
-          # sections are reported as PARTIAL. Any other SKIP in a suite fails the job.
-          PARTIAL="verify-query-chat.js verify-query-engine.js verify-query-planner.js verify-comparison-period-capability.js verify-growth-comparison-capability.js verify-return-analytics.js verify-return-ranking.js"
+          partial=""
+          # Suites whose real-tenant oracle sections still skip here (CI has no WE FOUR / Nirmal data); their synthetic
+          # sections run and must pass, and each is reported PARTIAL, never PASS. Any other SKIP fails the job.
+          #   verify-query-engine.js     section 8: three all-time totals / top customer on real data (the reference-date
+          #                              checks of that section run on synthetic tenant A)
+          #   verify-return-analytics.js section G: engine = Mongo oracle on real Credit/Debit Notes (B1-B6 cover the
+          #                              same metrics on synthetic notes)
+          #   verify-return-ranking.js   section D: real top-N rankings and Nirmal's empty rankings (the default limit
+          #                              and truncation run on synthetic notes)
+          PARTIAL="verify-query-engine.js verify-return-analytics.js verify-return-ranking.js"
+          # Entirely real-data: compares the engine with the existing analytics on WE FOUR. Not run here; its synthetic
+          # counterpart verify-query-parity-synthetic.js runs below.
+          NOT_RUN="verify-query-parity.js"
           for f in \
             verify-tally-parser-voucher-total.js \
             verify-sales-mapper.js \
@@ -193,10 +203,9 @@ jobs:
             verify-nlu-eval.js \
             verify-openrouter-eval.js \
             verify-planner-digest.js ; do
-            if [ "$f" = "verify-query-parity.js" ]; then
-              echo "NOT RUN (real-data gated, needs the WE FOUR tenant): $f"
-              continue
-            fi
+            case " $NOT_RUN " in
+              *" $f "*) echo "NOT RUN $f (real-data only; needs the WE FOUR tenant)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
+            esac
             echo "::group::$f"
             out=$(mktemp)
             rc=0
@@ -208,7 +217,12 @@ jobs:
               failed=1
             elif grep -qE '^[[:space:]]*SKIP' "$out"; then
               case " $PARTIAL " in
-                *" $f "*) echo "PARTIAL $f (real-data sections skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))" ;;
+                *" $f "*)
+                  n=$(grep -cE '^[[:space:]]*SKIP' "$out")
+                  echo "PARTIAL $f (real-data sections skipped: $n)"
+                  echo "::warning title=PARTIAL $f::$n real-data section(s) skipped; not a full pass"
+                  partial="$partial $f"
+                  ;;
                 *) echo "FAIL $f (a required check was skipped)"; failed=1 ;;
               esac
             else
@@ -216,4 +230,8 @@ jobs:
             fi
             rm -f "$out"
           done
+          {
+            echo "### Verification suites"
+            echo "- PARTIAL (synthetic sections passed, real-data sections skipped):${partial:- none}"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit $failed
