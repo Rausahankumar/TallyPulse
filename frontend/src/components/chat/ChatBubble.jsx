@@ -1,6 +1,8 @@
 import { HelpCircle, SearchX, Sparkles } from "lucide-react";
 import FreshnessBadge from "../ui/FreshnessBadge";
 import MarkdownMessage from "./MarkdownMessage";
+import PresentationView from "./present/PresentationView";
+import { isPresentation } from "./present/isPresentation";
 import { cn } from "../../lib/cn";
 
 // Renders one persisted message exactly as chat.model.js stores it on
@@ -35,7 +37,10 @@ const VARIANTS = {
 export default function ChatBubble({ message }) {
   const isUser = message.role === "user";
   const variant = VARIANTS[isUser ? "answer" : variantOf(message)];
-  const Label = variant.label;
+  // A structured answer (KPI / ranking / trend / comparison / empty state) is shown from the backend's own
+  // presentation model; everything else (clarifications, refusals, failures) stays Markdown text.
+  const presentation = !isUser && isPresentation(message.visualization) ? message.visualization : null;
+  const Label = presentation ? null : variant.label;
 
   return (
     <div className={cn("flex gap-2.5", isUser && "justify-end")}>
@@ -44,7 +49,7 @@ export default function ChatBubble({ message }) {
           <Sparkles className="h-4 w-4 text-white" />
         </span>
       )}
-      <div className={cn("min-w-0 space-y-2", isUser ? "max-w-[75%] items-end" : "max-w-[85%]")}>
+      <div className={cn("min-w-0 space-y-2", isUser ? "max-w-[75%] items-end" : presentation ? "w-full max-w-[95%]" : "max-w-[85%]")}>
         {isUser ? (
           // The user's question exactly as typed: plain text, never parsed as Markdown.
           <div className="whitespace-pre-wrap break-words rounded-2xl bg-brand-600 px-4 py-2.5 text-[13.5px] leading-relaxed text-white">
@@ -58,7 +63,7 @@ export default function ChatBubble({ message }) {
                 {Label.text}
               </p>
             )}
-            <MarkdownMessage text={message.text} />
+            {presentation ? <PresentationView presentation={presentation} /> : <MarkdownMessage text={message.text} />}
           </div>
         )}
 

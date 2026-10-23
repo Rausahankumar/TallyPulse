@@ -63,6 +63,11 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      # Pure render/API-layer checks (no network, no browser).
+      - name: Frontend verification scripts
+        run: |
+          set -e
+          for f in verify-*.mjs; do node "$f"; done
 
   backend-verify-suites:
     name: Backend - self-contained verification suites
@@ -103,28 +108,49 @@ jobs:
 
       - run: npm ci
 
-      # Deliberately NOT the full backend/verify-*.js list. Excluded:
-      #   - verify-ai-data-accuracy.js: makes real, billed Anthropic API
-      #     calls - never run automatically/unattended in CI.
-      #   - verify-company-guid-match.js, verify-voucher-lifecycle.js,
-      #     verify-sync-worker-guard.js, verify-reconciliation.js,
-      #     verify-voucher-type-classification.js: have a "LIVE TALLY
-      #     INTEGRATION" section that needs a specific real company open
-      #     in a real TallyPrime instance - meant for local/manual runs,
-      #     not CI.
-      #   - verify-duplicate-protection.js, verify-import-final.js,
-      #     verify-import-flow.js, verify-real-multi-voucher.js: known
-      #     pre-existing failures, unrelated to CI (missing company GUID
-      #     argument / stale DB name / leftover test data) - see PR #5.
-      # Everything below is self-contained: synthetic data it creates and
-      # cleans up itself, a stub Tally (not a live one) or an explicit,
-      # gracefully-handled "Tally unreachable" path, and (for the one AI
-      # suite here) a mock Claude client rather than a live API call.
-      - name: Run self-contained verify-*.js suites
+      # Every verify-*.js suite must at least parse.
+      - name: Syntax-check every verification script
         run: |
           set -e
+          for f in verify-*.js; do node --check "$f"; done
+
+      # Deliberately NOT the full backend/verify-*.js list. Excluded:
+      #   - Live TallyPrime integration (a specific real company must be open
+      #     in a real TallyPrime instance - local/manual runs only):
+      #     verify-voucher-type-classification.js, verify-voucher-lifecycle.js,
+      #     verify-sync-worker-guard.js, verify-reconciliation.js.
+      #   - Suites that talk to a RUNNING backend on :5000 or to the real
+      #     tenants' data: verify-company-guid-match.js, verify-dashboard-real-data.js,
+      #     verify-reports.js, verify-voucher-pagination.js.
+      #   - verify-planner-live-eval.js and `verify-nlu-eval.js --live`: real,
+      #     billed Anthropic calls - never run automatically/unattended in CI.
+      # Everything below is self-contained: synthetic data it creates and
+      # cleans up itself, a stub Tally (not a live one) or an explicit,
+      # gracefully-handled "Tally unreachable" path, and a scripted planner
+      # client rather than a live Anthropic call (the network is poisoned in
+      # the AI suites). The real-tenant oracle sections of the query suites
+      # (verify-query-parity.js and the "REAL DATA" sections) print SKIPPED when
+      # the real tenants do not exist in the database - as here - and run
+      # against them locally.
+      - name: Run self-contained verify-*.js suites
+        run: |
+          failed=0
+          partial=""
+          # Suites whose real-tenant oracle sections still skip here (CI has no WE FOUR / Nirmal data); their synthetic
+          # sections run and must pass, and each is reported PARTIAL, never PASS. Any other SKIP fails the job.
+          #   verify-query-engine.js     section 8: three all-time totals / top customer on real data (the reference-date
+          #                              checks of that section run on synthetic tenant A)
+          #   verify-return-analytics.js section G: engine = Mongo oracle on real Credit/Debit Notes (B1-B6 cover the
+          #                              same metrics on synthetic notes)
+          #   verify-return-ranking.js   section D: real top-N rankings and Nirmal's empty rankings (the default limit
+          #                              and truncation run on synthetic notes)
+          PARTIAL="verify-query-engine.js verify-return-analytics.js verify-return-ranking.js"
+          # Entirely real-data: compares the engine with the existing analytics on WE FOUR. Not run here; its synthetic
+          # counterpart verify-query-parity-synthetic.js runs below.
+          NOT_RUN="verify-query-parity.js"
           for f in \
             verify-tally-parser-voucher-total.js \
+            verify-sales-mapper.js \
             verify-migrate-voucher-total-amount.js \
             verify-security-audit.js \
             verify-company-identity.js \
@@ -135,7 +161,37 @@ jobs:
             verify-voucher-recovery.js \
             verify-reconciliation-history.js \
             verify-reconciliation-perf-and-failure.js \
-            verify-analytics-and-ai.js ; do
+            verify-analytics-scope.js \
+            verify-period-engine.js \
+            verify-month-boundary-dates.js \
+            verify-stock-item-master.js \
+            verify-stock-group-analytics.js \
+            verify-ledger-master.js \
+            verify-adjustment-note.js \
+            verify-query-dsl.js \
+            verify-query-engine.js \
+            verify-query-cache.js \
+            verify-query-parity.js \
+            verify-query-parity-synthetic.js \
+            verify-entity-resolver.js \
+            verify-query-planner.js \
+            verify-query-chat.js \
+            verify-semantic-foundation.js \
+            verify-comparison-period-capability.js \
+            verify-growth-comparison-capability.js \
+            verify-return-query.js \
+            verify-return-analytics.js \
+            verify-return-ranking.js \
+            verify-product-return-analytics.js \
+            verify-presentation.js \
+            verify-ai-telemetry.js \
+            verify-ai-usage-persist.js \
+            verify-cost-forensic.js \
+            verify-chat-management.js \
+            verify-nlu-eval.js ; do
+            case " $NOT_RUN " in
+              *" $f "*) echo "NOT RUN $f (real-data only; needs the WE FOUR tenant)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
+            esac
             echo "::group::$f"
             out=$(mktemp)
             rc=0
@@ -144,20 +200,24 @@ jobs:
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
               echo "FAIL $f (exit $rc)"
-              exit 1
-            fi
-            # verify-analytics-and-ai.js runs its data checks on a synthetic fixture and repeats them on the real
-            # WE FOUR tenant when present; CI has no real tenant, so it prints one SKIP per such section and is
-            # reported PARTIAL, not PASS. A SKIP in any other suite fails the job.
-            if grep -qE '^[[:space:]]*SKIP' "$out"; then
-              if [ "$f" = "verify-analytics-and-ai.js" ]; then
-                echo "PARTIAL $f (real-data repeats skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))"
-              else
-                echo "FAIL $f (a required check was skipped)"
-                exit 1
-              fi
+              failed=1
+            elif grep -qE '^[[:space:]]*SKIP' "$out"; then
+              case " $PARTIAL " in
+                *" $f "*)
+                  n=$(grep -cE '^[[:space:]]*SKIP' "$out")
+                  echo "PARTIAL $f (real-data sections skipped: $n)"
+                  echo "::warning title=PARTIAL $f::$n real-data section(s) skipped; not a full pass"
+                  partial="$partial $f"
+                  ;;
+                *) echo "FAIL $f (a required check was skipped)"; failed=1 ;;
+              esac
             else
               echo "PASS $f"
             fi
             rm -f "$out"
           done
+          {
+            echo "### Verification suites"
+            echo "- PARTIAL (synthetic sections passed, real-data sections skipped):${partial:- none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $failed

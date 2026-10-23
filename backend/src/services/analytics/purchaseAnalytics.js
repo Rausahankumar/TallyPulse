@@ -68,15 +68,6 @@ async function getPurchaseComparison(tenantId, currentPeriod, previousPeriod) {
   };
 }
 
-async function getPurchaseGrowthVsPreviousMonth(tenantId, referenceDate) {
-  const dateRanges = require("./dateRanges");
-  return getPurchaseComparison(
-    tenantId,
-    dateRanges.currentMonthToDate(referenceDate),
-    dateRanges.previousMonthSameRange(referenceDate)
-  );
-}
-
 // Only implemented if the underlying data supports it: Purchase.inventory
 // carries itemName/quantity/rate/amount, same shape as Sale - so this IS
 // reliably calculable, unlike category performance.
@@ -195,7 +186,6 @@ async function getPurchaseTrend(tenantId, period) {
 module.exports = {
   getPurchaseSummary,
   getPurchaseComparison,
-  getPurchaseGrowthVsPreviousMonth,
   getTopPurchasedProducts,
   getTopSuppliers,
   getPurchaseTrend,

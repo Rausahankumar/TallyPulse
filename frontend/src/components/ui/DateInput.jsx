@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CalendarDays } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { formatTypedDate, parseDateInputValue, parseTypedDate, toDateInputValue } from "../../lib/mockDateRange";
+import { formatTypedDate, parseDateInputValue, parseTypedDate, toDateInputValue } from "../../lib/dateRange";
 
 // A date field you can type into directly ("1-May-2025") or pick from
 // a native calendar, overlaid transparently on the right so clicking

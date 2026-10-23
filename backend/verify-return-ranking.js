@@ -1,15 +1,14 @@
 /**
  * Return Analytics: Top-N customer/supplier ranking by sales/purchase
- * return amount (routeReturnQuestion's ranking grammar in localRouter.js,
- * unchanged execute.js/compile.js - groupBy+sort+limit, already generic).
+ * return amount (execute.js/compile.js unchanged - groupBy+sort+limit, already generic).
  *
  * Complements verify-return-analytics.js (totals/trend/comparison) and
  * verify-return-query.js. This suite is the ranking-specific checklist:
  * top 1/5/10, no-N default, both directions, date filtering, tenant
- * isolation, zero vs missing coverage, deterministic ties, cache hits,
- * and unsupported ranking requests.
+ * isolation, zero vs missing coverage, deterministic ties and cache hits.
+ * (Phrasing -> plan is the planner's job; see verify-query-planner.js.)
  *
- * SYNTHETIC fixtures for A-C; SECTION D reads real WE FOUR/Nirmal data
+ * SYNTHETIC fixtures for B-C; SECTION D reads real WE FOUR/Nirmal data
  * READ-ONLY - no writes, no Tally calls, no Claude calls.
  *
  * Run: node verify-return-ranking.js
@@ -20,8 +19,6 @@ const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
-const { routeQuestion } = require("./src/services/query/localRouter");
-const { createEntityResolver } = require("./src/services/query/entityResolver");
 const { executeQuery } = require("./src/services/query/execute");
 const { createAnswerCache } = require("./src/services/query/answerCache");
 
@@ -39,10 +36,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 const T1 = "TEST-TENANT-return-ranking";
 const T2 = "TEST-TENANT-return-ranking-other";
-const REF = new Date(2026, 8, 20, 12, 0, 0); // 20 Sep 2026
-const resolver = createEntityResolver({ tenantId: "TEST-TENANT", sources: { customer: async () => [], supplier: async () => [], product: async () => [], productGroup: async () => [] } });
-const route = (q) => routeQuestion(q, { resolveEntity: resolver, referenceDate: REF });
-
 const utc = (s) => new Date(`${s}T00:00:00.000Z`);
 let seq = 0;
 function note({ noteType, classification, party, amount, date, status = "active" }) {
@@ -69,43 +62,6 @@ async function cleanup() {
   await connectDB();
   await cleanup();
   try {
-    // ============================================================ A. ROUTER
-    section("A. ROUTER: ranking grammar");
-    const plan = async (q) => {
-      const r = await route(q);
-      return r.status === "supported" ? r.plan : `${r.status}/${r.code}`;
-    };
-    check("Top 1", (await plan("Top 1 customer by sales returns")).limit === 1);
-    check("Top 5", (await plan("Top 5 customers by sales returns")).limit === 5);
-    check("Top 10", (await plan("Show top 10 customers by returned amount")).limit === 10);
-    {
-      const p = await plan("Which customers returned the most?");
-      check("default N (none stated) -> plan.limit left unset; validator.js applies the product's existing default (10)", p.limit === undefined && p.groupBy[0].dim === "customer" && p.sort[0].dir === "desc", JSON.stringify(p));
-    }
-    check("sales return ranking -> entity sales_return, groupBy customer", same((await plan("Who had the highest sales returns?")).entity, "sales_return"));
-    check("purchase return ranking -> entity purchase_return, groupBy supplier", same((await plan("Which suppliers had the highest purchase returns?")).entity, "purchase_return"));
-    check("reversed purchase phrasing ('return the most purchases to') -> purchase_return/supplier", same(await plan("Who did we return the most purchases to?"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "all_time" }, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }] }));
-    check("date filtering: an explicit period is used, not defaulted", same((await plan("Top 5 customers by sales returns this month")).period, { kind: "current_month" }));
-    {
-      const p = await plan("Top 5 suppliers by purchase returns");
-      check("purchase-side top N", p.limit === 5 && p.entity === "purchase_return" && p.groupBy[0].dim === "supplier");
-    }
-
-    for (const [q, wantCode] of [
-      // "Top 5 products by sales returns" is now SUPPORTED (Product-Level Return Analytics phase) -
-      // see verify-product-return-analytics.js.
-      ["Top 5 customers by sales returns this month vs last month", "unsupported_combination"], // ranking + comparison
-      ["Top 500000 customers by sales returns", "limit_too_large"], // over the DSL's own cap
-    ]) {
-      const r = await route(q);
-      const got = r.code === "unsupported_capability" ? r.capability : r.code;
-      check(`unsupported ranking request: "${q}" -> ${wantCode}`, r.status === "unsupported" && got === wantCode, `${r.status}/${r.code}/${r.capability}`);
-    }
-    {
-      const r = await route("Top 5 customers by sales returns and purchase returns");
-      check("ambiguous direction stays refused even with a ranking", r.status === "unsupported" && r.code === "return_direction_ambiguous", `${r.status}/${r.code}`);
-    }
-
     // ============================================================ B. ENGINE
     section("B. ENGINE: ranking result vs a hand-computed oracle");
     await AdjustmentNote.insertMany([
@@ -135,6 +91,13 @@ async function cleanup() {
     res = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: SEP, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: T2 });
     check("tenant isolation: a different tenant's ranking is empty", res.ok && res.rows.length === 0);
 
+    // No N stated, synthetic: 12 customers in October 2026 (outside SEP and January above), amounts R01 1200 .. R12 100,
+    // all distinct. The validator's default limit (10) applies, so R01..R10 come back and the result is flagged truncated.
+    const OCT_RANKING = Array.from({ length: 12 }, (_, i) => [`R${String(i + 1).padStart(2, "0")}`, (12 - i) * 100]);
+    await AdjustmentNote.insertMany(OCT_RANKING.map(([party, amount], i) => note({ noteType: "credit", classification: "sales_return", party, amount, date: `2026-10-${String(i + 1).padStart(2, "0")}` })));
+    res = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2026-10-01", to: "2026-10-31" }, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: T1 });
+    check("no-N ranking applies the default limit: rowLimit 10, truncated, rows = [R01 1200 .. R10 300], R11/R12 absent", res.ok && res.rowLimit === 10 && res.truncated === true && same(res.rows.map((r) => [r.key.customer, r.values.returnAmount]), OCT_RANKING.slice(0, 10)), JSON.stringify(res.ok ? { rowLimit: res.rowLimit, truncated: res.truncated, rows: res.rows.map((r) => [r.key.customer, r.values.returnAmount]) } : res.errors));
+
     // ============================================================ C. CACHE
     section("C. CACHE: repeat ranking query hits");
     let execCalls = 0;
@@ -150,6 +113,9 @@ async function cleanup() {
 
     // ============================================================ D. REAL DATA (read-only, WE FOUR + Nirmal)
     section("D. REAL DATA oracle (read-only, no writes, no Tally, no Claude)");
+    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: "6ab21418959e173f9b3f367f" })) > 0;
+    if (!REAL_PRESENT) console.log("  SKIPPED - the real WE FOUR/Nirmal tenants are not present in this database");
+    else {
     const WE_FOUR = "6ab21418959e173f9b3f367f";
     const NIRMAL = "6ab21fe0959e173f9b3f3682";
     const ALL_TIME = { kind: "all_time" };
@@ -166,7 +132,7 @@ async function cleanup() {
     const oracleTop3 = top3SupplierOracle.map((r) => [r._id, Math.round(r.amt * 100) / 100]);
     check("D2 WE FOUR top-3 suppliers by purchase returns = independent Mongo oracle", top3SupplierEngine.ok && same(engineTop3, oracleTop3), JSON.stringify({ engine: engineTop3, oracle: oracleTop3 }));
 
-    // No N stated: the router leaves plan.limit unset, and validator.js applies the product's own
+    // No N stated: the plan leaves plan.limit unset, and validator.js applies the product's own
     // existing default (LIMITS.defaultLimit = 10, truncated: true) - not "return everything". Confirmed
     // against real data: the same 10 rows an independent oracle limited to 10 would return.
     const top10CustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 10 }]);
@@ -179,6 +145,7 @@ async function cleanup() {
     check("D4 Nirmal top-5 sales-return customers = genuine empty ranking (no Credit Notes exist)", nirmalRanking.ok && nirmalRanking.rows.length === 0);
     const nirmalPurchRanking = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: NIRMAL });
     check("D5 Nirmal top-5 purchase-return suppliers = genuine empty ranking", nirmalPurchRanking.ok && nirmalPurchRanking.rows.length === 0);
+    }
   } catch (error) {
     fail += 1;
     console.log("  FAIL - unexpected error:", error && error.stack);

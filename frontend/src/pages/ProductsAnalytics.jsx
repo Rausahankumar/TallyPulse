@@ -12,7 +12,7 @@ import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
 import { usePersistedRange } from "../lib/usePersistedRange";
 import { formatCurrency } from "../lib/format";
-import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";
+import { DEFAULT_RANGE, toDateInputValue } from "../lib/dateRange";
 import { getTopProducts, getGrowingProducts, getDecliningProducts } from "../api/analytics";
 
 const TABS = [

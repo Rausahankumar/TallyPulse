@@ -86,7 +86,7 @@ function isZero(plan, result) {
 /**
  * @returns {{text:string, warnings:string[], zero:boolean}}
  */
-function formatQueryAnswer({ plan, result, routerAssumptions = [], plannerAssumptions = [], source = "router", contextNotes = [] }) {
+function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumptions = [], contextNotes = [] }) {
   const lines = [];
   const entity = CATALOG.entities[plan.entity].label;
   const parts = [entity, periodText(plan, result)];
@@ -139,8 +139,8 @@ function formatQueryAnswer({ plan, result, routerAssumptions = [], plannerAssump
   // ---- notes: how it was interpreted + engine assumptions + basis
   // coverage / period-scope / follow-up facts first: they change how every figure above must be read
   const notes = contextNotes.map((n) => n.message);
-  if (source === "planner") for (const a of plannerAssumptions) notes.push(`Interpretation (AI-assisted): ${a}`);
-  for (const a of routerAssumptions) notes.push(a.message);
+  for (const a of plannerAssumptions) notes.push(`Interpretation (AI-assisted): ${a}`);
+  for (const a of definitionNotes) notes.push(a.message);
   for (const a of result.assumptions || []) notes.push(a.message);
   const bases = new Set(Object.values(result.amountBasis || {}));
   if (bases.has("voucher_total_incl_tax")) notes.push("Invoice amounts are invoice totals including tax.");
@@ -149,33 +149,21 @@ function formatQueryAnswer({ plan, result, routerAssumptions = [], plannerAssump
   if (uniq.length) lines.push("", ...uniq.map((n) => `• ${n}`));
 
   const warnings = [...new Set((result.warnings || []).map((w) => w.message))];
-  return { text: lines.join("\n"), warnings, zero };
+  return { text: lines.join("\n"), warnings, zero, notes: uniq };
 }
 
 // ---- honest, Claude-free messages for non-answers --------------------------------------
 
 const CLARIFY = {
-  ambiguous_period: 'Which period do you mean? "This year" could be the financial year (April–March) or the calendar year. Try "this financial year" or "FY 2025-26".',
   year_missing: "Which year do you mean? For example: \"April 2025\".",
-  period_missing: 'Which period should I use? For example: "last month", "this financial year" or "FY 2025-26".',
-  invalid_fy: 'That financial year isn’t valid. Write it like "FY 2025-26" (consecutive years).',
-  unsupported_window: 'Rolling windows are limited to the last 7, 30 or 90 days. For a longer span use a named period ("last quarter", "this financial year", "FY 2025-26") or explicit dates ("2025-04-01 to 2025-09-30").',
-  period_label_unsupported: 'Quarter and half-year labels such as "Q1" or "H1" mean different months in the financial year (Q1 = April–June) and the calendar year (Q1 = January–March). Please give the dates, for example "2025-04-01 to 2025-06-30", or say "this quarter" / "last quarter".',
-  relative_offset_unsupported: 'I can\'t count back periods ("two months ago", "the month before last") yet. Please name the period, for example "July 2025", "last month" or "2025-07-01 to 2025-07-31".',
-  open_ended_range: 'Please give both ends of the range, for example "2025-04-01 to 2025-12-31", or a named period such as "this financial year".',
   question_too_long: "Please shorten the question.",
-  who_ambiguous: 'Who do you mean - customers or suppliers? For example "which customers bought less this month than last month" or "which suppliers did we buy less from this month".',
-  threshold_direction_missing: 'Should that be a rise or a fall? For example "customers whose sales grew by more than 20% this month vs last month" or "customers whose sales fell by more than 20% this month vs last month".',
-  vague_performance: '"Doing better" can mean more sales, more invoices or a bigger share, so I won’t guess. Try for example "which customers bought more this month than last month" or "top 10 customers by growth this month vs last month".',
-  too_many_periods: 'That names more than two time periods. I answer one period at a time, or compare two, for example "sales this month" or "sales this month vs last month". Please ask them as separate questions.',
-  two_periods_without_comparison: 'That names two time periods without saying how to compare them. To compare, write for example "sales this month vs last month"; otherwise ask one period at a time.',
   entity_not_resolved: "I couldn’t find that customer, supplier, product or group in your data. Please check the spelling.",
   planner_needs_clarification: null, // uses the planner's own message
 };
 const SCOPE_HINT = "I can answer questions about Sales and Purchase amounts, invoice counts, quantities, and breakdowns by customer, supplier, product, product group, voucher type or time.";
 
 // Refusals whose own reason already says what CAN be asked instead (no generic scope list appended).
-const REASON_ONLY_CODES = new Set(["limit_too_large", "unsupported_combination", "reasoning_not_supported", "unsupported_growth_rate", "unsupported_growth_pattern", "unsupported_first_purchase", "unsupported_reactivation", "unsupported_share_of_total", "unsupported_new_party"]);
+const REASON_ONLY_CODES = new Set(["unsupported_new_party"]);
 
 function formatNonAnswer(result) {
   if (result.status === "unsupported") {
@@ -187,4 +175,4 @@ function formatNonAnswer(result) {
   return canned || result.reason || "Could you clarify the question?";
 }
 
-module.exports = { formatQueryAnswer, formatNonAnswer, fmtMoney, fmtNumber, SCOPE_HINT, MAX_DISPLAY_ROWS };
+module.exports = { formatQueryAnswer, formatNonAnswer, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };

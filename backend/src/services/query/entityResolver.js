@@ -1,23 +1,31 @@
 "use strict";
 
 // --------------------------------------------------
-// Tenant-scoped entity resolver for the local router (Phase 1D).
+// Tenant-scoped entity resolver (used by the planner to re-verify every name it put in a plan).
 //
 // Confirms that a name typed in a question really exists for THIS tenant as
 // a customer / supplier / product / product group, and returns the canonical
 // stored spelling. The tenantId is fixed at construction by the server and
 // is never read from question text. Read-only; every query is filtered by
-// tenantId. Names are compared on the router's normalized form (case,
+// tenantId. Names are compared on a normalized form (case,
 // punctuation and spacing insensitive). An EXACT normalized match always wins. There is no fuzzy matching; the
 // one relaxation is a typed name that is the leading whole word(s) of exactly ONE stored name (see resolveEntity).
 // --------------------------------------------------
 
-const { normalizeText } = require("./localRouter");
+/** Lower-case, punctuation-free, single-spaced form used to compare entity names. */
+function normalizeText(raw) {
+  return String(raw)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[‘’']/g, "")
+    .replace(/[^a-z0-9%\-\s]/g, " ")
+    .replace(/(^|\s)-+(?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 const READ_TIMEOUT_MS = 5000;
 const ENTITY_RESOLVER_UNAVAILABLE = "ENTITY_RESOLVER_UNAVAILABLE";
-const DIMS = ["customer", "supplier", "product", "productGroup"];
-const MAX_SPAN_TOKENS = 20;
 const PREFIX_MIN_FIRST_WORD = 4; // a shorter first word ("a", "mr", "new") is too generic to stand for a stored name
 
 function defaultSources(tenantId) {
@@ -98,93 +106,6 @@ function createEntityResolver({ tenantId, sources } = {}) {
     return { matches };
   }
 
-  // ---- span index (P1-2): the SAME four tenant-scoped indexes viewed as one set of known names, so the
-  // router can mark a known name as opaque before its grammar runs. Built only from this resolver's own
-  // loads - never a global index - and dropped with the resolver. A failed load is not cached (see index()).
-  let known = null;
-  function knownNames() {
-    if (!known) {
-      const building = Promise.all(DIMS.map((d) => index(d)))
-        .then((maps) => {
-          const keys = new Set();
-          const raw = new Set();
-          let maxTokens = 1;
-          for (const m of maps) {
-            for (const [key, value] of m) {
-              keys.add(key);
-              raw.add(value.trim());
-              maxTokens = Math.max(maxTokens, key.split(" ").length);
-            }
-          }
-          return { keys, raw: [...raw].filter(Boolean), maxTokens: Math.min(maxTokens, MAX_SPAN_TOKENS), literalsByPick: new WeakMap() };
-        })
-        .catch((error) => {
-          if (known === building) known = null;
-          throw error;
-        });
-      known = building;
-    }
-    return known;
-  }
-
-  const spanIndex = {
-    /**
-     * Leftmost-longest known-name spans over normalized tokens. `accept(slice)` lets the caller veto a span
-     * (e.g. one made only of grammar words). Deterministic: scans left to right, longest first, no overlaps.
-     */
-    async findSpans(tokens, accept = () => true) {
-      const { keys, maxTokens } = await knownNames();
-      const spans = [];
-      for (let i = 0; i < tokens.length; ) {
-        let hit = 0;
-        for (let n = Math.min(maxTokens, tokens.length - i); n >= 1; n -= 1) {
-          const slice = tokens.slice(i, i + n);
-          if (keys.has(slice.join(" ")) && accept(slice)) {
-            hit = n;
-            break;
-          }
-        }
-        if (hit) {
-          spans.push({ start: i, end: i + hit, text: tokens.slice(i, i + hit).join(" ") });
-          i += hit;
-        } else i += 1;
-      }
-      return spans;
-    },
-    /**
-     * Exact (case-insensitive) occurrences in the RAW question of stored names chosen by `pick` - used only
-     * for names whose own characters the router's input gate would reject. Longest names first, no overlaps,
-     * whole-word boundaries. Returns character offsets; nothing is interpreted.
-     */
-    async findLiterals(raw, pick = () => false) {
-      const loaded = await knownNames();
-      const lower = String(raw).toLowerCase();
-      // Candidates depend only on the loaded names and the caller's (stable) predicate: computed once per load.
-      let ordered = loaded.literalsByPick.get(pick);
-      if (!ordered) {
-        const variants = new Set();
-        for (const n of loaded.raw) {
-          if (!pick(n)) continue;
-          variants.add(n);
-          const bare = n.replace(/^[\s*.,-]+|[\s*.,-]+$/g, ""); // "* Fevikwik 203 [20gm]20" is typed without "* "
-          if (bare) variants.add(bare);
-        }
-        ordered = [...variants].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
-        loaded.literalsByPick.set(pick, ordered);
-      }
-      const found = [];
-      for (const name of ordered) {
-        const needle = name.toLowerCase();
-        for (let at = lower.indexOf(needle); at !== -1; at = lower.indexOf(needle, at + 1)) {
-          const end = at + needle.length;
-          const bounded = !/[a-z0-9]/i.test(raw[at - 1] || "") && !/[a-z0-9]/i.test(raw[end] || "");
-          if (bounded && !found.some((f) => at < f.end && end > f.start)) found.push({ start: at, end, name });
-        }
-      }
-      return found.sort((a, b) => a.start - b.start);
-    },
-  };
-  resolveEntity.spanIndex = spanIndex;
   return resolveEntity;
 }
 

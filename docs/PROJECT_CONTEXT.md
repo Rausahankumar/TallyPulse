@@ -8,7 +8,7 @@ Durable knowledge only: no logs, no test counts, no local run state. Keep it to 
 - **Stack:**
   - backend: Node + Express 5 + Mongoose 9 + MongoDB Atlas (`backend/`);
   - frontend: React/Vite (`frontend/src`, not coupled to sync internals);
-  - Claude: only for the planner and legacy explanations.
+  - Claude: only as the query planner (turns a question into a structured Query Plan); it never computes or writes an answer.
 - **Tally:** HTTP JSONEx at `http://localhost:9000`. Only one *selected* company answers at a time.
 - **Tenant model:** tenant = one Tally company, identified by its `companyGuid`. Users reach companies through `UserCompanyAccess`.
 
@@ -16,8 +16,8 @@ Durable knowledge only: no logs, no test counts, no local run state. Keep it to 
 ```
 TallyPrime -> odbcService (HTTP JSONEx) -> company guard + GUID ownership validation
   -> parser/mapper -> voucherPersistence / master refresh -> MongoDB (tenant-scoped)
-  -> Query Engine (router -> [planner] -> DSL -> validator -> compiler -> executor -> answer cache)
-  -> deterministic formatted answer   (Claude = planner / legacy explanation only)
+  -> Query Engine (planner -> DSL -> validator -> compiler -> executor -> answer cache)
+  -> deterministic formatted answer   (Claude = planner only)
 ```
 
 ## C. Directory map (backend/src)
@@ -38,13 +38,12 @@ TallyPrime -> odbcService (HTTP JSONEx) -> company guard + GUID ownership valida
 | `services/import/tallySalesImport.js` | Manual "Run Sales Sync Now" (`POST /api/import/tally-live`) | Manual import |
 | `services/parser/tallyParser.js`, `services/mapper/*` | JSONEx unwrap, `parseTallyDate` (UTC midnight), voucher mapping | Voucher shape changes |
 | `services/analytics/*` | `analyticsScope.buildVoucherMatchStage` (tenant + active + date); `periodEngine` / `dateRanges`; `referenceDate.getTenantDateContext`; `coverage.js`; `freshness`; `trustEnvelope`; sales/purchase/report/stockGroup analytics | Period math, REST analytics |
-| `services/query/*` | AI query engine (section G) | AI answers |
-| `services/ai/*` | Legacy Claude chat (`chatOrchestrator`, `tools`, `toolRouter`); REST comparison helpers | Legacy chat / tools |
+| `services/query/*` | AI query engine (section G); the only answer path of `POST /api/chat/message` | AI answers |
 | `controllers/`, `routes/` | Express layer: auth, analytics, chat, import, odbc, report, sync, voucher | API changes |
 | `middleware/` | auth, httpSecurity, rateLimit, requestId, upload, errorHandler | Security/API plumbing |
 
 Backend root scripts: `verify-*.js` (tests), `refresh-stock-item-master.js`, `refresh-ledger-master.js --tenant <id>`.
-GOTCHA: `backend/` contains a leftover nested `.git`. Always run git from `D:\TallyPulse`.
+Run git from the repository root (`D:\TallyPulse`), never from `backend/`. Configuration: `backend/.env` (git-ignored); the committed template is `backend/.env.example`.
 
 ## D. Data models (`backend/src/models`)
 | Model | Key fields / identity | Indexes / notes |
@@ -57,7 +56,8 @@ GOTCHA: `backend/` contains a leftover nested `.git`. Always run git from `D:\Ta
 | `ReconciliationCheckpoint` | Separate from SyncCheckpoint; self-heal fields | — |
 | `Company`, `User`, `UserCompanyAccess` | Company carries `tenantId`, `companyGuid`, `tallyConnection.baseUrl` | — |
 | `TenantDataVersion` | Per-tenant counter bumped by `dataVersion.tenantDataVersionPlugin` on every write | Invalidates the answer cache. Add the plugin to every model that feeds answers |
-| `Chat` | Messages + `queryContext` for follow-ups | — |
+| `Chat` | Messages + `queryContext` (the stored structured plan, for follow-ups) | `{tenantId, userId, updatedAt}` |
+| `AiTurnUsage` | One record per AI turn: `requestId`, `aiPath`, planner model, token counters, latencies, `ok`, `failureCategory`. Counters only; written fire-and-forget by `usageStore.js` | `AI_USAGE_PERSIST=off` disables |
 
 ## E. Tally integration rules
 - One request at a time, narrow ranges, bounded timeouts, no polling loops. The gateway hangs under wide or concurrent queries.
@@ -81,22 +81,17 @@ GOTCHA: `backend/` contains a leftover nested `.git`. Always run git from `D:\Ta
 ## G. AI / query architecture (`services/query`)
 ```
 queryChat.tryAnswerWithQueryEngine
-  -> followUp.js (uses the previous turn's queryContext)  |  localRouter.routeQuestion (deterministic)
-  -> planner.js (Claude, only on needs_planner; server-side guards)
+  -> planner.js (Claude = the ONLY natural-language interpreter; there is no deterministic router. One forced `submit_query_plan` call per question, plus the previous turn's STRUCTURED plan for follow-ups (`followUp.js` state read from `queryContext`); server-side guards live in planner.js)
   -> queryPlan.schema (zod) -> validator (semanticCatalog-driven) -> compile (safe pipelines) -> execute
   -> answerCache (keyed by plan + TenantDataVersion) -> answerFormatter (text + notes + warnings)
-  -> turnTelemetry (allow-listed codes only)
+  -> turnTelemetry (allow-listed codes only; each event is also persisted fire-and-forget as one `AiTurnUsage` record by `usageStore.js`, usage counters only, no cost - no pricing config exists; `AI_USAGE_PERSIST=off` disables)
 ```
-- **Router statuses:**
-  - `supported` → plan;
-  - `unsupported` → final honest answer;
-  - `needs_planner` → Claude;
-  - `temporarily_unavailable` → entity resolver down.
-- **Claude is NOT called for:** supported and unsupported routes, follow-ups, validation or execution refusals, `ledger_master_missing`, or revenue questions (no legacy fallback).
-- **Claude MAY be called for:** the planner (`needs_planner`), and the legacy chat when the engine declines a non-revenue question.
-- **Dead-end codes (`SKIP_ROUTER_CODES`, planner.js) never reach Claude, with or without chat history:** `queryChat` answers them with the router's fixed clarification before its history → legacy-chat branch (revenue follow-ups are still refused first). That includes several time periods with no comparison word (`too_many_periods`, `two_periods_without_comparison`). One exception: `entity_not_resolved` plus a follow-up cue ("compare the two") keeps the history-aware legacy path, because the "name" is a reference to an earlier turn.
-- **Stop / client disconnect:** `chatController` turns the response closing before it is written (checked at entry too - a Stop during auth middleware closes the socket before the listener exists) into an AbortSignal passed to `queryChat` (skips the planner), `planner.js` (aborts the in-flight SDK call, no repair) and `chatOrchestrator` (aborts the in-flight call, never starts another tool round). An aborted turn is never answered via legacy chat and never saved; telemetry records `clientAborted: true`, `httpStatus: 499`.
-- **Answer rendering is frontend-only and ₹0:** `ChatBubble` → `MarkdownMessage` (react-markdown + remark-gfm + remark-breaks; no raw HTML, no images, sanitised links) renders both the engine's line-oriented text and legacy chat's Markdown. The user's own question is shown as plain text. No AI call or backend change is involved in formatting.
+- **Planner outcomes:** `supported` → plan; `unsupported` (decline, unsafe-input gate, new-party guard) → final honest answer; `needs_clarification` (decline or the year guard) → a question back; `planner_failed` → the fixed "planner unavailable" message; entity resolver down while the planner's names are verified → `planner_failed` / `planner_entity_check_failed` (the fixed "couldn't look up names, try again" message; never "not found"). An unexpected exception or a query that is too slow ends in the fixed `execution_failed` message. There is no second answer path.
+- **Claude is called exactly once per question that passes the safety gate (the planner), with no repair on the engine path.** It is NOT called for: unsafe/empty/oversized text, an aborted request, or the revenue guard. Validation, coverage, freshness and execution refusals happen after that one call (`ledger_master_missing` too). Raw chat history is never sent: a follow-up carries only the previous STRUCTURED plan, added to the user message as JSON, and only when a valid stored plan exists. The planner's year guard accepts years present in the previous plan's own dates.
+- **Planner guards (planner.js, after Claude answers):** unsafe-input gate before any call; revenue guard (`mentionsRevenue` → pre-tax `lineAmount` + `REVENUE_ASSUMPTION` note); year guard (a year the user never wrote → `year_missing`); new-customer/supplier comparison refused (`unsupported_new_party`); month comparison rule (decision 2, below); every entity name re-resolved against the tenant's own data.
+- **Stop / client disconnect:** `chatController` turns the response closing before it is written (checked at entry too - a Stop during auth middleware closes the socket before the listener exists) into an AbortSignal passed to `queryChat` (skips the planner), and `planner.js` (aborts the in-flight SDK call, no repair). An aborted turn is never saved and nothing is written to the closed connection; telemetry records `clientAborted: true`, `httpStatus: 499`.
+- **Structured answers (presentation):** `presentation.js` builds a deterministic model (KPI / ranking / trend / comparison / table / empty) from the plan + engine result and returns it in the existing `visualization` slot (persisted on the message); the text `answer` is unchanged. Figures are the engine's own formatted values (only the comparison "Avg order" is derived: amount ÷ orders, marked). `ChatBubble` → `present/PresentationView` (recharts bar-h / line / bar + exact-value `DataTable`). Not-found answers, clarifications and refusals stay Markdown text.
+- **Answer rendering is frontend-only and ₹0:** `ChatBubble` → `MarkdownMessage` (react-markdown + remark-gfm + remark-breaks; no raw HTML, no images, sanitised links) renders the engine's line-oriented text. The user's own question is shown as plain text. No AI call or backend change is involved in formatting.
 - **DSL:** entity (sales/purchase/sales_return/purchase_return), mode (aggregate/list - list not wired for the return entities), metrics, groupBy (customer, supplier, product, productGroup, voucherType, date buckets), filters (`eq_ci`, `in_ci`, `contains_ci`, and `new_in_period` on customer/supplier), compare, having, sort, limit. `sales_return`/`purchase_return` bake a hard `classification` match into the compiled pipeline (`compile.js` `scopeStage`'s `forcedMatch`) - never a user-controlled filter, so a value_adjustment note can never be counted as a return.
 - **Executor pre-resolutions** (one bounded read each, no N+1):
   - a productGroup filter → item names (StockItemMaster);
@@ -122,12 +117,9 @@ queryChat.tryAnswerWithQueryEngine
   - No master → `ledger_master_missing`.
   - The role comes from the transaction side (sales = customer, purchase = supplier), not from the ledger group.
 - **New products:** still "sold now, not in the comparison period".
-- **Names:** an exact normalized match wins. Otherwise a typed name that is the leading whole word(s) (first word 4+ chars) of EXACTLY ONE stored name resolves to it (`entityResolver`, flagged `partial`; the router adds the `name_matched_by_prefix` note). Two or more candidates → not resolved.
-- **Month ranges:** "Apr 2025 to Aug 2025" / "April 2025 se August 2025 tak" is ONE custom period (`normalizeMonthRanges`); inside an explicit FY, bare months take its years ("FY 2025-26 … April se August tak" = 2025-04-01..2025-08-31, FY label consumed). Not applied when the question has a change/compare word (that is a comparison of two periods), after "compare", for a reversed range, or for "X and Y" without "between". Bare months with no FY still ask for the year.
-- **Legacy chat names:** `get_customer_sales` resolves the typed name with the same tenant resolver (exact or unique leading word) before the exact-match lookup; anything else keeps the name as typed.
-- **Hinglish:** only pure fillers (ki, kitni, hui, thi, mein, bhi, dikhao…) and `pichle/is mahine`, `aaj` are mapped (`localRouter` `STOP`, `normalizeHinglish`). A run containing a meaning word (kam, maal, kharida, bike, sabse, se…: `HINGLISH_CONTENT`) is `unrecognized_words` → planner (fresh chat) or legacy (with history), never a name lookup.
-- **Refused:** first-ever purchase, reactivated/returning customers, % growth ranking, rolling windows, "N months ago".
-- **Follow-ups:** answered by `followUp.js` from the stored `queryContext`. "Which of them are new?" is refused (ask it directly with a period).
+- **Names:** an exact normalized match wins. Otherwise a typed name that is the leading whole word(s) (first word 4+ chars) of EXACTLY ONE stored name resolves to it (`entityResolver`, flagged `partial`; the planner path does not add a note for it). Two or more candidates → not resolved. The planner re-resolves every name it puts in a filter and replaces it with the stored spelling, or refuses.
+- **Not representable (the planner declines or asks):** first-ever purchase, reactivated/returning customers, rolling windows beyond the DSL's 7/30/90 days, "N months ago". Whether a given phrasing is declined, clarified or answered is the planner's call (see `verify-nlu-eval.js`); no deterministic code decides it. Meanings in detail: `docs/SEMANTIC_FOUNDATION.md`.
+- **Follow-ups:** the planner receives the previous structured plan (`queryContext`, strictly re-parsed by `followUp.readQueryState`) and interprets the new question against it. A conversation with no valid stored plan is planned as a fresh question.
 - **Unchanged (open decision):** REST dashboard/reports anchor to the latest voucher; REST `vs_previous_month` cards keep the old comparison.
 
 ## I. Capabilities
@@ -137,13 +129,13 @@ queryChat.tryAnswerWithQueryEngine
 - Ask AI chat management: Stop (real HTTP abort), rename (`PATCH /api/chat/:chatId` - title only, trimmed, 1–100 chars, no control characters, tenant+user scoped, does not reorder the list), delete with confirmation.
 - Deterministic AI answers: totals, rankings, breakdowns, series, comparisons, grew/declined/stopped, product groups, new parties, follow-ups, coverage/future-voucher disclosures, answer cache, telemetry.
 - Return analytics (`sales_return`/`purchase_return`): total amount/count, top-N customer/supplier ranking by return amount (any N, or the product's own default of 10 when none is stated - `LIMITS.defaultLimit`, same rule every grouped query already gets), a month-by-month trend, and one comparison (current period vs its decision-2 default - complete previous month, or like-for-like for a quarter). Ties break deterministically on the party name (reused, unmodified `compile.js`). A question with no period defaults to all history for a ranking/trend (matching the main grammar's own rule) but still requires one for a plain total. Freshness/coverage correctly track the Credit Note/Debit Note sync checkpoints (fixed in the analytics phase - they used to check Sales/Purchase's).
-- Product-level return analytics: returned quantity (`returnQuantity`) and returned pre-tax value (`returnLineAmount`, line grain), by product name (raw `inventory.itemName`, same no-StockItemMaster-merge identity as the existing `product` dimension) - a specific product (filtered) or a top-N ranking. Accounting basis, confirmed against real WE FOUR data before implementing: `inventory.quantity` is always positive on both sides; `inventory.amount` is Tally's own signed entry (<=0 on every sales_return line, >=0 on every purchase_return line), so `returnLineAmount` sums its absolute value (`compile.js` accumulator gained a generic `abs: true` option) - this is the pre-tax LINE value, distinct from `returnAmount` (tax-inclusive voucher total, cannot be split across lines). Router: passive "X were/was returned" reads as a sales return, active "we/did we return(ed)" as a purchase return (a real grammatical signal, not a guessed default) - genuinely bare phrasing with no direction word at all ("Product returns", "Top 10 returned products") stays refused, deliberately, per the ambiguity rule.
+- Product-level return analytics: returned quantity (`returnQuantity`) and returned pre-tax value (`returnLineAmount`, line grain), by product name (raw `inventory.itemName`, same no-StockItemMaster-merge identity as the existing `product` dimension) - a specific product (filtered) or a top-N ranking. Accounting basis, confirmed against real WE FOUR data before implementing: `inventory.quantity` is always positive on both sides; `inventory.amount` is Tally's own signed entry (<=0 on every sales_return line, >=0 on every purchase_return line), so `returnLineAmount` sums its absolute value (`compile.js` accumulator gained a generic `abs: true` option) - this is the pre-tax LINE value, distinct from `returnAmount` (tax-inclusive voucher total, cannot be split across lines). Which return direction a phrasing means is now the planner's interpretation (there is no router grammar); the engine only accepts a valid `sales_return`/`purchase_return` plan.
 
 ## J. Known limitations
 - Stock-item and ledger masters refresh on demand only (scripts); no scheduled job.
 - No poison-voucher quarantine: one unmappable voucher blocks the checkpoint.
 - Credit/Debit Note (`AdjustmentNote`) recovery/reconciliation workers don't exist yet (only incremental sync) - a manually deleted note strands like a manually deleted Sale would.
-- Returns: no product GROUP analytics (`productGroup` - StockItemMaster-based, deliberately separate from this phase), no product-level return COUNT (voucher count vs line count is ambiguous - refused explicitly, not guessed), no return reasons/rate, no partial/full status, no GST-head impact, no net sales/purchases after returns, no list mode, no day/week trend (month only) - all refused explicitly, not guessed. A customer/supplier or product breakdown/ranking cannot be combined with a comparison or a trend in one question yet (refused, `unsupported_combination`, so a ranking can never silently become a growth-ranking question); a product breakdown cannot combine with a customer/supplier breakdown either; over `LIMITS.maxLimit` refuses (`limit_too_large`); both directions in one question refuses (`return_direction_ambiguous`). Router phrasing coverage is deliberately narrow (see `routeReturnQuestion` in `localRouter.js`); unmatched return wording (including genuinely direction-less product phrasing like "Product returns") falls back to the general `net_of_returns` refusal rather than the planner (which doesn't know these entities yet).
+- Returns: no product GROUP analytics (`productGroup` - StockItemMaster-based), no product-level return COUNT (voucher count vs line count is ambiguous), no return reasons/rate, no partial/full status, no GST-head impact, no net sales/purchases after returns, no list mode, no day/week trend (month only). The engine executes any plan the schema and validator accept (a limit above `LIMITS.maxLimit` is rejected by the schema; a customer/supplier/product breakdown needs an explicit sort), so keeping a question to what the user asked (for example not turning a ranking into a growth ranking, one return direction per question) is the planner's job, not a deterministic refusal. KNOWN GAP: the planner prompt (`planner.js`) lists the return entities from the catalog but still carries the old rule "returns/credit notes -> decline", so return questions may be declined until that prompt is revisited and evaluated with `verify-nlu-eval.js --live`.
 - Stop cannot undo provider work already done: tokens Anthropic processed before the abort may still be billed. If the server finished and saved the turn before the disconnect reached it, the stopped question/answer appears when the chat is reopened.
 - No invitation system for multi-user access to one company.
 - The planner has no cache; the entity resolver cold-loads all name lists after a refresh.
@@ -151,7 +143,7 @@ queryChat.tryAnswerWithQueryEngine
 ## K. Test map (`backend/`, plain `node <file>`)
 | Area | Suite |
 |---|---|
-| Router | `verify-query-router.js` |
+| Entity resolver | `verify-entity-resolver.js` |
 | Planner | `verify-query-planner.js` |
 | Chat integration / follow-ups | `verify-query-chat.js`, `verify-semantic-foundation.js` |
 | DSL / validator / compile / execute | `verify-query-dsl.js`, `verify-query-engine.js` |
@@ -159,11 +151,14 @@ queryChat.tryAnswerWithQueryEngine
 | Period math | `verify-period-engine.js`, `verify-month-boundary-dates.js` |
 | Comparison semantics corpus | `verify-comparison-period-capability.js`, `verify-growth-comparison-capability.js` |
 | Telemetry | `verify-ai-telemetry.js` |
+| NL understanding evaluation | `verify-nlu-eval.js` over `eval/nlu-corpus.json` (synthetic names, expected queryPlan v1): default = corpus self-check + scoring self-tests with fake providers (free, no DB, no network); `--live --limit=N` = one existing-planner call per question |
 | Ledger master + new parties | `verify-ledger-master.js` |
 | Credit/Debit Note sync + classification + security | `verify-adjustment-note.js` |
-| Sales/purchase return router + query engine | `verify-return-query.js`, `verify-return-analytics.js` (trend, comparison, chat freshness/coverage, cache, real WE FOUR/Nirmal oracle), `verify-return-ranking.js` (top-N customer/supplier ranking, real oracle) |
-| Product-level return analytics | `verify-product-return-analytics.js` (quantity/value semantics, router, engine, security, cache, real WE FOUR/Nirmal oracle) |
-| Stock item master / group analytics | `verify-stock-item-master.js`, `verify-stock-group-analytics.js`, `verify-stock-group-ai-tool.js` |
+| Sales/purchase return query engine | `verify-return-query.js`, `verify-return-analytics.js` (trend, comparison, chat freshness/coverage, cache, real WE FOUR/Nirmal oracle), `verify-return-ranking.js` (top-N customer/supplier ranking, real oracle) |
+| Product-level return analytics | `verify-product-return-analytics.js` (quantity/value semantics, engine, security, cache, real WE FOUR/Nirmal oracle) |
+| Stock item master / group analytics | `verify-stock-item-master.js`, `verify-stock-group-analytics.js` |
+| REST analytics scope / sales mapping | `verify-analytics-scope.js`, `verify-sales-mapper.js` |
+| Structured answer presentation | `verify-presentation.js` |
 | Ownership / identity / multi-company | `verify-company-ownership.js`, `verify-company-identity.js`, `verify-multi-company.js` |
 | Sync / recovery / reconciliation | `verify-sync-batching.js`, `verify-voucher-recovery.js`, `verify-reconciliation*.js`, `verify-self-heal.js` |
 | Security | `verify-security-audit.js` |
@@ -172,15 +167,11 @@ queryChat.tryAnswerWithQueryEngine
 | Stop / rename / delete (cancellation, ownership, validation, 0 AI calls) | `verify-chat-management.js`, `frontend/verify-chat-api.mjs` |
 
 - **Needs live Tally** (run with the company under test SELECTED): `verify-voucher-type-classification`, `verify-voucher-lifecycle`, `verify-sync-worker-guard`, `verify-company-guid-match`.
-- **Do not run without an explicit request:**
-  - `*-live*.js` and `verify-ai-data-accuracy.js` call real Claude;
-  - `verify-analytics-and-ai.js` writes temporary docs under a real tenant id.
-- **Obsolete:** `verify-import-flow/final`, `verify-duplicate-protection`, `verify-real-multi-voucher`.
+- **Do not run without an explicit request:** `verify-planner-live-eval.js` and `verify-nlu-eval.js --live` call real Claude.
+- **CI** (`.github/workflows/ci.yml`) runs the self-contained backend suites against a throwaway MongoDB, plus the frontend lint, build and checks. Suites with a "REAL DATA" section print SKIPPED when the real tenants do not exist. Run suites that exercise telemetry with `AI_USAGE_PERSIST=off` (except `verify-ai-usage-persist.js`).
 
-## L. Current work
-- Branch `security/audit-and-hardening`. `9526bdf` is unpushed. Everything since then is UNCOMMITTED: Semantic Foundation, final decisions 1–3, the LedgerMaster phase, the Credit/Debit Note (`AdjustmentNote`) phase, and Return Analytics Phase 1.
-- LedgerMaster and Credit/Debit Note sync are LIVE and validated for both real tenants: WE FOUR (1,979 ledgers; 249 Credit Notes / 42 Debit Notes synced, matched to an independent Mongo oracle) and Nirmal (39 ledgers; genuine 0 Credit/Debit Notes). No scheduled refresh yet - rerun `refresh-ledger-master.js`/`run-adjustment-note-sync.js --tenant <id>` manually.
-- Return Analytics done: total/count/by-customer-or-supplier/top-N ranking/month-trend/one-comparison for `sales_return`/`purchase_return`, reusing the existing router→DSL→validator→compile→execute→cache→formatter pipeline unchanged (no new DSL fields - ranking is `groupBy`+`sort`+`limit`, already generic). Fixed two pre-existing bugs the new entities exposed: `queryChat.js` was checking Purchase's (not Credit/Debit Note's) sync freshness for return questions, and `coverage.js` labelled every return message "sales"/"Sales" regardless of direction.
-- Product-Level Return Analytics done: `returnQuantity`/`returnLineAmount` metrics (line grain, `product` dimension reused on `sales_return`/`purchase_return`), ranking and a specific-product filter, both via the existing groupBy+sort+limit machinery - no new DSL. `compile.js`'s accumulator gained a generic `abs: true` aggregation option (reused wherever a metric's raw sign isn't already positive).
-- Next candidates (not started): product-group returns, return rate, net sales/purchases after returns, Credit/Debit Note recovery/reconciliation, planner support for return entities.
-- Details: `docs/SEMANTIC_FOUNDATION.md` §0 and `docs/GROWTH_COMPARISON_SEMANTICS_AUDIT.md`.
+## L. Open items
+- Planner prompt: stop declining returns/credit notes now that the engine supports the return entities, and evaluate it with `verify-nlu-eval.js --live` (section J).
+- Not built: product-group returns, return rate, net sales/purchases after returns, Credit/Debit Note recovery/reconciliation, a scheduled ledger/stock-item master refresh, a planner cache, an invitation system for multi-user companies.
+- Security: `TallyPulse-Security-Audit.md` is the register of audit findings and the runnable probes (`verify-security-audit.js`).
+- Detail docs: `docs/SEMANTIC_FOUNDATION.md` (what the engine's time/comparison/party terms mean), `docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md` (full reference).

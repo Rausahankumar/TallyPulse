@@ -1,7 +1,6 @@
 import { Link } from "react-router-dom";
 import { ShoppingCart, ShoppingBag, Package, Users, ArrowRight } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
-import MockDataBanner from "../components/ui/MockDataBanner";
 import Card from "../components/ui/Card";
 
 // The sidebar's generic "Analytics" entry is a hub into the four
@@ -18,7 +17,6 @@ export default function Analytics() {
   return (
     <div>
       <PageHeader title="Analytics" subtitle="A quick jump-off point into every analytics view." />
-      <MockDataBanner label="Each screen below now shows real data for most metrics — a few specific charts (marked inline) aren't available yet" />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {SECTIONS.map((s) => (

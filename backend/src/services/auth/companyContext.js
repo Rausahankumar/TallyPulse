@@ -15,8 +15,8 @@ const UserCompanyAccess = require("../../models/userCompanyAccess.model");
 // UserCompanyAccess join-collection design to add that later.
 //
 // This module exists so that, even under the CURRENT single-company
-// model, there is exactly one function everything (HTTP routes, the
-// Claude tool layer, anything added later) calls to resolve "which
+// model, there is exactly one function everything (every HTTP
+// route, anything added later) calls to resolve "which
 // company," and exactly one place authorization is enforced. When
 // multi-company is added later, only resolveAuthorizedCompany's
 // internals change (check a join collection instead of a single field)

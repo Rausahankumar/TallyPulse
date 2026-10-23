@@ -1,26 +1,23 @@
 const { getFreshness } = require("./freshness");
 
 // --------------------------------------------------
-// Wraps a raw analytics result with the explicit trust state Claude (and
-// the frontend) must react to differently. This is the boundary between
-// "MongoDB/Analytics owns the truth" and "Claude owns explanation" - the
-// tool layer returns THIS envelope, never a raw analytics object alone,
-// so there is no code path where a caller can present a number without
-// also knowing whether it's fresh, stale, or came from a failed sync.
+// Wraps a raw analytics result with the explicit trust state the frontend
+// must react to differently. The REST analytics endpoints return THIS
+// envelope, never a raw analytics object alone, so there is no code path
+// where a caller can present a number without also knowing whether it's
+// fresh, stale, or came from a failed sync.
 //
 // States (from the master spec, Part 8):
 //   valid_data        - real data found, sync is fresh -> answer normally
 //   zero_result        - query ran fine, zero matching vouchers -> say so
 //   no_usable_data      - required capability/data doesn't exist
-//                        (e.g. category performance) -> say so
+//                        (a {supported:false} result) -> say so
 //   stale_data          - real data found, but sync is stale -> answer +
 //                        freshness warning
 //   sync_failed          - last sync attempt failed -> answer with cached
 //                        data if any exists, clearly flagged
 //   analytics_error      - the analytics function itself threw -> do not
 //                        fabricate a result
-// (ambiguous_question / unsupported_question are chat-layer states, not
-// data states - handled by the tool-routing layer, not here.)
 // --------------------------------------------------
 
 async function wrapAnalyticsResult({
@@ -42,7 +39,7 @@ async function wrapAnalyticsResult({
     };
   }
 
-  // getCategoryPerformance-style "supported: false" results.
+  // A capability that does not exist returns {supported: false, reason}.
   if (rawResult && rawResult.supported === false) {
     return {
       state: "no_usable_data",

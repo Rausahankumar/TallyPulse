@@ -7,13 +7,13 @@
  *
  *   A. period x comparison resolution matrix at two anchors (pure)
  *   B. known period-engine defects, characterized (pure)
- *   C. routing corpus: exact status/code, exact DSL and resolved dates for supported questions (pure, synthetic names)
- *   D. growth semantics: what the DSL/validator can and cannot represent (pure)
- *   E. planner representability with a fake Claude client (no network)
- *   F. engine results vs an independent aggregation - READ-ONLY on the largest real tenant (skipped without MongoDB)
- *   G. no network
+ *   C. growth semantics: what the DSL/validator can and cannot represent (pure)
+ *   D. planner representability with a fake Claude client (no network)
+ *   E. engine results vs an independent aggregation - READ-ONLY on the largest real tenant (skipped without MongoDB)
+ *   F. no network
  *
- * No Anthropic, no Tally, no writes. Run: node verify-comparison-period-capability.js
+ * There is no deterministic router: the planner interprets every question; question -> plan is covered by
+ * verify-query-planner.js and verify-nlu-eval.js. No Anthropic, no Tally, no writes. Run: node verify-comparison-period-capability.js
  */
 
 const http = require("http");
@@ -25,11 +25,9 @@ global.fetch = async () => { netCalls += 1; throw new Error("network disabled in
 http.request = () => { netCalls += 1; throw new Error("network disabled in this audit"); };
 https.request = () => { netCalls += 1; throw new Error("network disabled in this audit"); };
 
-const { routeQuestion } = require("./src/services/query/localRouter");
 const { validateQueryPlan } = require("./src/services/query/validator");
 const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
-const { createEntityResolver } = require("./src/services/query/entityResolver");
-const { planQuestion, routeAndPlan, getPlannerPrompt, PLANNER_TOOL_NAME, SKIP_ROUTER_CODES } = require("./src/services/query/planner");
+const { planQuestion, getPlannerPrompt, PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { CATALOG, PERIOD_KINDS, LIMITS } = require("./src/services/query/semanticCatalog");
 const periodEngine = require("./src/services/analytics/periodEngine");
 
@@ -52,13 +50,6 @@ const ymd = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0
 const REF_MID = new Date(2026, 8, 18, 12); // Fri 18 Sep 2026: month, quarter, FY and week are all in progress
 const REF_END = new Date(2026, 2, 31, 12); // Tue 31 Mar 2026: month, quarter and FY end on the anchor day
 const ANCHORS = { mid: REF_MID, end: REF_END };
-
-// synthetic tenant names only (no real tenant data in this file)
-const NAMES = { customer: ["Aarav Traders", "Bluebell Mart"], supplier: ["Crescent Supplies"], product: ["Widget Alpha", "Gadget Beta"], productGroup: ["Hardware", "Stationery"] };
-const resolver = createEntityResolver({ tenantId: "AUDIT-TENANT", sources: Object.fromEntries(Object.entries(NAMES).map(([k, v]) => [k, async () => v])) });
-const resolverTexts = [];
-const spyResolver = async (a) => (resolverTexts.push(a.text), resolver(a));
-const route = (q, referenceDate = REF_MID) => routeQuestion(q, { resolveEntity: spyResolver, entityIndex: resolver.spanIndex, referenceDate });
 
 // ---------------------------------------------------------------- A. matrix
 // Every period kind x {no compare, like_for_like, full_previous, same_period_last_year, custom} as the validator
@@ -257,116 +248,6 @@ function resolveCell(kind, mode, referenceDate) {
   return { text, v };
 }
 
-// ---------------------------------------------------------------- C. corpus
-// [semantic tag, question, router status, router code, exact plan (canonical JSON) | null, "subject vs baseline" at REF_MID | null]
-// Tags (the audit's reading of the question, not the router's): point = one point-to-point comparison; totals = same,
-// without a breakdown; abs_ranking = ranked by absolute change; pct_threshold = filtered on % change; presence =
-// stopped/new; window_system = a rolling window the engine defines (vs the preceding equal window); unequal_custom =
-// two explicit ranges of different length; series_single = a plain series, no growth; and the AMBIGUOUS/UNREPRESENTABLE
-// tags: window_ambiguous, series, rate_ranking, multi_compare, period_ambiguous, relative_offset, two_ranges,
-// window_unsupported, window_explicit, unaligned.
-// 2026-09-28 final decisions re-pinned 12 rows (each proven by a script to be ONLY: current_month like_for_like -> full_previous
-// with the complete previous month as comparison dates [decision 2], or new-customer -> unsupported_new_party [decision 3]).
-const CORPUS = [
-    ["point", "Which customers are growing this month vs last month?", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount.delta\",\"op\":\"gt\",\"value\":0}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.delta\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["point", "Which customers declined this month vs last month?", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount.delta\",\"op\":\"lt\",\"value\":0}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.delta\",\"dir\":\"asc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["point", "Which products grew this quarter vs last quarter?", "needs_planner", "entity_ambiguous", null, null],
-    ["point", "Which customers increased sales this week vs last week?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_week"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-09-14..2026-09-18 vs 2026-09-07..2026-09-11"],
-    ["point", "Which customers grew vs last year?", "needs_planner", "period_missing", null, null],
-    ["point", "Which products grew compared with the same period last year?", "needs_planner", "entity_ambiguous", null, null],
-    ["point", "Which customers declined compared with last year?", "needs_planner", "period_missing", null, null],
-    ["point", "Which customers grew from April 2025 to April 2026?", "needs_planner", "two_periods_without_comparison", null, null],
-    ["point", "Which customers declined between April 1 2025 and April 1 2026?", "needs_planner", "router_plan_invalid", null, null],
-    ["point", "Which products grew from Q1 2025 to Q1 2026?", "needs_planner", "period_label_unsupported", null, null],
-    ["window_ambiguous", "Which customers grew over the last 3 months?", "needs_planner", "unsupported_window", null, null],
-    ["window_ambiguous", "Which customers grew over the last 6 months?", "needs_planner", "unsupported_window", null, null],
-    ["window_ambiguous", "Which customers grew over the last 12 months?", "needs_planner", "unsupported_window", null, null],
-    ["window_ambiguous", "Which products declined over the last 6 months?", "needs_planner", "unsupported_window", null, null],
-    ["relative_offset", "Which customers grew two months ago vs three months ago?", "needs_planner", "relative_offset_unsupported", null, null],
-    ["relative_offset", "Which customers grew three months ago vs six months ago?", "needs_planner", "relative_offset_unsupported", null, null],
-    ["point", "Which customers grew last quarter vs the quarter before?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"previous_quarter"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-04-01..2026-06-30 vs 2026-01-01..2026-03-31"],
-    ["rate_ranking", "Which customers are growing fastest?", "unsupported", "unsupported_growth_rate", null, null],
-    ["rate_ranking", "Top 10 fastest-growing customers", "unsupported", "unsupported_growth_rate", null, null],
-    ["rate_ranking", "Which products are declining fastest?", "unsupported", "unsupported_growth_rate", null, null],
-    ["abs_ranking", "Top 5 customers with the biggest growth", "needs_planner", "period_missing", null, null],
-    ["window_ambiguous", "Which customers are growing?", "needs_planner", "period_missing", null, null],
-    ["window_ambiguous", "Which customers have been growing?", "needs_planner", "period_missing", null, null],
-    ["series", "Which customers are consistently growing?", "unsupported", "unsupported_growth_pattern", null, null],
-    ["period_ambiguous", "Which customers grew over the last year?", "needs_planner", "ambiguous_period", null, null],
-    ["series", "Which customers increased their sales every month?", "unsupported", "unsupported_growth_pattern", null, null],
-    ["series", "Which customers have continuous growth?", "unsupported", "unsupported_growth_pattern", null, null],
-    ["period_ambiguous", "Show customer growth over the last year", "needs_planner", "ambiguous_period", null, null],
-    ["series", "Show monthly customer growth for the last 12 months", "unsupported", "unsupported_growth_pattern", null, null],
-    ["series", "Which customers grew every quarter this year?", "unsupported", "unsupported_growth_pattern", null, null],
-    ["series", "Which customers increased sales in each quarter?", "unsupported", "unsupported_growth_pattern", null, null],
-    ["multi_compare", "Which customers grew MoM and YoY?", "unsupported", "unsupported_combination", null, null],
-    ["multi_compare", "Which customers grew this month and last year?", "needs_planner", "ambiguous_period", null, null],
-    ["multi_compare", "Which customers declined MoM but grew YoY?", "unsupported", "unsupported_combination", null, null],
-    ["period_ambiguous", "Which customers are growing this year?", "needs_planner", "ambiguous_period", null, null],
-    ["period_ambiguous", "Which customers grew last year?", "needs_planner", "ambiguous_period", null, null],
-    ["window_ambiguous", "Which customers are growing recently?", "needs_planner", "period_missing", null, null],
-    ["period_ambiguous", "Which customers grew over the year?", "needs_planner", "ambiguous_period", null, null],
-    ["pct_threshold", "Which customers grew this month vs last month by more than 20%?", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount.deltaPct\",\"op\":\"gt\",\"value\":20}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.deltaPct\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["abs_ranking", "Top 10 customers by growth this month vs last month", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount.delta\",\"op\":\"gt\",\"value\":0}],\"limit\":10,\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.delta\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["abs_ranking", "Which customers grew the most this month vs last month?", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount.delta\",\"op\":\"gt\",\"value\":0}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.delta\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["rate_ranking", "Top 5 fastest growing customers this month vs last month", "unsupported", "unsupported_growth_rate", null, null],
-    ["rate_ranking", "Top 5 customers with the highest growth percentage this month vs last month", "unsupported", "unsupported_growth_rate", null, null],
-    ["point", "Which customers grew this month compared to same month last year?", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_month"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-09-01..2026-09-18 vs 2025-09-01..2025-09-18"],
-    ["point", "Which customers grew this quarter compared to the same quarter last year?", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_quarter"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-07-01..2026-09-18 vs 2025-07-01..2025-09-18"],
-    ["point", "Which customers declined previous quarter vs same period last year", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"lt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"previous_quarter"},"sort":[{"by":"invoiceAmount.delta","dir":"asc"}],"v":1}', "2026-04-01..2026-06-30 vs 2025-04-01..2025-06-30"],
-    ["presence", "Which customers stopped buying this month vs last month?", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"invoiceAmount\",\"op\":\"eq\",\"value\":0},{\"metric\":\"invoiceAmount.previous\",\"op\":\"gt\",\"value\":0}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount.previous\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["presence", "Which customers are new this month vs last month?", "supported", null, "{\"entity\":\"sales\",\"filters\":[{\"dim\":\"customer\",\"op\":\"new_in_period\",\"value\":\"period\"}],\"groupBy\":[{\"dim\":\"customer\"}],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"invoiceAmount\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18"], // decision 3: ledger created this month (LedgerMaster); comparison dropped
-    ["point", "Which customers declined this month vs the full last month?", "supported", null, '{"compare":{"mode":"full_previous"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"lt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_month"},"sort":[{"by":"invoiceAmount.delta","dir":"asc"}],"v":1}', "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["point", "Which customers grew this financial year vs last financial year?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_fy"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-04-01..2026-09-18 vs 2025-04-01..2025-09-18"],
-    ["point", "Which customers grew in FY 2025-26 vs FY 2024-25?", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2024-04-01","kind":"custom","to":"2025-03-31"}},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"fy":"2025-26","kind":"specific_fy"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2025-04-01..2026-03-31 vs 2024-04-01..2025-03-31"],
-    ["point", "Which customers grew in FY 2026-27 vs FY 2025-26?", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2025-04-01","kind":"custom","to":"2026-03-31"}},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"fy":"2026-27","kind":"specific_fy"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-04-01..2027-03-31 vs 2025-04-01..2026-03-31"],
-    ["point", "Which customers grew in August 2026 vs August 2025?", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2025-08-01","kind":"custom","to":"2025-08-31"}},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"from":"2026-08-01","kind":"custom","to":"2026-08-31"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-08-01..2026-08-31 vs 2025-08-01..2025-08-31"],
-    ["point", "Which customers grew in June 2026 vs January 2026?", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2026-01-01","kind":"custom","to":"2026-01-31"}},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"from":"2026-06-01","kind":"custom","to":"2026-06-30"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-06-01..2026-06-30 vs 2026-01-01..2026-01-31"],
-    ["point", "Which customers grew from 2026-01-01 to 2026-03-31 vs 2025-01-01 to 2025-03-31?", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2025-01-01","kind":"custom","to":"2025-03-31"}},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"from":"2026-01-01","kind":"custom","to":"2026-03-31"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-01-01..2026-03-31 vs 2025-01-01..2025-03-31"],
-    ["two_ranges", "Which customers grew from Jan 2026 to Jun 2026 vs Jul 2025 to Dec 2025?", "needs_planner", "too_many_periods", null, null],
-    ["window_system", "Which customers grew in the last 7 days?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"last_7_days"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-09-12..2026-09-18 vs 2026-09-05..2026-09-11"],
-    ["window_system", "Which customers grew in the last 30 days?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"last_30_days"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-08-20..2026-09-18 vs 2026-07-21..2026-08-19"],
-    ["window_system", "Which customers grew in the last 90 days?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"invoiceAmount.delta","op":"gt","value":0}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"last_90_days"},"sort":[{"by":"invoiceAmount.delta","dir":"desc"}],"v":1}', "2026-06-21..2026-09-18 vs 2026-03-23..2026-06-20"],
-    ["window_unsupported", "Which customers grew in the last 60 days?", "needs_planner", "unsupported_window", null, null],
-    ["window_explicit", "Which customers grew in the last 30 days vs the previous 30 days?", "needs_planner", "comparison_periods_not_aligned", null, null],
-    ["window_explicit", "Sales in the last 7 days vs the previous 7 days", "needs_planner", "comparison_periods_not_aligned", null, null],
-    ["series", "Which customers are growing month over month?", "needs_planner", "period_missing", null, null],
-    ["series", "Which customers grew every month this fy", "unsupported", "unsupported_growth_pattern", null, null],
-    ["period_ambiguous", "Which customers grew ytd?", "needs_planner", "ambiguous_period", null, null],
-    ["point", "Customers whose revenue grew this month vs last month", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"groupBy\":[{\"dim\":\"customer\"}],\"having\":[{\"metric\":\"lineAmount.delta\",\"op\":\"gt\",\"value\":0}],\"metrics\":[\"lineAmount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"lineAmount.delta\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["point", "Products whose revenue declined this quarter vs last quarter", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"product"}],"having":[{"metric":"lineAmount.delta","op":"lt","value":0}],"metrics":["lineAmount","quantity"],"mode":"aggregate","period":{"kind":"current_quarter"},"sort":[{"by":"lineAmount.delta","dir":"asc"}],"v":1}', "2026-07-01..2026-09-18 vs 2026-04-01..2026-06-18"],
-    ["point", "Which products grew in sales this quarter vs last quarter?", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"product"}],"having":[{"metric":"lineAmount.delta","op":"gt","value":0}],"metrics":["lineAmount","quantity"],"mode":"aggregate","period":{"kind":"current_quarter"},"sort":[{"by":"lineAmount.delta","dir":"desc"}],"v":1}', "2026-07-01..2026-09-18 vs 2026-04-01..2026-06-18"],
-    ["point", "Which product groups grew in revenue this fy vs last fy", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"productGroup"}],"having":[{"metric":"lineAmount.delta","op":"gt","value":0}],"metrics":["lineAmount"],"mode":"aggregate","period":{"kind":"current_fy"},"sort":[{"by":"lineAmount.delta","dir":"desc"}],"v":1}', "2026-04-01..2026-09-18 vs 2025-04-01..2025-09-18"],
-    ["point", "Revenue growth by product group this quarter vs last quarter", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"groupBy":[{"dim":"productGroup"}],"having":[{"metric":"lineAmount.delta","op":"gt","value":0}],"metrics":["lineAmount"],"mode":"aggregate","period":{"kind":"current_quarter"},"sort":[{"by":"lineAmount.delta","dir":"desc"}],"v":1}', "2026-07-01..2026-09-18 vs 2026-04-01..2026-06-18"],
-    ["point", "Which customers' revenue grew vs the same month last year this month?", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"sales","filters":[],"groupBy":[{"dim":"customer"}],"having":[{"metric":"lineAmount.delta","op":"gt","value":0}],"metrics":["lineAmount"],"mode":"aggregate","period":{"kind":"current_month"},"sort":[{"by":"lineAmount.delta","dir":"desc"}],"v":1}', "2026-09-01..2026-09-18 vs 2025-09-01..2025-09-18"],
-    ["point", "Suppliers whose purchases grew this month vs last month", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"purchase\",\"filters\":[],\"groupBy\":[{\"dim\":\"supplier\"}],\"having\":[{\"metric\":\"purchaseAmount.delta\",\"op\":\"gt\",\"value\":0}],\"metrics\":[\"purchaseAmount\",\"purchaseInvoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"sort\":[{\"by\":\"purchaseAmount.delta\",\"dir\":\"desc\"}],\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["point", "Which suppliers declined vs last year?", "needs_planner", "period_missing", null, null],
-    ["point", "Which suppliers declined this quarter vs same quarter last year?", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"purchase","filters":[],"groupBy":[{"dim":"supplier"}],"having":[{"metric":"purchaseAmount.delta","op":"lt","value":0}],"metrics":["purchaseAmount","purchaseInvoiceCount"],"mode":"aggregate","period":{"kind":"current_quarter"},"sort":[{"by":"purchaseAmount.delta","dir":"asc"}],"v":1}', "2026-07-01..2026-09-18 vs 2025-07-01..2025-09-18"],
-    ["window_ambiguous", "Which suppliers grew over the last 6 months?", "needs_planner", "unsupported_window", null, null],
-    ["totals", "Sales growth this month vs last month", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["totals", "Revenue this fy vs last fy", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"metrics":["lineAmount"],"mode":"aggregate","period":{"kind":"current_fy"},"v":1}', "2026-04-01..2026-09-18 vs 2025-04-01..2025-09-18"],
-    ["totals", "Purchases this month vs same month last year", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"purchase","filters":[],"metrics":["purchaseAmount","purchaseInvoiceCount"],"mode":"aggregate","period":{"kind":"current_month"},"v":1}', "2026-09-01..2026-09-18 vs 2025-09-01..2025-09-18"],
-    ["totals", "Sales last month vs the month before", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"previous_month"},"v":1}', "2026-08-01..2026-08-31 vs 2026-07-01..2026-07-31"],
-    ["totals", "Sales this month mom", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"metrics\":[\"invoiceAmount\",\"invoiceCount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["totals", "Sales this quarter qoq", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_quarter"},"v":1}', "2026-07-01..2026-09-18 vs 2026-04-01..2026-06-18"],
-    ["totals", "Sales this month yoy", "supported", null, '{"compare":{"mode":"same_period_last_year"},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_month"},"v":1}', "2026-09-01..2026-09-18 vs 2025-09-01..2025-09-18"],
-    ["totals", "Sales this week vs last week", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"kind":"current_week"},"v":1}', "2026-09-14..2026-09-18 vs 2026-09-07..2026-09-11"],
-    ["totals", "Revenue this month vs last month", "supported",null,"{\"compare\":{\"mode\":\"full_previous\"},\"entity\":\"sales\",\"filters\":[],\"metrics\":[\"lineAmount\"],\"mode\":\"aggregate\",\"period\":{\"kind\":\"current_month\"},\"v\":1}", "2026-09-01..2026-09-18 vs 2026-08-01..2026-08-31"],
-    ["totals", "Purchases last quarter vs the quarter before", "supported", null, '{"compare":{"mode":"like_for_like"},"entity":"purchase","filters":[],"metrics":["purchaseAmount","purchaseInvoiceCount"],"mode":"aggregate","period":{"kind":"previous_quarter"},"v":1}', "2026-04-01..2026-06-30 vs 2026-01-01..2026-03-31"],
-    ["unaligned", "Sales today vs yesterday", "needs_planner", "comparison_periods_not_aligned", null, null],
-    ["unaligned", "Sales yesterday vs the day before", "needs_planner", "comparison_periods_not_aligned", null, null],
-    ["series", "Monthly sales for the last 12 months", "needs_planner", "unsupported_window", null, null],
-    ["series_single", "Monthly sales for FY 2025-26", "supported", null, '{"entity":"sales","filters":[],"groupBy":[{"bucket":"month","dim":"date"}],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"fy":"2025-26","kind":"specific_fy"},"v":1}', "2025-04-01..2026-03-31"],
-    ["window_ambiguous", "Sales in the last 6 months", "needs_planner", "unsupported_window", null, null],
-    ["period_ambiguous", "Sales this year vs last year", "needs_planner", "ambiguous_period", null, null],
-    ["unequal_custom", "Sales from 2026-01-01 to 2026-03-31 vs 2026-04-01 to 2026-06-30", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2026-04-01","kind":"custom","to":"2026-06-30"}},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"from":"2026-01-01","kind":"custom","to":"2026-03-31"},"v":1}', "2026-01-01..2026-03-31 vs 2026-04-01..2026-06-30"],
-    ["unequal_custom", "Sales from 2026-01-01 to 2026-03-31 vs 2026-04-01 to 2026-06-15", "supported", null, '{"compare":{"mode":"custom","period":{"from":"2026-04-01","kind":"custom","to":"2026-06-15"}},"entity":"sales","filters":[],"metrics":["invoiceAmount","invoiceCount"],"mode":"aggregate","period":{"from":"2026-01-01","kind":"custom","to":"2026-03-31"},"v":1}', "2026-01-01..2026-03-31 vs 2026-04-01..2026-06-15"],
-    ["window_ambiguous", "Sales growth by customer over the past six months", "needs_planner", "unsupported_window", null, null],
-    ["window_ambiguous", "Customer sales trend for the last 6 months", "needs_planner", "unsupported_window", null, null],
-];
-const NEVER_A_PLAN = new Set(["window_ambiguous", "series", "rate_ranking", "multi_compare", "period_ambiguous", "relative_offset", "two_ranges", "window_unsupported"]);
-const classify = (status, code) => (status === "supported" ? "SUPPORTED" : status === "unsupported" ? "UNSUPPORTED" : SKIP_ROUTER_CODES.has(code) ? "CLARIFY" : "PLANNER");
-
 (async () => {
   // =============================================================== A
   section("A. period x comparison resolution matrix (validator + periodEngine, two anchors)");
@@ -407,9 +288,8 @@ const classify = (status, code) => (status === "supported" ? "SUPPORTED" : statu
     // Fixed at the root: dateRanges.shiftMonths/shiftYears used to roll "31 Mar -> 31 Feb" over into March, so
     // previous_month (and the full previous month of current_month) resolved to the anchor's OWN month on 29-31 Mar
     // and 31 May/Jul/Oct/Dec. They now clamp to the target month's last day.
-    const r = await route("Sales last month", REF_END);
-    const v = validateQueryPlan(r.plan, { referenceDate: REF_END });
-    check("the router's 'Sales last month' on 31 Mar 2026 = 1-28 Feb 2026", r.status === "supported" && r.plan.period.kind === "previous_month" && ymd(v.normalized.period.from) === "2026-02-01" && ymd(v.normalized.period.to) === "2026-02-28");
+    const v = validateQueryPlan({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [] }, { referenceDate: REF_END });
+    check("'Sales last month' (previous_month) on 31 Mar 2026 = 1-28 Feb 2026", v.ok && ymd(v.normalized.period.from) === "2026-02-01" && ymd(v.normalized.period.to) === "2026-02-28");
     // blast radius over every anchor day 2024-2026
     const mi = (x) => x.getFullYear() * 12 + x.getMonth();
     const sweep = (fn) => {
@@ -437,79 +317,14 @@ const classify = (status, code) => (status === "supported" ? "SUPPORTED" : statu
       check(`correct on all 1096 anchors: ${label}`, bad.length === 0, bad.slice(0, 5).join(" "));
     }
     const dr = require("./src/services/analytics/dateRanges");
-    const legacyBad = sweep((ref) => { const p = dr.previousFullMonth(ref); return mi(p.from) === mi(ref) - 1 && mi(p.to) === mi(ref) - 1; });
-    check("legacy chat's previous_month tool period (dateRanges.previousFullMonth) correct on all 1096 anchors", legacyBad.length === 0, legacyBad.slice(0, 5).join(" "));
+    const prevMonthBad = sweep((ref) => { const p = dr.previousFullMonth(ref); return mi(p.from) === mi(ref) - 1 && mi(p.to) === mi(ref) - 1; });
+    check("the REST previous_month period (dateRanges.previousFullMonth) is correct on all 1096 anchors", prevMonthBad.length === 0, prevMonthBad.slice(0, 5).join(" "));
     const trendBad = sweep((ref) => { const p = dr.lastNMonthsEnding(ref, 6); return mi(p.from) === mi(ref) - 5 && mi(p.to) === mi(ref); });
     check("dashboard default trend window (lastNMonthsEnding 6) = 6 whole months on all 1096 anchors", trendBad.length === 0, trendBad.slice(0, 5).join(" "));
   }
 
   // =============================================================== C
-  section("C. routing corpus: exact outcome, exact DSL and resolved dates (router + validator, synthetic names)");
-  {
-    const byClass = {};
-    let outcomeMismatch = [];
-    let planMismatch = [];
-    const misleading = [];
-    for (const [tag, q, status, code, planJson, dates] of CORPUS) {
-      resolverTexts.length = 0;
-      const r = await route(q);
-      const got = `${r.status}/${r.code || ""}`;
-      if (got !== `${status}/${code || ""}`) outcomeMismatch.push(`${q}: ${got}`);
-      const klass = classify(r.status, r.code);
-      byClass[klass] = (byClass[klass] || 0) + 1;
-      if (planJson) {
-        const v = r.plan ? validateQueryPlan(r.plan, { referenceDate: REF_MID }) : { ok: false };
-        const d = v.ok ? `${ymd(v.normalized.period.from)}..${ymd(v.normalized.period.to)}${v.normalized.comparison ? ` vs ${ymd(v.normalized.comparison.from)}..${ymd(v.normalized.comparison.to)}` : ""}` : "invalid";
-        if (!r.plan || cj(r.plan) !== planJson || d !== dates) planMismatch.push(`${q}: ${r.plan ? cj(r.plan) : "no plan"} ${d}`);
-      } else if (r.plan) planMismatch.push(`${q}: unexpected plan`);
-      if (r.code === "entity_not_resolved") misleading.push(`"${q}" -> looked up "${resolverTexts[resolverTexts.length - 1]}"`);
-    }
-    check(`all ${CORPUS.length} corpus questions route to the documented status/code`, outcomeMismatch.length === 0, outcomeMismatch.slice(0, 4).join(" | "));
-    check(`every supported question produces the documented exact DSL and resolves to the documented dates`, planMismatch.length === 0, planMismatch.slice(0, 3).join(" | "));
-    console.log(`    classification: ${Object.entries(byClass).map(([k, n]) => `${k} ${n}`).join(", ")}`);
-    const silently = CORPUS.filter(([tag, , status]) => NEVER_A_PLAN.has(tag) && status === "supported");
-    check(`no ambiguous/unrepresentable meaning is silently answered (${CORPUS.filter(([t]) => NEVER_A_PLAN.has(t)).length} such questions, 0 plans)`, silently.length === 0, silently.map((x) => x[1]).join(" | "));
-    // misleading clarification: the router asked the NAME resolver about grammar it did not understand
-    // (before the P1-4 grammar fix, 22 of these questions ended in "couldn't find that customer/product")
-    check("no corpus question ends in a misleading \"couldn't find that customer/product\" (grammar words are never looked up as names)", misleading.length === 0, misleading.join(" | "));
-    // direction: the subject is ALWAYS plan.period, the baseline is compare
-    const supported = [];
-    for (const [tag, q] of CORPUS) {
-      const r = await route(q);
-      if (r.status === "supported" && r.plan.compare) supported.push({ tag, q, r, n: validateQueryPlan(r.plan, { referenceDate: REF_MID }).normalized });
-    }
-    const relative = supported.filter((s) => s.r.plan.compare.mode !== "custom");
-    check(`direction: for all ${relative.length} relative comparisons the subject is the later period and the baseline the earlier one`, relative.every((s) => s.n.period.from > s.n.comparison.from));
-    const growth = supported.filter((s) => (s.r.plan.having || []).some((h) => /\.delta$/.test(h.metric)));
-    check(`"grew/increased/growing" = delta (subject - baseline) > 0, "declined" = delta < 0, in all ${growth.length} change questions`, growth.every((s) => s.r.plan.having.every((h) => !/\.delta$/.test(h.metric) || (h.value === 0 && (h.op === "gt" || h.op === "lt")))));
-    const custom = supported.filter((s) => s.r.plan.compare.mode === "custom" && s.r.plan.period.kind === "custom");
-    const earlierSubject = custom.filter((s) => s.n.period.from < s.n.comparison.from).map((s) => s.q);
-    check(`custom-vs-custom follows WORD ORDER, not chronology: the first range is the subject (${earlierSubject.length} of ${custom.length} have an earlier subject)`, earlierSubject.length === 2 && earlierSubject.every((q) => /vs 2026-04-01/.test(q)));
-    // metric semantics per wording (P0-2 unchanged)
-    const plans = [];
-    for (const [, q] of CORPUS) {
-      const r = await route(q);
-      if (r.status === "supported") plans.push({ q, p: r.plan, a: r.assumptions });
-    }
-    const rev = plans.filter((x) => /\brevenue\b/i.test(x.q));
-    check(`revenue questions (${rev.length}) use only the pre-tax lineAmount basis and carry the revenue definition`, rev.length >= 5 && rev.every((x) => x.p.metrics.includes("lineAmount") && !x.p.metrics.includes("invoiceAmount") && x.a.some((a) => a.code === "revenue_is_pre_tax_item_value")));
-    const pur = plans.filter((x) => /\bpurchases?\b|\bsuppliers?\b/i.test(x.q));
-    check(`purchase/supplier questions (${pur.length}) use purchase metrics on the purchase entity`, pur.length >= 3 && pur.every((x) => x.p.entity === "purchase" && x.p.metrics[0] === "purchaseAmount"));
-    const sal = plans.filter((x) => !/\brevenue\b|\bpurchases?\b|\bsuppliers?\b|\bproducts?\b|\bproduct groups?\b/i.test(x.q));
-    check(`sales/customer questions (${sal.length}) use the tax-inclusive invoiceAmount`, sal.length >= 20 && sal.every((x) => x.p.entity === "sales" && x.p.metrics[0] === "invoiceAmount"));
-    const prod = plans.filter((x) => /\bproducts?\b/i.test(x.q) && !/\brevenue\b/i.test(x.q));
-    check("product breakdowns use the line basis (lineAmount) even when the word is 'sales'", prod.length >= 1 && prod.every((x) => x.p.metrics.includes("lineAmount")));
-    const lfl = plans.filter((x) => x.p.compare && x.p.compare.mode === "like_for_like");
-    const lflDisclosed = lfl.filter((x) => x.a.some((a) => a.code === "comparison_like_for_like_default"));
-    check(`like_for_like comparisons disclose the like-for-like assumption when the period is in progress (${lflDisclosed.length}/${lfl.length}; complete periods do not need it)`, lflDisclosed.length >= 10);
-    const pctRows = plans.filter((x) => (x.p.having || []).some((h) => /deltaPct/.test(h.metric)));
-    check("'by more than 20%' filters on deltaPct > 20 and sorts by deltaPct (customers with no previous value have null % and are excluded)", pctRows.length === 1 && pctRows[0].p.having[0].metric === "invoiceAmount.deltaPct" && pctRows[0].p.having[0].value === 20);
-    const abs = plans.filter((x) => /most|by growth|biggest/i.test(x.q));
-    check("'grew the most' / 'top by growth' rank by ABSOLUTE change (delta), never by %", abs.length === 2 && abs.every((x) => x.p.sort[0].by === "invoiceAmount.delta"));
-  }
-
-  // =============================================================== D
-  section("D. growth semantics: what the DSL / validator can and cannot represent");
+  section("C. growth semantics: what the DSL / validator can and cannot represent");
   {
     const base = (o = {}) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount"], filters: [], groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount.delta", dir: "desc" }], compare: { mode: "like_for_like" }, ...o });
     const ok = (p) => validateQueryPlan(p, { referenceDate: REF_MID });
@@ -530,15 +345,15 @@ const classify = (status, code) => (status === "supported" ? "SUPPORTED" : statu
     check("unequal-length custom comparisons validate with NO warning (90 days vs 76 days)", unequal.ok && unequal.warnings.length === 0);
     const tooLong = ok({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "custom", from: "2019-01-01", to: "2026-01-01" }, metrics: ["invoiceAmount"], filters: [] });
     check(`multi-year ranges are capped at ${CATALOG.periods.rules.maxCustomRangeDays} days (range_too_long beyond)`, !tooLong.ok && tooLong.errors.some((e) => e.code === "range_too_long"));
-    check("ytd is a valid DSL period (calendar YTD) even though the router treats 'ytd' as ambiguous and the planner prompt omits it", ok({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "ytd" }, metrics: ["invoiceAmount"], filters: [] }).ok);
+    check("ytd is a valid DSL period (calendar YTD) even though the planner prompt omits it", ok({ v: 1, entity: "sales", mode: "aggregate", period: { kind: "ytd" }, metrics: ["invoiceAmount"], filters: [] }).ok);
     const { computeGrowth } = require("./src/services/analytics/salesAnalytics");
     check("change % = (current - previous) / |previous| x 100, and NULL (not 0, not infinity) when previous = 0", computeGrowth(150, 100).growthPercentage === 50 && computeGrowth(0, 100).growthPercentage === -100 && computeGrowth(10, 0).growthPercentage === null && CATALOG.compare.derivedSuffixes.deltaPct.nullWhen === "previous == 0 (never Infinity/NaN, never 0%)");
     check("groups present in only one period are kept (full outer join) with the missing side = 0", CATALOG.compare.joinPolicy === "full_outer_on_group_keys");
     check(`a comparison is refused beyond ${LIMITS.maxCompareGroups} groups per period (result_too_large)`, Number.isInteger(LIMITS.maxCompareGroups) && LIMITS.maxCompareGroups > 0);
   }
 
-  // =============================================================== E
-  section("E. planner representability (fake Claude client - no network)");
+  // =============================================================== D
+  section("D. planner representability (fake Claude client - no network)");
   {
     const prompt = getPlannerPrompt();
     const system = prompt.system.map((b) => b.text).join("\n");
@@ -551,28 +366,22 @@ const classify = (status, code) => (status === "supported" ? "SUPPORTED" : statu
     const r1 = await planQuestion(q, { claudeClient: c1 });
     // P-SF closed this audit RISK (it used to validate): years the user never wrote are refused by the planner's date guard
     check("FIXED (was RISK): a planner plan with invented absolute dates for a RELATIVE window is refused (year_missing), never run", r1.status === "needs_clarification" && r1.code === "year_missing" && !r1.plan && c1.req.messages[0].content === q);
-    const rp = await routeAndPlan(q, { resolveEntity: resolver, claudeClient: async () => { throw new Error("must not be called"); } });
-    check("...that question never reaches the planner: the router asks for a supported window (unsupported_window, 0 Claude)", rp.claudeCalled === false && rp.final.code === "unsupported_window");
     const r2 = await planQuestion("Which customers grew MoM and YoY?", { claudeClient: fake({ plan: { ...invented, compare: [{ mode: "like_for_like" }, { mode: "same_period_last_year" }] } }) });
     check("two comparisons from the planner are refused (planner_invalid_plan)", r2.status === "planner_failed" && r2.code === "planner_invalid_plan");
     const r3 = await planQuestion("monthly customer growth this fy", { claudeClient: fake({ plan: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_fy" }, metrics: ["invoiceAmount"], filters: [], groupBy: [{ dim: "date", bucket: "month" }], compare: { mode: "like_for_like" } } }) });
     check("growth per month from the planner is refused (compare + date series)", r3.status === "planner_failed" && r3.code === "planner_invalid_plan");
     const r4 = await planQuestion("fastest growing customers this month", { claudeClient: fake({ plan: { ...invented, period: { kind: "current_month" }, compare: { mode: "like_for_like" }, sort: [{ by: "invoiceAmount.deltaPct", dir: "desc" }], having: [{ metric: "invoiceAmount.deltaPct", op: "gt", value: 0 }] } }) });
-    check("a growth-RATE ranking is expressible by the planner (only reachable if the router forwarded the question)", r4.status === "supported" && r4.plan.sort[0].by === "invoiceAmount.deltaPct");
+    check("a growth-RATE ranking is expressible by the planner (the planner is the only interpreter)", r4.status === "supported" && r4.plan.sort[0].by === "invoiceAmount.deltaPct");
     const r5 = await planQuestion("which customers are growing", { claudeClient: fake({ plan: { ...invented, period: { kind: "current_quarter" }, compare: { mode: "same_period_last_year" } } }) });
     check("the planner may pick ANY single period+comparison for an undefined 'growing' - the result validates and nothing records which meaning was chosen except its free-text assumptions", r5.status === "supported" && Array.isArray(r5.plannerAssumptions));
-    const plannerReachable = CORPUS.filter(([, , status, code]) => status === "needs_planner" && !SKIP_ROUTER_CODES.has(code));
-    console.log(`    corpus questions that would reach the planner (1 Claude call each): ${plannerReachable.length}`);
-    for (const [, qq, , code] of plannerReachable) console.log(`      ${code}: ${qq}`);
-    check("planner-reachable corpus questions are only structural router gaps (no ambiguous 'growing'-window meaning reaches Claude)", plannerReachable.every(([tag]) => !["window_ambiguous", "rate_ranking", "period_ambiguous"].includes(tag)));
   }
 
-  // =============================================================== F
-  section("F. engine results vs an independent aggregation (READ-ONLY, largest real tenant)");
+  // =============================================================== E
+  section("E. engine results vs an independent aggregation (READ-ONLY, largest real tenant)");
   await groundTruth();
 
-  // =============================================================== G
-  section("G. no network was used");
+  // =============================================================== F
+  section("F. no network was used");
   check("zero fetch/http calls (no Anthropic, no Tally)", netCalls === 0, String(netCalls));
   Object.assign(global, { fetch: savedNet.fetch });
   http.request = savedNet.h;
@@ -585,7 +394,59 @@ const classify = (status, code) => (status === "supported" ? "SUPPORTED" : statu
   process.exit(1);
 });
 
-// ---------------------------------------------------------------- F. ground truth (read-only)
+// ---------------------------------------------------------------- F. synthetic tenant (used only when no real tenant qualifies)
+// Section F needs a tenant with 100+ active sales. A real database has one; the isolated CI database has none, so F seeds this
+// deterministic synthetic tenant instead (synthetic names only, no Company document) and removes it afterwards. Dates run
+// 1 Apr 2024 .. 18 Sep 2025, so the reference date (the latest voucher) is 18 Sep 2025 and every compared period - this month,
+// last month, this quarter, last 90 days, this FY and the same period last year - has data on both sides. One customer stops
+// buying after July 2025 and one is new in September 2025, so the "stopped" and "new" rows are exercised too.
+const SYNTHETIC_TENANT = "TEST-TENANT-comparison-period-synthetic";
+function syntheticVouchers(tenantId) {
+  let seed = 4242;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const day = (y, m, d) => new Date(Date.UTC(y, m, d));
+  const FIRST = day(2024, 3, 1);
+  const LAST = day(2025, 8, 18);
+  const span = Math.round((LAST - FIRST) / 86400000); // days from FIRST to LAST
+  const CUSTOMERS = ["Synthetic Customer A", "Synthetic Customer B", "Synthetic Customer C", "Synthetic Customer D", "Synthetic Customer E", "Synthetic Customer F", "Synthetic Customer G"];
+  const SUPPLIERS = ["Synthetic Supplier P", "Synthetic Supplier Q", "Synthetic Supplier R", "Synthetic Supplier S"];
+  const ITEMS = ["Alpha Widget", "Beta Widget", "Gamma Cable", "Delta Cable", "Epsilon Box", "Zeta Box", "Eta Pipe", "Theta Pipe", "Iota Gear", "Kappa Gear"];
+  let seq = 0;
+  const voucher = (kind, date, party, status) => {
+    seq += 1;
+    const lines = [];
+    let sum = 0;
+    for (let l = 0, n = 1 + Math.floor(rnd() * 3); l < n; l += 1) {
+      const quantity = 1 + Math.floor(rnd() * 40);
+      const rate = 10 + Math.floor(rnd() * 90);
+      sum += quantity * rate;
+      lines.push({ itemName: pick(ITEMS), quantity, rate, amount: kind === "purchase" ? -quantity * rate : quantity * rate });
+    }
+    return {
+      tenantId,
+      tallyGuid: `syn-cmp-${kind}-${seq}`,
+      tallyAlterId: seq,
+      voucherStatus: status || (rnd() < 0.03 ? "cancelled" : "active"),
+      header: { voucherNo: `${kind === "purchase" ? "CP" : "CS"}-${seq}`, voucherDate: date, voucherType: kind === "purchase" ? "Purchase" : "Sales", voucherTotalAmount: Math.round(sum * 1.18 * 100) / 100, narration: "", partyName: party },
+      inventory: lines,
+      ledgers: [],
+    };
+  };
+  const randomDay = () => new Date(FIRST.getTime() + Math.floor(rnd() * (span + 1)) * 86400000);
+  const sales = [];
+  for (let i = 0; i < 320; i += 1) sales.push(voucher("sales", randomDay(), pick(CUSTOMERS)));
+  // stops buying: active until July 2025, nothing in August or September 2025
+  for (const d of [day(2025, 5, 3), day(2025, 5, 21), day(2025, 6, 8), day(2025, 6, 26)]) sales.push(voucher("sales", d, "Synthetic Customer H", "active"));
+  // new: first purchase from us in September 2025
+  for (const d of [day(2025, 8, 4), day(2025, 8, 15)]) sales.push(voucher("sales", d, "Synthetic Customer I", "active"));
+  sales.push(voucher("sales", LAST, pick(CUSTOMERS), "active")); // pins the reference date to the last day
+  const purchases = [];
+  for (let i = 0; i < 160; i += 1) purchases.push(voucher("purchase", randomDay(), pick(SUPPLIERS)));
+  return { sales, purchases, activeSales: sales.filter((v) => v.voucherStatus === "active").length };
+}
+
+// ---------------------------------------------------------------- F. ground truth (read-only on real data; synthetic tenant otherwise)
 async function groundTruth() {
   const mongoose = require("mongoose");
   require("dotenv").config();
@@ -593,9 +454,10 @@ async function groundTruth() {
     if (!process.env.MONGODB_URI) throw new Error("MONGODB_URI not set");
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 }); // not connectDB(): it exits the process on failure
   } catch (e) {
-    console.log("  SKIPPED - MongoDB not reachable (sections A-E are complete without it)");
+    console.log("  SKIPPED - MongoDB not reachable (sections A-D are complete without it)");
     return;
   }
+  let seededTenant = null;
   try {
     const Company = require("./src/models/company");
     const Sale = require("./src/models/sales.model");
@@ -609,7 +471,18 @@ async function groundTruth() {
       const n = await Sale.countDocuments({ tenantId: c.tenantId, voucherStatus: "active" });
       if (n > most) { most = n; tenantId = c.tenantId; }
     }
-    if (!tenantId || most < 100) { console.log("  SKIPPED - no tenant with enough data"); return; }
+    if (!tenantId || most < 100) {
+      // No real tenant has enough data (always the case in the isolated CI database): run the same checks on a synthetic tenant.
+      // The connection above already passed the test-mode guard, so this writes only to a loopback test database.
+      seededTenant = SYNTHETIC_TENANT;
+      await Promise.all([Sale.deleteMany({ tenantId: seededTenant }), Purchase.deleteMany({ tenantId: seededTenant })]);
+      const fixture = syntheticVouchers(seededTenant);
+      await Sale.insertMany(fixture.sales);
+      await Purchase.insertMany(fixture.purchases);
+      tenantId = seededTenant;
+      most = fixture.activeSales;
+      console.log(`    no real tenant with 100+ active sales: using a synthetic tenant (${fixture.activeSales} active sales, ${fixture.purchases.length} purchases)`);
+    }
     const ref = await getTenantReferenceDate(tenantId);
     console.log(`    tenant with ${most} active sales vouchers; reference date ${ymd(ref)}${[29, 30, 31].includes(ref.getDate()) ? " (a month-end anchor: see section B)" : ""}`);
 
@@ -667,26 +540,32 @@ async function groundTruth() {
     const m1 = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
     const m2 = new Date(ref.getFullYear(), ref.getMonth() - 2, 1);
     const end = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    // the plan a correct interpretation of each question produces (the planner interprets; this section checks the ENGINE)
+    const mk = (entity, period, o = {}) => ({ v: 1, entity, mode: "aggregate", period, metrics: o.metrics || ["invoiceAmount"], filters: [], groupBy: o.groupBy || [], ...(o.compare ? { compare: o.compare } : {}), ...(o.having ? { having: o.having } : {}), ...(o.sort ? { sort: o.sort } : {}) });
+    const FULL = { mode: "full_previous" };
+    const LFL = { mode: "like_for_like" };
+    const SPLY = { mode: "same_period_last_year" };
+    const by = (dim) => ({ groupBy: [{ dim }] });
+    const change = (m, op, dir) => ({ having: [{ metric: `${m}.delta`, op, value: 0 }], sort: [{ by: `${m}.delta`, dir }] });
     const questions = [
-      "Which customers grew this month vs last month?",
-      "Which customers declined this month vs the full last month?",
-      "Which customers grew this month compared to same month last year?",
-      "Which customers grew this month vs last month by more than 20%?",
-      "Top 10 customers by growth this month vs last month",
-      "Which customers stopped buying this month vs last month?",
-      "Customers whose revenue grew this month vs last month",
-      "Products whose revenue declined this quarter vs last quarter",
-      "Suppliers whose purchases grew this quarter vs last quarter",
-      "Which customers grew in the last 90 days?",
-      `Which customers grew from ${fmt(m1)} to ${fmt(end(m1))} vs ${fmt(m2)} to ${fmt(end(m2))}?`,
-      "Sales this quarter vs same quarter last year",
-      "Revenue this fy vs last fy",
+      ["Which customers grew this month vs last month?", mk("sales", { kind: "current_month" }, { ...by("customer"), compare: FULL, ...change("invoiceAmount", "gt", "desc") })],
+      ["Which customers declined this month vs the full last month?", mk("sales", { kind: "current_month" }, { ...by("customer"), compare: FULL, ...change("invoiceAmount", "lt", "asc") })],
+      ["Which customers grew this month compared to same month last year?", mk("sales", { kind: "current_month" }, { ...by("customer"), compare: SPLY, ...change("invoiceAmount", "gt", "desc") })],
+      ["Which customers grew this month vs last month by more than 20%?", mk("sales", { kind: "current_month" }, { ...by("customer"), compare: FULL, having: [{ metric: "invoiceAmount.deltaPct", op: "gt", value: 20 }], sort: [{ by: "invoiceAmount.deltaPct", dir: "desc" }] })],
+      ["Top 10 customers by growth this month vs last month", { ...mk("sales", { kind: "current_month" }, { ...by("customer"), compare: FULL, sort: [{ by: "invoiceAmount.delta", dir: "desc" }] }), limit: 10 }],
+      ["Which customers stopped buying this month vs last month?", mk("sales", { kind: "current_month" }, { ...by("customer"), compare: FULL, having: [{ metric: "invoiceAmount", op: "eq", value: 0 }, { metric: "invoiceAmount.previous", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.previous", dir: "desc" }] })],
+      ["Customers whose revenue grew this month vs last month", mk("sales", { kind: "current_month" }, { metrics: ["lineAmount"], ...by("customer"), compare: FULL, ...change("lineAmount", "gt", "desc") })],
+      ["Products whose revenue declined this quarter vs last quarter", mk("sales", { kind: "current_quarter" }, { metrics: ["lineAmount"], ...by("product"), compare: LFL, ...change("lineAmount", "lt", "asc") })],
+      ["Suppliers whose purchases grew this quarter vs last quarter", mk("purchase", { kind: "current_quarter" }, { metrics: ["purchaseAmount"], ...by("supplier"), compare: LFL, ...change("purchaseAmount", "gt", "desc") })],
+      ["Which customers grew in the last 90 days?", mk("sales", { kind: "last_90_days" }, { ...by("customer"), compare: LFL, ...change("invoiceAmount", "gt", "desc") })],
+      [`Which customers grew from ${fmt(m1)} to ${fmt(end(m1))} vs ${fmt(m2)} to ${fmt(end(m2))}?`, mk("sales", { kind: "custom", from: fmt(m1), to: fmt(end(m1)) }, { ...by("customer"), compare: { mode: "custom", period: { kind: "custom", from: fmt(m2), to: fmt(end(m2)) } }, ...change("invoiceAmount", "gt", "desc") })],
+      ["Sales this quarter vs same quarter last year", mk("sales", { kind: "current_quarter" }, { metrics: ["invoiceAmount", "invoiceCount"], compare: SPLY })],
+      ["Revenue this fy vs last fy", mk("sales", { kind: "current_fy" }, { metrics: ["lineAmount"], compare: LFL })],
     ];
-    for (const q of questions) {
-      const r = await routeQuestion(q, { resolveEntity: resolver, referenceDate: ref });
-      if (r.status !== "supported") { check(`"${q}" is router-supported`, false, `${r.status}/${r.code}`); continue; }
-      const v = validateQueryPlan(r.plan, { referenceDate: ref });
-      const res = await executeQuery(r.plan, { tenantId, referenceDate: ref });
+    for (const [q, plan] of questions) {
+      const v = validateQueryPlan(plan, { referenceDate: ref });
+      if (!v.ok) { check(`"${q}" plan is valid`, false, v.errors.map((e) => e.code).join(",")); continue; }
+      const res = await executeQuery(plan, { tenantId, referenceDate: ref });
       const exp = await expected(v.normalized);
       const problems = [];
       if (!res.ok) problems.push(`engine ${JSON.stringify(res.errors)}`);
@@ -711,6 +590,13 @@ async function groundTruth() {
       check(`"${q}" [${ymd(v.normalized.period.from)}..${ymd(v.normalized.period.to)} vs ${ymd(v.normalized.comparison.from)}..${ymd(v.normalized.comparison.to)}] engine = independent aggregation (${note})`, problems.length === 0, problems.slice(0, 4).join(", "));
     }
   } finally {
+    if (seededTenant) {
+      // only the synthetic tenant's own vouchers
+      await Promise.all([
+        require("./src/models/sales.model").deleteMany({ tenantId: seededTenant }),
+        require("./src/models/purchase.model").deleteMany({ tenantId: seededTenant }),
+      ]);
+    }
     await mongoose.disconnect();
   }
 }

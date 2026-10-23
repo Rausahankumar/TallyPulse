@@ -7,8 +7,8 @@ const dateRanges = require("./dateRanges");
 // "fy:2025-26") to an exact {from, to} date range, plus - for every kind
 // where a "vs what" comparison is natural - an exact {comparisonFrom,
 // comparisonTo} range. All arithmetic; no Claude/LLM call anywhere in
-// this file. The AI tool layer is NOT wired to this yet (deliberately -
-// this phase is the foundation only, see the accompanying report).
+// this file. It is the single source of period kinds for the query engine
+// (semanticCatalog, validator) and for the REST analytics endpoints.
 //
 // Conventions this module fixes, none of which the app configures
 // anywhere else today (checked: the old Sales/Purchase Analytics "FY"

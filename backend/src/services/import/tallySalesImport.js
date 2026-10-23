@@ -437,16 +437,17 @@ async function importTallySales({
   // 4. Resolve file
   // --------------------------------------------------
 
-  const targetPath =
-    filePath ||
-    path.resolve(
-      __dirname,
-      "../../../sample-data/tally-multi-vouchers.json"
+  if (!filePath && rawData === undefined) {
+    throw new Error(
+      "importTallySales requires either filePath or rawData."
     );
+  }
+
+  const targetPath = filePath;
 
   const resolvedFileName =
     fileName ||
-    path.basename(targetPath);
+    (filePath ? path.basename(filePath) : "upload.json");
 
   let parsedPayload;
 

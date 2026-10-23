@@ -3,8 +3,7 @@
 // --------------------------------------------------
 // Sales/Purchase Query DSL - LAYER 1: strict structural schema (Phase 1A).
 //
-// This is the only shape Claude (or the deterministic router) may ever
-// produce. It is deliberately small and closed:
+// This is the only shape Claude may ever produce. It is deliberately small and closed:
 //   - every object is STRICT: any unknown key is rejected, which is what
 //     makes tenantId/companyId/companyGuid, raw Mongo operators ($match,
 //     $where, ...), and "expression" fields structurally impossible;

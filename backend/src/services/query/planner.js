@@ -3,11 +3,10 @@
 // --------------------------------------------------
 // Claude PLANNER for the Sales/Purchase Query Engine (Phase 1F).
 //
-// Role: turn a question the deterministic router could not handle
-// (status "needs_planner") into a Query DSL plan - and nothing else.
+// Role: turn a question into a Query DSL plan - and nothing else. It is the ONLY natural-language
+// interpreter: there is no deterministic router in front of it.
 //
-//   question --router--> supported / unsupported  -> Claude is NOT called
-//                        needs_planner            -> ONE structured call
+//   question (+ the previous turn's structured plan, for follow-ups) -> ONE structured call
 //   Claude's answer is only ever DATA:
 //     tool input -> strict schema (layer 1) -> semantic validator (layer 2)
 //     -> tenant-scoped entity resolution -> plan handed to the same
@@ -24,21 +23,55 @@
 //     is re-resolved against the tenant's own data (injected resolver) and
 //     replaced with the stored spelling, or the plan is refused.
 //
-// Token discipline: one call, forced tool choice, no history, no tenant data,
+// Token discipline: one call, forced tool choice, no chat history (only the previous structured plan), no tenant data,
 // static system prompt + tool schema marked cacheable, max_tokens capped.
 // --------------------------------------------------
 
 const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
-const { routeQuestion, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION, NEW_PARTY_REASON, NOTES } = require("./localRouter");
+
+// ---------------------------------------------------------------- safety gate + product definitions (shared policy)
+
+// Input containing operator characters, tenant/company/database terms or prompt-injection phrasing is refused outright:
+// Claude never sees it.
+const UNSAFE_INPUT = [
+  /[${}`\\<>;|[\]]/, // Mongo operators, JSON, JS/shell/HTML/pipeline characters
+  /[\u0000-\u001f\u007f]/,
+  /\b(?:tenant\s*id|tenantid|tenant|company\s*guid|companyguid|company\s*id|companyid|guid|objectid|mongo\w*|mongoose|db\s*\.\s*\w+)\b/i,
+  /__proto__|\bconstructor\b|\bprototype\b/i,
+  /\b(?:ignore|disregard|forget)\b.{0,30}\b(?:previous|prior|above|earlier|all)\b.{0,30}\b(?:instructions?|rules?|prompts?)\b/i,
+  /\b(?:system\s+prompt|jailbreak|you\s+are\s+now|act\s+as|developer\s+mode)\b/i,
+  /\b(?:drop|delete|truncate|update|insert)\s+(?:table|collection|database|from)\b/i,
+];
+
+/** The safety gate applied before any Claude call. */
+function isUnsafeQuestion(question) {
+  return typeof question !== "string" || UNSAFE_INPUT.some((re) => re.test(question));
+}
+
+// "Revenue" has ONE fixed meaning in TallyPulse: the pre-tax value of the items on active sales invoices
+// (lineAmount). Stated on every answer so the basis is never hidden.
+const REVENUE_ASSUMPTION = {
+  code: "revenue_is_pre_tax_item_value",
+  message: "Revenue = pre-tax value of the items sold (excludes GST, freight and other non-item charges, and invoices without item lines); gross of returns.",
+};
+// Same word test on every AI path (planner guard, chat fallbacks), so "revenue" can never reach a
+// path that reads it as the tax-inclusive Sales total.
+const REVENUE_RE = /\brevenues?\b/i;
+const mentionsRevenue = (text) => typeof text === "string" && REVENUE_RE.test(text);
+
+// "New customer/supplier" needs the ledger master; it cannot be read off a comparison of two periods.
+const NEW_PARTY_REASON = 'A "new customer" (or supplier) is one whose Tally ledger was created in the period and who traded in it. That cannot be read off a comparison of two periods (a returning customer is not new), so ask it directly with one period, for example "new customers this month".';
+// Decision 2 (final, 2026-09-28): "this month vs last month" = month to date vs the COMPLETE previous calendar month.
+const MONTH_FULL_NOTE = { code: "month_vs_complete_previous_month", message: 'This month so far is compared with the complete previous month (the product\'s standard month comparison). Ask for "same period last month" to compare the same days.' };
 
 const { CATALOG, LIMITS } = catalog;
 
 const PLANNER_TOOL_NAME = "submit_query_plan";
 const PLANNER_MAX_TOKENS = 700;
 const PLANNER_MAX_QUESTION_CHARS = 600;
-// Bounded planner call (the chat frontend gives up after 60s; the rest of the turn - router, freshness,
+// Bounded planner call (the chat frontend gives up after 60s; the rest of the turn - freshness,
 // engine with its 8s maxTimeMS, persistence - must still fit). One SDK retry at most, each attempt capped,
 // and an overall deadline that aborts the request whatever the SDK is doing.
 const PLANNER_ATTEMPT_TIMEOUT_MS = 15000;
@@ -51,35 +84,6 @@ const VALIDATION_FALLBACK_REF = new Date(2025, 0, 15, 12, 0, 0);
 const DECLINE_CODES = ["unsupported_domain", "needs_clarification", "not_a_data_query"];
 const NAME_DIMENSIONS = new Set(["customer", "supplier", "product", "productGroup"]);
 
-// Router outcomes where Claude cannot add anything the router did not already know:
-// the name does not exist, or the missing fact (year / period / window) is the USER's to state.
-// Guessing those would be an invented assumption about financial scope, so no call is made.
-const SKIP_ROUTER_CODES = new Set([
-  "entity_not_resolved",
-  "question_too_long",
-  "year_missing",
-  "ambiguous_period",
-  "invalid_fy",
-  "unsupported_window",
-  "period_missing",
-  // period wording the DSL cannot express; the planner has no reference date, so it could only guess dates
-  "period_label_unsupported",
-  "relative_offset_unsupported",
-  "open_ended_range",
-  // P-SF: the missing fact is which party / which direction / which measure - the user's to state
-  "who_ambiguous",
-  "threshold_direction_missing",
-  "vague_performance",
-  // P0 fix: the router has already deliberately refused to guess sales vs. purchase (e.g. "product
-  // growth") - handing that same refusal to Claude just lets it silently pick one, defeating the
-  // router's own "don't guess" decision and paying for a Claude call to do it. The missing fact
-  // (which side of the business) is the user's to state, same as who_ambiguous.
-  "entity_ambiguous",
-  // A question naming several time periods with no comparison word ("last month / this month / today"). The
-  // fix is the user rephrasing, and paying Claude to say so is exactly the leak this set exists to prevent.
-  "too_many_periods",
-  "two_periods_without_comparison",
-]);
 
 // ---------------------------------------------------------------- prompt + tool (built once from the catalog)
 
@@ -180,8 +184,53 @@ function statedYears(text) {
   return years;
 }
 
-function datesStated(plan, text) {
+// The previous STRUCTURED plan of the conversation (follow-ups). It is untrusted input: it must pass the same strict
+// schema as any plan, otherwise it is ignored (the question is then planned exactly as without one). Only the plan -
+// never chat text, answers, tool results or figures - and it is shown to Claude without its default fields.
+function readPreviousPlan(previousPlan) {
+  if (previousPlan === undefined || previousPlan === null) return null;
+  const parsed = parseQueryPlan(previousPlan);
+  if (!parsed.ok) return null;
+  const compact = {};
+  for (const [k, v] of Object.entries(parsed.plan)) {
+    if (v === null || (Array.isArray(v) && v.length === 0)) continue;
+    if ((k === "totals" && v === true) || (k === "explain" && v === "none")) continue;
+    compact[k] = v;
+  }
+  return { plan: parsed.plan, json: JSON.stringify(compact) };
+}
+
+function previousPlanMessage(json, text) {
+  return [
+    "Previous query plan (structured JSON). The question below may refine or modify it:",
+    json,
+    "Interpret the question in that context and return one complete new plan that follows the same rules. Keep whatever the question does not change. If the question is not a follow-up, ignore the previous plan.",
+    `Question: ${text}`,
+  ].join("\n");
+}
+
+// Years in the previous plan's own dates were stated by the user in an earlier turn (and validated then), so a follow-up
+// that keeps that period is not "inventing" a year.
+function plannedYears(plan) {
+  const years = new Set();
+  const add = (p) => {
+    if (!p) return;
+    if (p.kind === "custom") {
+      years.add(Number(p.from.slice(0, 4)));
+      years.add(Number(p.to.slice(0, 4)));
+    } else if (p.kind === "specific_fy") {
+      years.add(Number(p.fy.slice(0, 4)));
+      years.add(Number(p.fy.slice(0, 4)) + 1);
+    }
+  };
+  add(plan.period);
+  if (plan.compare && plan.compare.mode === "custom") add(plan.compare.period);
+  return years;
+}
+
+function datesStated(plan, text, previous = null) {
   const years = statedYears(String(text));
+  if (previous) for (const y of plannedYears(previous)) years.add(y);
   const ok = (p) => {
     if (!p) return true;
     if (p.kind === "custom") return years.has(Number(p.from.slice(0, 4))) && years.has(Number(p.to.slice(0, 4)));
@@ -210,11 +259,13 @@ const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed",
  * @param {Function} options.claudeClient async ({system, messages, tools, tool_choice, max_tokens}) => Anthropic-shaped response
  * @param {Function} [options.resolveEntity] tenant-scoped resolver (server-supplied); re-verifies every name Claude used
  * @param {Date} [options.referenceDate] only for running the semantic validator
- * @param {string} [options.routerCode] the router's needs_planner code (optional one-word hint)
  * @param {number} [options.maxRepairs=0] 0 or 1: one extra call that returns only validator error codes
+ * @param {object} [options.previousPlan] the previous query plan of the conversation (structured plan only, optional). When it passes
+ *        the plan schema it is added to the user message as JSON for follow-ups; when invalid it is ignored.
  */
 async function planQuestion(question, options = {}) {
-  const { claudeClient, resolveEntity, referenceDate, routerCode } = options;
+  const { claudeClient, resolveEntity, referenceDate } = options;
+  const previous = readPreviousPlan(options.previousPlan);
   if (typeof claudeClient !== "function") throw new Error("planQuestion requires a claudeClient function.");
   const maxRepairs = Math.min(MAX_REPAIRS_CAP, Math.max(0, Number.isInteger(options.maxRepairs) ? options.maxRepairs : 0));
   const usage = newUsage();
@@ -226,8 +277,7 @@ async function planQuestion(question, options = {}) {
   if (text.length > PLANNER_MAX_QUESTION_CHARS) return { status: "needs_clarification", route: "honest_response", source: "planner_gate", code: "question_too_long", reason: "Please shorten the question.", usage };
 
   const prompt = getPlannerPrompt();
-  const hint = typeof routerCode === "string" && /^[a-z_]{3,40}$/.test(routerCode) ? `\n(router hint: ${routerCode})` : "";
-  let messages = [{ role: "user", content: `${text}${hint}` }];
+  let messages = [{ role: "user", content: previous ? previousPlanMessage(previous.json, text) : text }];
   let lastFailure = null;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
@@ -311,7 +361,7 @@ async function planQuestion(question, options = {}) {
 
     // ---- dates (P-SF): the planner is never given a date, so a literal year in its plan that the user did not
     // write would be invented. Custom ranges and specific FYs must use years stated in the question.
-    if (!datesStated(parsed.plan, text)) {
+    if (!datesStated(parsed.plan, text, previous && previous.plan)) {
       return { status: "needs_clarification", route: "honest_response", source: "date_guard", code: "year_missing", reason: "Which year do you mean?", usage };
     }
 
@@ -349,7 +399,7 @@ async function planQuestion(question, options = {}) {
       plan.compare = { mode: "full_previous" };
       validation = validateQueryPlan(plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
       if (!validation.ok) return failed("planner_invalid_plan", "The plan was not valid after applying the month comparison rule.", usage);
-      definitionNotes.push(NOTES.MONTH_FULL_NOTE);
+      definitionNotes.push(MONTH_FULL_NOTE);
     }
 
     const plannerAssumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);
@@ -366,23 +416,6 @@ async function planQuestion(question, options = {}) {
     };
   }
   return failed("planner_invalid_plan", "The planner produced a plan the query engine cannot run.", usage, { errors: (lastFailure || []).slice(0, 5) });
-}
-
-// ---------------------------------------------------------------- router -> planner
-
-/**
- * The deterministic router always goes first. Claude is called ONLY when it says needs_planner
- * (and not for the dead-end codes in SKIP_ROUTER_CODES). No tenant argument exists here.
- */
-async function routeAndPlan(question, { resolveEntity, claudeClient, referenceDate, maxRepairs } = {}) {
-  const route = await routeQuestion(question, { resolveEntity, referenceDate });
-  if (route.status !== "needs_planner") return { route, planner: null, final: route, claudeCalled: false };
-  if (SKIP_ROUTER_CODES.has(route.code)) {
-    const final = { status: "needs_clarification", route: "honest_response", source: "router", code: route.code, reason: route.reason };
-    return { route, planner: null, final, claudeCalled: false };
-  }
-  const planner = await planQuestion(question, { claudeClient, resolveEntity, referenceDate, routerCode: route.code, maxRepairs });
-  return { route, planner, final: planner, claudeCalled: planner.usage.calls > 0 };
 }
 
 // ---------------------------------------------------------------- real Anthropic client (not used by tests)
@@ -439,7 +472,6 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
 
 module.exports = {
   planQuestion,
-  routeAndPlan,
   createAnthropicPlannerClient,
   getPlannerPrompt,
   PLANNER_TOOL_NAME,
@@ -448,6 +480,6 @@ module.exports = {
   PLANNER_ATTEMPT_TIMEOUT_MS,
   PLANNER_MAX_RETRIES,
   PLANNER_DEADLINE_MS,
-  SKIP_ROUTER_CODES,
   DECLINE_CODES,
+  REVENUE_ASSUMPTION,
 };

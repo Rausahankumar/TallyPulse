@@ -1,18 +1,14 @@
 /**
- * Return Analytics Phase 1: router grammar (total, count, party breakdown,
- * comparison, month trend), query engine, chat integration (freshness +
- * coverage, both fixed in this phase), tenant security, answer cache, and
- * a real-data oracle check against WE FOUR / Nirmal (read-only).
+ * Return Analytics Phase 1: query engine, chat integration (freshness + coverage, both fixed in this phase),
+ * tenant security, answer cache, and a real-data oracle check against WE FOUR / Nirmal (read-only).
  *
- * Complements verify-return-query.js (router + engine basics, already
- * passing) and verify-adjustment-note.js (sync pipeline). This suite adds
- * the NEW work: trend, broadened comparison intent, the queryChat
- * freshness/coverage entity-label fixes, cache-hit behaviour, and a forged
- * tenant/company rejection.
+ * Complements verify-return-query.js (engine basics) and verify-adjustment-note.js (sync pipeline). This suite
+ * covers trend, comparison, the queryChat freshness/coverage entity-label fixes, cache-hit behaviour, and a
+ * forged tenant/company rejection. Phrasing -> plan is the planner's job (verify-query-planner.js); the chat
+ * section here feeds queryChat the plan a correct interpretation produces through a scripted planner client.
  *
- * SYNTHETIC fixtures for sections A-D; SECTION E reads real WE FOUR/Nirmal
- * data (already synced and validated in a prior session) READ-ONLY - no
- * writes, no Tally calls, no Claude calls.
+ * SYNTHETIC fixtures for sections B-F; SECTION G reads real WE FOUR/Nirmal data (already synced and validated in
+ * a prior session) READ-ONLY - no writes, no Tally calls, no Claude calls.
  *
  * Run: node verify-return-analytics.js
  */
@@ -22,10 +18,10 @@ const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
-const { routeQuestion } = require("./src/services/query/localRouter");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
 const { executeQuery } = require("./src/services/query/execute");
 const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
+const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { createAnswerCache } = require("./src/services/query/answerCache");
 const { formatQueryAnswer } = require("./src/services/query/answerFormatter");
 
@@ -45,7 +41,6 @@ const T1 = "TEST-TENANT-return-analytics";
 const T2 = "TEST-TENANT-return-analytics-other";
 const REF = new Date(2026, 8, 20, 12, 0, 0); // 20 Sep 2026, local noon
 const resolver = createEntityResolver({ tenantId: "TEST-TENANT", sources: { customer: async () => [], supplier: async () => [], product: async () => [], productGroup: async () => [] } });
-const route = (q, ref = REF) => routeQuestion(q, { resolveEntity: resolver, referenceDate: ref });
 
 const utc = (s) => new Date(`${s}T00:00:00.000Z`);
 let seq = 0;
@@ -73,46 +68,6 @@ async function cleanup() {
   await connectDB();
   await cleanup();
   try {
-    // ============================================================ A. ROUTER
-    section("A. ROUTER grammar");
-    const plan = async (q) => {
-      const r = await route(q);
-      return r.status === "supported" ? r.plan : `${r.status}/${r.code}`;
-    };
-    check("A1 sales return total", same(await plan("How much sales return did we have in August 2025?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2025-08-01", to: "2025-08-31" }, metrics: ["returnAmount"] }));
-    check("A2 'how much did customers return' phrasing", (await route("How much did customers return last month?")).status === "supported" || true); // wording not in this branch's grammar - documented limitation, checked below
-    check("B1 purchase return total", same(await plan("Purchase returns this month"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"] }));
-    check("C1 sales return count", same(await plan("How many sales returns did we have this month?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnCount"] }));
-    check("C2 purchase return count", same(await plan("How many purchase returns were there this month?"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnCount"] }));
-    check("D1 customer breakdown", same(await plan("Which customers had the highest sales returns this month?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }));
-    check("D2 supplier breakdown", same(await plan("Which suppliers had the highest purchase returns this month?"), { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }] }));
-    check("E1 implicit comparison intent (no 'vs')", same(await plan("Did sales returns increase this month?"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"], compare: { mode: "full_previous" } }));
-    check("E2 explicit vs comparison", same(await plan("Compare sales returns this month vs last month"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"], compare: { mode: "full_previous" } }));
-    {
-      const r = await route("How did purchase returns change?");
-      check("E3 comparison intent with no period -> needs a period, never guessed", r.status === "needs_planner" && r.code === "period_missing", `${r.status}/${r.code}`);
-    }
-    check("F1 month-by-month trend, explicit period", same(await plan("Show sales returns month by month this financial year"), { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_fy" }, metrics: ["returnAmount"], groupBy: [{ dim: "date", bucket: "month" }] }));
-    {
-      const r = await route("Show sales returns month by month");
-      check("F2 trend with no stated period defaults to all_time, discloses the default", r.status === "supported" && r.plan.period.kind === "all_time" && r.plan.groupBy[0].bucket === "month" && r.assumptions.some((a) => a.code === "period_defaulted_to_all_time"), JSON.stringify(r));
-    }
-    for (const [q, wantCode] of [
-      // "Which products were returned the most?" and "sales returns by product this month" are now
-      // SUPPORTED (Product-Level Return Analytics phase) - see verify-product-return-analytics.js.
-      ["return reasons this month", "net_of_returns"],
-      ["what is our return rate this month", "net_of_returns"],
-      ["net sales after returns this month", "net_of_returns"],
-      ["partial returns this month", "net_of_returns"],
-      ["sales returns and purchase returns this month", "return_direction_ambiguous"],
-      ["sales returns by customer this month vs last month", "unsupported_combination"],
-      ["sales returns by customer month by month", "unsupported_combination"],
-    ]) {
-      const r = await route(q);
-      const got = r.code === "unsupported_capability" ? r.capability : r.code;
-      check(`unsupported: "${q}" -> ${wantCode}`, r.status === "unsupported" && got === wantCode, `${r.status}/${r.code}/${r.capability}`);
-    }
-
     // ============================================================ B. ENGINE
     section("B. ENGINE vs a hand-computed oracle");
     await AdjustmentNote.insertMany([
@@ -182,6 +137,14 @@ async function cleanup() {
 
     // ============================================================ E. queryChat freshness/coverage fix
     section("E. queryChat: return entities get their OWN freshness/coverage label (bug fixed this phase)");
+    // the plans a correct interpretation of each question produces (the planner is scripted: no network)
+    const FYC = { kind: "custom", from: "2020-04-01", to: "2020-04-30" };
+    const QPLANS = {
+      "sales returns this month": { v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"] },
+      "purchase returns this month": { v: 1, entity: "purchase_return", mode: "aggregate", period: { kind: "current_month" }, metrics: ["returnAmount"] },
+      "sales returns in April 2020": { v: 1, entity: "sales_return", mode: "aggregate", period: FYC, metrics: ["returnAmount"] },
+    };
+    const planFor = (q) => async () => ({ content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { plan: QPLANS[q] } }], usage: { input_tokens: 1, output_tokens: 1 } });
     const askPure = async (q, freshnessOverride) => {
       const seenVoucherTypes = [];
       const getFreshness = async (tenantId, voucherType) => {
@@ -189,15 +152,15 @@ async function cleanup() {
         return freshnessOverride || { state: "fresh", dataAsOf: null, message: "ok" };
       };
       const execute = async (p, ctx) => ({ result: await executeQuery(p, ctx), cache: { status: "miss" } });
-      const out = await tryAnswerWithQueryEngine({ context: { tenantId: T1 }, userMessage: q, conversationHistory: [], deps: { resolveEntity: resolver, getFreshness, plannerClient: async () => { throw new Error("must not call the planner"); }, execute, getDateContext: async () => ({ referenceDate: REF, coverage: { earliest: utc("2026-04-01"), latest: utc("2026-09-30") } }) } });
+      const out = await tryAnswerWithQueryEngine({ context: { tenantId: T1 }, userMessage: q, conversationHistory: [], deps: { resolveEntity: resolver, getFreshness, plannerClient: planFor(q), execute, getDateContext: async () => ({ referenceDate: REF, coverage: { earliest: utc("2026-04-01"), latest: utc("2026-09-30") } }) } });
       return { out, seenVoucherTypes };
     };
     let { out, seenVoucherTypes } = await askPure("sales returns this month");
-    check("E1 sales_return freshness checks the Credit Note checkpoint, not Purchase", seenVoucherTypes.includes("Credit Note") && !seenVoucherTypes.includes("Purchase"), JSON.stringify(seenVoucherTypes));
+    check("E1 sales_return freshness reads the Credit Note checkpoint (Sales/Purchase are read before the plan exists; the return entity adds its own)", seenVoucherTypes.includes("Credit Note") && !seenVoucherTypes.includes("Debit Note"), JSON.stringify(seenVoucherTypes));
     check("E1b the answer actually reflects the seeded 30 for September", out.handled && /30\.00/.test(out.structured.answer), out.structured && out.structured.answer);
 
     ({ out, seenVoucherTypes } = await askPure("purchase returns this month"));
-    check("E2 purchase_return freshness checks the Debit Note checkpoint", seenVoucherTypes.includes("Debit Note") && !seenVoucherTypes.includes("Sales"), JSON.stringify(seenVoucherTypes));
+    check("E2 purchase_return freshness reads the Debit Note checkpoint", seenVoucherTypes.includes("Debit Note") && !seenVoucherTypes.includes("Credit Note"), JSON.stringify(seenVoucherTypes));
 
     ({ out } = await askPure("sales returns this month", { state: "never_synced", dataAsOf: null, message: "No Credit Note sync has ever run for this company yet." }));
     check("E3 never-synced Credit Note checkpoint is disclosed as missing data, never a false zero", out.handled && /No Credit Note sync/.test(out.structured.answer));
@@ -214,6 +177,9 @@ async function cleanup() {
 
     // ============================================================ G. REAL DATA (read-only, WE FOUR + Nirmal)
     section("G. REAL DATA oracle (read-only, no writes, no Tally, no Claude)");
+    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: "6ab21418959e173f9b3f367f" })) > 0;
+    if (!REAL_PRESENT) console.log("  SKIPPED - the real WE FOUR/Nirmal tenants are not present in this database");
+    else {
     const WE_FOUR = "6ab21418959e173f9b3f367f";
     const NIRMAL = "6ab21fe0959e173f9b3f3682";
     const ALL_TIME = { kind: "all_time" };
@@ -255,6 +221,7 @@ async function cleanup() {
 
     const foreignWeFour = await AdjustmentNote.countDocuments({ tenantId: WE_FOUR, tallyGuid: { $not: /^d46f1002-00d9-4559-b3e1-afcf8674c7b1-/ } });
     check("G9 no foreign-GUID AdjustmentNote docs under WE FOUR (re-confirmed, read-only)", foreignWeFour === 0);
+    }
   } catch (error) {
     fail += 1;
     console.log("  FAIL - unexpected error:", error && error.stack);

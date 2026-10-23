@@ -1,16 +1,14 @@
-# React + Vite
+# TallyPulse frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + Vite + Tailwind CSS 4 single-page app. It talks to the backend over REST only (`src/api/`) and never computes a business figure itself. Requests go to `/api`; in development Vite proxies that to `http://localhost:5000` (override with `VITE_API_PROXY_TARGET`), and for a build served from another origin set `VITE_API_BASE_URL`.
 
-Currently, two official plugins are available:
+```bash
+npm install
+npm run dev       # http://localhost:5173
+npm run lint      # oxlint
+npm run build
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Pages (`src/pages`): Dashboard, Sales / Purchase / Customers / Products analytics, Reports with CSV export, Sync Data, Ask AI, Settings and the auth pages (register, login, Connect Tally). Ask AI renders the backend's answer text as sanitised Markdown and its presentation model as KPI cards, charts and exact-value tables (`src/components/chat`).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Verification scripts (plain `node`, no browser): `verify-chat-api.mjs`, `verify-chat-rendering.mjs`, `verify-chat-presentation.mjs`, `verify-dashboard-report-link.mjs`, and `verify-chat-timeout.cjs` (takes about 45 seconds).

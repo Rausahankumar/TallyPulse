@@ -4,12 +4,11 @@ const mongoose = require("mongoose");
 // at the same company must not see each other's chats by default, and
 // definitely never see another company's chats at all).
 //
-// Deliberately does NOT store raw tool results or raw Tally/Mongo
+// Deliberately does NOT store raw query results or raw Tally/Mongo
 // documents - only what's needed to redisplay the conversation
-// (the assistant's structured answer, not the underlying dataset it was
-// computed from). See the architecture report (Part 17) for the
-// reasoning: chat history is a display/audit log of what was SAID, not
-// a second copy of the analytics data.
+// (the assistant's deterministic answer, not the underlying dataset it was
+// computed from): chat history is a display/audit log of what was SAID,
+// not a second copy of the analytics data.
 const chatMessageSchema = new mongoose.Schema(
   {
     role: {
@@ -23,10 +22,9 @@ const chatMessageSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Present only on assistant messages that used a tool. Minimal
-    // metadata for "View Details" / traceability (Part 18/23 Q10-11) -
-    // which tool, what it was asked, what trust state it returned -
-    // NOT the full result payload.
+    // Present only on assistant messages that ran the query engine.
+    // Minimal metadata for "View Details" / traceability - which tool and
+    // what trust state it returned - NOT the full result payload.
     toolCalls: [
       {
         toolName: { type: String },
@@ -35,8 +33,8 @@ const chatMessageSchema = new mongoose.Schema(
       },
     ],
 
-    // Structured visualization descriptor (Part 14) - frontend renders
-    // this, Claude never sends executable code.
+    // Structured presentation model built by the backend (presentation.js);
+    // the frontend renders it, no figure is computed client-side.
     visualization: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
@@ -48,8 +46,7 @@ const chatMessageSchema = new mongoose.Schema(
     },
 
     // The real freshness object (state/dataAsOf/lastRunStatus/lastError/
-    // minutesSinceLastSync/message) the Analytics Engine returned for
-    // this answer - the worst one across every tool this turn called.
+    // minutesSinceLastSync/message) the answer was computed under.
     // Stored so a reloaded conversation shows the SAME honest state it
     // showed live, never a re-derived/fabricated "fresh" default.
     freshness: {
@@ -63,9 +60,10 @@ const chatMessageSchema = new mongoose.Schema(
     },
 
     // Present only on answers from the Query Engine: the validated query plan that produced this answer plus the
-    // measure the user asked for ({v, plan, basis} - built and re-validated by the query engine's follow-up module). It lets a follow-up such as
-    // "and by customer?" keep the period, comparison and measure. It holds no figures and no tenant fields, is
-    // re-validated before any reuse, and is never sent to Claude.
+    // measure the user asked for ({v, plan, basis} - built and re-read by followUp.js). It lets a follow-up such as
+    // "and by customer?" keep the period, comparison and measure: the planner receives it as the previous structured
+    // plan (the chat's text history is never sent). It holds no figures and no tenant fields, and is strictly
+    // re-parsed before any reuse.
     queryContext: {
       type: mongoose.Schema.Types.Mixed,
       default: undefined,

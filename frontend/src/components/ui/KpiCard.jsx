@@ -1,14 +1,17 @@
-import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight } from "lucide-react";
+import { Link } from "react-router-dom";
 import Card from "./Card";
 import { cn } from "../../lib/cn";
 
 // Matches the reference dashboard's KPI tiles: label, big value, small
 // icon chip, and a "+12.5% vs previous period" delta line underneath.
-export default function KpiCard({ label, value, delta, icon: Icon, tone = "brand", hint }) {
+// `to` (optional) makes the whole card one real link (keyboard focusable, Enter opens it, middle-click works);
+// `linkLabel` is its accessible name / tooltip. Without `to` the card is exactly what it always was.
+export default function KpiCard({ label, value, delta, icon: Icon, tone = "brand", hint, to, linkLabel }) {
   const positive = typeof delta === "number" ? delta >= 0 : null;
 
-  return (
-    <Card className="min-w-0">
+  const card = (
+    <Card className={cn("min-w-0", to && "relative h-full transition-shadow group-hover:border-brand-200 group-hover:shadow-card-lg group-focus-visible:border-brand-500")}>
       <div className="flex items-center justify-between">
         <span className="text-[13px] font-medium text-ink-500">{label}</span>
         {Icon && (
@@ -39,7 +42,24 @@ export default function KpiCard({ label, value, delta, icon: Icon, tone = "brand
           {Math.abs(delta).toFixed(1)}% <span className="font-normal text-ink-400">vs previous period</span>
         </div>
       )}
+      {to && (
+        <span className="pointer-events-none absolute bottom-3 right-4 inline-flex items-center gap-1 text-[12px] font-medium text-brand-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          View report <ArrowRight className="h-3.5 w-3.5" />
+        </span>
+      )}
     </Card>
+  );
+
+  if (!to) return card;
+  return (
+    <Link
+      to={to}
+      aria-label={linkLabel}
+      title={linkLabel}
+      className="group block min-w-0 rounded-2xl outline-none transition-transform focus-visible:ring-2 focus-visible:ring-brand-500 active:scale-[0.99]"
+    >
+      {card}
+    </Link>
   );
 }
 

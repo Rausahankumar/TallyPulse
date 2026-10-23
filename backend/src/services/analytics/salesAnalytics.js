@@ -7,16 +7,6 @@ const { buildVoucherMatchStage } = require("./analyticsScope");
 // Every function's $match stage is built exclusively via
 // buildVoucherMatchStage(), so tenant scoping + active-voucher-only
 // filtering is structurally impossible to forget.
-//
-// A "category" metric (which stock-item group/category generated the
-// most sales) is NOT implemented here. The current Sale schema's
-// inventory items only carry {itemName, quantity, rate, amount,
-// discountPercentage, discountAmount} - no category/group field is
-// captured by the parser or mapper. Implementing it would mean
-// fabricating a grouping that doesn't exist in the stored data, which
-// the working rules explicitly prohibit ("do not implement metrics
-// that cannot be reliably calculated from the current stored data").
-// See the final report for what parser/mapper change would be needed.
 // --------------------------------------------------
 
 async function getSalesSummary(tenantId, period) {
@@ -81,7 +71,7 @@ async function getSalesComparison(tenantId, currentPeriod, previousPeriod) {
     previous,
     growthAmount,
     growthPercentage,
-    // Explicit warning surfaced to the caller (and ultimately Claude) so
+    // Explicit warning surfaced to the caller so
     // a partial-vs-partial comparison is never silently presented as a
     // full-vs-full one.
     comparisonNote:
@@ -89,27 +79,6 @@ async function getSalesComparison(tenantId, currentPeriod, previousPeriod) {
         ? "One or both periods are month-to-date (partial), not complete calendar months."
         : null,
   };
-}
-
-// Convenience wrapper matching the "sales growth" phrasing directly -
-// same underlying calculation as getSalesComparison, just named for the
-// specific "this month vs last month, same date range" question.
-async function getSalesGrowthVsPreviousMonth(tenantId, referenceDate) {
-  const dateRanges = require("./dateRanges");
-  return getSalesComparison(
-    tenantId,
-    dateRanges.currentMonthToDate(referenceDate),
-    dateRanges.previousMonthSameRange(referenceDate)
-  );
-}
-
-async function getSalesGrowthVsSameMonthLastYear(tenantId, referenceDate) {
-  const dateRanges = require("./dateRanges");
-  return getSalesComparison(
-    tenantId,
-    dateRanges.currentMonthToDate(referenceDate),
-    dateRanges.sameMonthLastYearToDate(referenceDate)
-  );
 }
 
 async function getTopProducts(tenantId, period, { limit = 10 } = {}) {
@@ -289,8 +258,7 @@ async function getTopCustomers(tenantId, period, { limit = 10 } = {}) {
 // 0): a zero total for a real customer in a real period IS the correct,
 // valid answer, not an empty-result state - wrapAnalyticsResult must not
 // collapse it into its generic "no matching records" message, which
-// would erase the found/not-found distinction. The tool description in
-// tools.js tells Claude how to phrase each of the resulting cases.
+// would erase the found/not-found distinction.
 // AMOUNT SOURCE: totalSales sums header.voucherTotalAmount - the
 // GST/tax-inclusive voucher total, the SAME field getTopCustomers above
 // already uses - not the pre-tax line-item subtotal
@@ -466,23 +434,9 @@ async function getCustomerCounts(tenantId, period) {
   };
 }
 
-// Explicitly NOT implemented - see file header. Returns a typed
-// "unsupported" result rather than a fabricated/empty one, so callers
-// (and ultimately Claude) can distinguish "no data" from "this feature
-// doesn't exist yet."
-async function getCategoryPerformance() {
-  return {
-    supported: false,
-    reason:
-      "Stock item category/group is not captured by the current Tally parser/mapper - Sale.inventory items only store itemName, quantity, rate, amount, discountPercentage, discountAmount. Category-level analytics would require a parser/mapper change to extract and store the item's stock group, which has not been made.",
-  };
-}
-
 module.exports = {
   getSalesSummary,
   getSalesComparison,
-  getSalesGrowthVsPreviousMonth,
-  getSalesGrowthVsSameMonthLastYear,
   getTopProducts,
   getTopGrowingProducts,
   getDecliningProducts,
@@ -490,7 +444,6 @@ module.exports = {
   getCustomerSales,
   getSalesTrend,
   getCustomerCounts,
-  getCategoryPerformance,
   computeGrowth,
   CUSTOMER_SALES_AMOUNT_BASIS,
 };

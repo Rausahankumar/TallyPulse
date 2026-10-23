@@ -5,20 +5,15 @@ const periodEngine = require("../services/analytics/periodEngine");
 const stockGroupAnalytics = require("../services/analytics/stockGroupAnalytics");
 const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
-const {
-  resolvePeriod,
-  resolveComparisonPeriods,
-} = require("../services/ai/tools");
 
 // --------------------------------------------------
-// Read-only REST surface over the existing, deterministic Analytics
-// Engine (src/services/analytics/*) - the same calculations, the same
-// analyticsScope tenant/active-voucher gating, and the same
-// resolvePeriod/resolveComparisonPeriods period resolution already used
-// by the Claude tool layer (src/services/ai/tools.js). Nothing here
-// recomputes a business number - every handler below just parses HTTP
-// query params into the same period/comparison objects the tool layer
-// already builds, then calls the exact same analytics function.
+// Read-only REST surface over the deterministic Analytics Engine
+// (src/services/analytics/*) - the same calculations and the same
+// analyticsScope tenant/active-voucher gating the query engine is checked
+// against (verify-query-parity.js). Nothing here recomputes a business
+// number - every handler below parses HTTP query params into a period or
+// comparison (dateRanges.resolveRequestPeriod / resolveRequestComparison, or
+// periodEngine) and calls the analytics function.
 //
 // Company/tenant context is never read from the query string or body -
 // it comes from req.companyContext, set by the activeCompanyContext
@@ -27,7 +22,7 @@ const {
 //
 // Every response is the trust envelope wrapAnalyticsResult already
 // produces ({state, data, freshness, message}) - the same contract the
-// frontend's FreshnessBadge and future chat layer are already built to
+// frontend's FreshnessBadge is already built to
 // read - spread directly into the HTTP body, never reshaped.
 // --------------------------------------------------
 
@@ -56,7 +51,7 @@ function parsePeriodFromQuery(query, referenceDate) {
   }
 
   try {
-    return resolvePeriod({ period, from: query.from, to: query.to }, referenceDate);
+    return dateRanges.resolveRequestPeriod({ period, from: query.from, to: query.to }, referenceDate);
   } catch (error) {
     error.status = error.status || 400;
     throw error;
@@ -195,7 +190,7 @@ const getSalesComparison = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const referenceDate = await getTenantReferenceDate(tenantId);
-  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
+  const { current, previous } = dateRanges.resolveRequestComparison(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -226,7 +221,7 @@ const getGrowingProducts = handle(async (req, res) => {
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const limit = parseLimitFromQuery(req.query);
   const referenceDate = await getTenantReferenceDate(tenantId);
-  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
+  const { current, previous } = dateRanges.resolveRequestComparison(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -242,7 +237,7 @@ const getDecliningProducts = handle(async (req, res) => {
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const limit = parseLimitFromQuery(req.query);
   const referenceDate = await getTenantReferenceDate(tenantId);
-  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
+  const { current, previous } = dateRanges.resolveRequestComparison(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,
@@ -314,7 +309,7 @@ const getPurchaseComparison = handle(async (req, res) => {
   const { tenantId } = req.companyContext;
   const comparisonType = parseComparisonTypeFromQuery(req.query);
   const referenceDate = await getTenantReferenceDate(tenantId);
-  const { current, previous } = resolveComparisonPeriods(comparisonType, referenceDate);
+  const { current, previous } = dateRanges.resolveRequestComparison(comparisonType, referenceDate);
 
   const envelope = await wrapAnalyticsResult({
     tenantId,

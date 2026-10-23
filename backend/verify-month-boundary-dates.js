@@ -4,8 +4,8 @@
  * Month-boundary date regression: "previous month" and every other month/year shift must land in the right calendar
  * month on EVERY anchor day - including 29-31 Mar, 31 May/Jul/Oct/Dec, 31 Jan, 29-30 Apr, 31 Aug and 29 Feb, where a
  * plain `new Date(y, m - 1, day)` rolls over into the wrong month. Checked on every surface that resolves periods:
- *   dateRanges (shared helpers)  ->  periodEngine  ->  Query DSL validator (router/planner/engine)
- *   legacy chat tools + REST analytics API (tools.resolvePeriod / resolveComparisonPeriods)
+ *   dateRanges (shared helpers)  ->  periodEngine  ->  Query DSL validator (planner/engine)
+ *   REST analytics/report API (dateRanges.resolveRequestPeriod / resolveRequestComparison)
  *   dashboard default trend window (dateRanges.lastNMonthsEnding)
  * against an independent oracle built from plain year/month arithmetic. Pure: no DB, no network, no Claude, no Tally.
  * Run: node verify-month-boundary-dates.js
@@ -14,7 +14,6 @@
 const dateRanges = require("./src/services/analytics/dateRanges");
 const periodEngine = require("./src/services/analytics/periodEngine");
 const { validateQueryPlan } = require("./src/services/query/validator");
-const tools = require("./src/services/ai/tools");
 
 let pass = 0;
 let fail = 0;
@@ -87,8 +86,6 @@ section("A. the named month-end anchors that used to resolve to the WRONG month"
     const full = res("current_month", "full_previous", ref);
     check(`anchor ${a}: "this month vs the FULL last month" baseline = ${prev}`, `${ymd(full.comparison.from)}..${ymd(full.comparison.to)}` === prev);
   }
-  const leap = dateRanges.sameFullMonthLastYear(new Date(2024, 1, 29, 12));
-  check("29 Feb 2024: the same full month last year = February 2023 (not March)", `${ymd(leap.from)}..${ymd(leap.to)}` === "2023-02-01..2023-02-28");
   const trend = dateRanges.lastNMonthsEnding(new Date(2025, 6, 31, 12), 6);
   check("dashboard trend on 31 Jul 2025: 6 whole months = Feb-Jul 2025 (not Mar-Jul)", `${ymd(trend.from)}..${ymd(trend.to)}` === "2025-02-01..2025-07-31");
 }
@@ -110,7 +107,6 @@ section("B. shared helpers (dateRanges) vs the oracle, every anchor 2000-2040");
   });
   sweep("shiftMonths agrees with periodEngine.safeShiftMonths", (ref) => same(stamp(dateRanges.shiftMonths(ref, -1)), stamp(periodEngine.safeShiftMonths(ref, -1))));
   sweep("previousFullMonth = the whole previous calendar month", (ref) => { const [y, m] = addMonths(ref.getFullYear(), ref.getMonth(), -1); return same(range(dateRanges.previousFullMonth(ref)), range(wholeMonth(y, m))); });
-  sweep("sameFullMonthLastYear = the whole same month a year earlier", (ref) => same(range(dateRanges.sameFullMonthLastYear(ref)), range(wholeMonth(ref.getFullYear() - 1, ref.getMonth()))));
   sweep("lastNMonthsEnding(n) = n whole months ending with the anchor month (n = 1, 3, 6, 12)", (ref) => {
     for (const n of [1, 3, 6, 12]) {
       const [fy, fm] = addMonths(ref.getFullYear(), ref.getMonth(), -(n - 1));
@@ -135,7 +131,7 @@ section("B. shared helpers (dateRanges) vs the oracle, every anchor 2000-2040");
   });
 }
 
-section("C. period engine + Query DSL (router / planner / engine all resolve through the validator)");
+section("C. period engine + Query DSL (planner / engine all resolve through the validator)");
 {
   sweep("periodEngine previous_month = whole previous month; its comparison = whole month before", (ref) => {
     const [y1, m1] = addMonths(ref.getFullYear(), ref.getMonth(), -1);
@@ -160,21 +156,22 @@ section("C. period engine + Query DSL (router / planner / engine all resolve thr
   });
 }
 
-section("D. legacy chat tools + REST analytics API (tools.resolvePeriod / resolveComparisonPeriods)");
+section("D. REST analytics/report API (dateRanges.resolveRequestPeriod / resolveRequestComparison)");
 {
-  sweep("period previous_month = whole previous month (legacy chat tool AND the dashboard API)", (ref) => {
+  sweep("period previous_month = whole previous month (REST analytics and reports)", (ref) => {
     const [y, m] = addMonths(ref.getFullYear(), ref.getMonth(), -1);
-    return same(range(tools.resolvePeriod({ period: "previous_month" }, ref)), range(wholeMonth(y, m)));
+    return same(range(dateRanges.resolveRequestPeriod({ period: "previous_month" }, ref)), range(wholeMonth(y, m)));
   });
   sweep("comparisonType vs_previous_month / vs_same_month_last_year compare month-to-date with the right months", (ref) => {
     const [y, m] = addMonths(ref.getFullYear(), ref.getMonth(), -1);
-    const a = tools.resolveComparisonPeriods("vs_previous_month", ref);
-    const b = tools.resolveComparisonPeriods("vs_same_month_last_year", ref);
+    const a = dateRanges.resolveRequestComparison("vs_previous_month", ref);
+    const b = dateRanges.resolveRequestComparison("vs_same_month_last_year", ref);
     const k = (d) => `${d.getFullYear()}-${d.getMonth()}`;
     return same(`${k(a.previous.from)} ${k(a.previous.to)} ${k(b.previous.from)} ${k(b.previous.to)}`, `${y}-${m} ${y}-${m} ${ref.getFullYear() - 1}-${ref.getMonth()} ${ref.getFullYear() - 1}-${ref.getMonth()}`);
   });
   const src = require("fs").readFileSync(require.resolve("./src/controllers/analyticsController.js"), "utf8");
-  check("the dashboard API resolves periods through the same tested functions (tools.resolvePeriod, dateRanges.lastNMonthsEnding)", /resolvePeriod\(\{ period, from: query\.from, to: query\.to \}, referenceDate\)/.test(src) && /dateRanges\.lastNMonthsEnding\(referenceDate, 6\)/.test(src));
+  const rep = require("fs").readFileSync(require.resolve("./src/controllers/reportController.js"), "utf8");
+  check("the dashboard and report APIs resolve periods through the same tested functions (dateRanges.resolveRequestPeriod, dateRanges.lastNMonthsEnding)", /dateRanges\.resolveRequestPeriod\(\{ period, from: query\.from, to: query\.to \}, referenceDate\)/.test(src) && /dateRanges\.resolveRequestPeriod\(\{ period, from: query\.from, to: query\.to \}, referenceDate\)/.test(rep) && /dateRanges\.lastNMonthsEnding\(referenceDate, 6\)/.test(src));
 }
 
 console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===`);

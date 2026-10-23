@@ -87,31 +87,7 @@ async function getFreshness(tenantId, voucherType, { thresholdMinutes } = {}) {
   };
 }
 
-// Combines Sales + Purchase freshness for a company into one overall
-// state - useful for a "Give me a business performance summary" answer
-// that touches both. Overall state is the WORSE of the two (fresh only
-// if both are fresh; sync_failed if either failed; etc.) - never hides
-// one voucher type's problem behind the other's good state.
-const STATE_SEVERITY = { fresh: 0, stale: 1, sync_failed: 2, never_synced: 3 };
-
-async function getOverallFreshness(tenantId, { thresholdMinutes } = {}) {
-  const [sales, purchase] = await Promise.all([
-    getFreshness(tenantId, "Sales", { thresholdMinutes }),
-    getFreshness(tenantId, "Purchase", { thresholdMinutes }),
-  ]);
-
-  const worse =
-    STATE_SEVERITY[sales.state] >= STATE_SEVERITY[purchase.state] ? sales : purchase;
-
-  return {
-    overallState: worse.state,
-    sales,
-    purchase,
-  };
-}
-
 module.exports = {
   getFreshness,
-  getOverallFreshness,
   DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
 };

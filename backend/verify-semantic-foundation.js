@@ -3,17 +3,15 @@
 /**
  * Semantic Foundation & Context (P-SF) - focused deterministic suite.
  *
+ * There is no deterministic router: the planner interprets every question. This suite pins what the product does with
+ * a correct interpretation (the plan fixtures below), independent of the language that produced it:
  *   A. ONE tenant reference date per turn: the rule, future-dated vouchers (rule kept + disclosed), memoisation,
- *      and the SAME period boundaries through router/engine, legacy chat (prompt + tools) and the planner
- *   B. relative periods (>= 30 questions): router meaning + engine boundaries vs an INDEPENDENT calendar oracle at
- *      month-end, 29 Feb, FY-start and mid-month anchors, and legacy tools agree wherever they overlap
- *   C. data coverage (>= 30 questions): covered / partial / outside, deterministic refusals and caveats, never a zero
- *   D. "who" (>= 50 questions): entity, dimension, metric, direction, period, comparison asserted for every one
- *   E. growth / percentage (>= 50 questions): total %, grouped %, % ranking (refused), % thresholds, share, direction
- *   F. new / reactivated / lost (>= 20 questions)
- *   G. follow-up context (>= 40 follow-ups through the real chat entry point, context carried like the controller)
- *   H. month-end: complete period vs same days disclosed, never silently changed
- *   I. synthetic tenant (real MongoDB, real engine): no-data vs zero, coverage, "who", %, new/lost and a controller
+ *      and the SAME period boundaries through the engine and the planner
+ *   B. relative periods: engine boundaries vs an INDEPENDENT calendar oracle at month-end, 29 Feb, FY-start and
+ *      mid-month anchors
+ *   C. data coverage (>= 30 plans): covered / partial / outside, deterministic refusals and caveats, never a zero
+ *   H. month comparisons (decision 2, enforced by the planner): complete period vs same days disclosed, never silently changed
+ *   I. synthetic tenant (real MongoDB, real engine): no-data vs zero, coverage, growth, new/lost and a controller
  *      round trip, every figure checked against an INDEPENDENT oracle (plain arithmetic over the inserted vouchers)
  *   J. safety: plans carry no tenant/operator fields, stored context is untrusted, no network at all
  *
@@ -32,31 +30,27 @@ global.fetch = async () => { netCalls += 1; throw new Error("network disabled in
 http.request = () => { netCalls += 1; throw new Error("network disabled in this suite"); };
 https.request = () => { netCalls += 1; throw new Error("network disabled in this suite"); };
 
-// Legacy tools are exercised without a database: the trust envelope is replaced by a pass-through that keeps its
-// contract (a {supported:false} result becomes state no_usable_data with the reason as message).
-const envPath = require.resolve("./src/services/analytics/trustEnvelope");
-require.cache[envPath] = {
-  id: envPath, filename: envPath, loaded: true,
-  exports: { wrapAnalyticsResult: async ({ run }) => { const data = await run(); return data && data.supported === false ? { state: "no_usable_data", data: null, freshness: null, message: data.reason } : { state: "valid_data", data, freshness: null, message: null }; } },
-};
 // Freshness is not what this suite tests: every entity is "fresh" (the freshness gate has its own suites).
 const freshPath = require.resolve("./src/services/analytics/freshness");
 require.cache[freshPath] = { id: freshPath, filename: freshPath, loaded: true, exports: { getFreshness: async () => ({ state: "fresh", dataAsOf: new Date("2025-06-30T10:00:00Z"), message: "Data is current." }) } };
 
 const fs = require("fs");
-const { routeQuestion } = require("./src/services/query/localRouter");
 const { validateQueryPlan } = require("./src/services/query/validator");
 const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
-const { planQuestion, PLANNER_TOOL_NAME, SKIP_ROUTER_CODES } = require("./src/services/query/planner");
+const { planQuestion, PLANNER_TOOL_NAME } = require("./src/services/query/planner");
+// The controller round trip (section I) reaches the planner through queryChat's lazily created client: that factory is
+// replaced BEFORE queryChat loads by a scripted client; sections that call queryChat directly inject their own.
+const plannerModule = require("./src/services/query/planner");
+const controllerPlanner = { impl: async () => { throw Object.assign(new Error("no planner scripted"), { code: "AI_NOT_CONFIGURED" }); } };
+plannerModule.createAnthropicPlannerClient = () => async (request, opts) => controllerPlanner.impl(request, opts);
 const { tryAnswerWithQueryEngine, createTurnDates } = require("./src/services/query/queryChat");
 const { readQueryState } = require("./src/services/query/followUp");
 const { formatQueryAnswer, fmtMoney } = require("./src/services/query/answerFormatter");
 const { buildDateContext } = require("./src/services/analytics/referenceDate");
 const { classifyRange, assessCoverage } = require("./src/services/analytics/coverage");
-const tools = require("./src/services/ai/tools");
+const dateRanges = require("./src/services/analytics/dateRanges");
 const salesAnalytics = require("./src/services/analytics/salesAnalytics");
-const { handleChatTurn, buildSystemPromptBlocks } = require("./src/services/ai/chatOrchestrator");
 
 let pass = 0;
 let fail = 0;
@@ -97,9 +91,6 @@ function sig(p) {
 // synthetic names only
 const NAMES = { customer: ["Aarav Traders", "Bluebell Mart"], supplier: ["Crescent Supplies"], product: ["Widget Alpha"], productGroup: ["Hardware"] };
 const resolver = createEntityResolver({ tenantId: "SF-PURE", sources: Object.fromEntries(Object.entries(NAMES).map(([k, v]) => [k, async () => v])) });
-const REF = new Date(2026, 8, 18, 12); // routing only validates with it; plans stay symbolic
-const route = (q, ref = REF) => routeQuestion(q, { resolveEntity: resolver, entityIndex: resolver.spanIndex, referenceDate: ref });
-const classOf = (x) => (x.status === "supported" ? "SUPPORTED" : x.status === "unsupported" ? "UNSUPPORTED" : SKIP_ROUTER_CODES.has(x.code) ? "CLARIFY" : "PLANNER");
 
 // date contexts (pure)
 const WINDOW = buildDateContext({ sales: { earliest: U(2025, 4, 1), latest: U(2025, 12, 8) }, purchase: { earliest: U(2025, 4, 3), latest: U(2025, 12, 5) } }, new Date(2025, 11, 8, 12)); // today = 8 Dec 2025
@@ -116,8 +107,98 @@ function fakeEngine() {
   fn.calls = calls;
   return fn;
 }
-const askPure = (q, { dates = WINDOW, history = [], previousQuery = null, execute = fakeEngine(), plannerClient = forbiddenPlanner } = {}) =>
-  tryAnswerWithQueryEngine({ context: { tenantId: "SF-PURE" }, userMessage: q, conversationHistory: history, previousQuery, deps: { resolveEntity: resolver, entityIndex: resolver.spanIndex, getFreshness: async () => ({ state: "fresh", dataAsOf: null, message: "ok" }), plannerClient, execute, getDateContext: async () => dates } });
+// ---------------------------------------------------------------- the planner's scripted answers (plan fixtures)
+// There is no router: every question is interpreted by the planner. These are the plans a correct interpretation
+// produces for each question (the engine inputs); the suite checks what the engine, the planner's product rules and
+// the chat wiring then do with them. Periods stay symbolic unless the question states dates.
+const plan = (entity, period, o = {}) => ({
+  v: 1, entity, mode: "aggregate", period,
+  metrics: o.metrics || (entity === "purchase" ? ["purchaseAmount", "purchaseInvoiceCount"] : ["invoiceAmount", "invoiceCount"]),
+  groupBy: o.groupBy || [], filters: o.filters || [],
+  ...(o.compare ? { compare: o.compare } : {}), ...(o.having ? { having: o.having } : {}), ...(o.sort ? { sort: o.sort } : {}), ...(o.limit ? { limit: o.limit } : {}),
+});
+const K = (kind) => ({ kind });
+const C = (from, to) => ({ kind: "custom", from, to });
+const LFL = { mode: "like_for_like" };
+const FULL = { mode: "full_previous" };
+const SPLY = { mode: "same_period_last_year" };
+const vs = (from, to) => ({ mode: "custom", period: C(from, to) });
+const byCust = { groupBy: [{ dim: "customer" }] };
+const down = { ...byCust, having: [{ metric: "invoiceAmount.delta", op: "lt", value: 0 }], sort: [{ by: "invoiceAmount.delta", dir: "asc" }] };
+const grew20 = { ...byCust, having: [{ metric: "invoiceAmount.deltaPct", op: "gt", value: 20 }], sort: [{ by: "invoiceAmount.deltaPct", dir: "desc" }] };
+const stopped = { ...byCust, having: [{ metric: "invoiceAmount", op: "eq", value: 0 }, { metric: "invoiceAmount.previous", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount.previous", dir: "desc" }] };
+const newProducts = { metrics: ["lineAmount"], groupBy: [{ dim: "product" }], having: [{ metric: "lineAmount.previous", op: "eq", value: 0 }, { metric: "lineAmount", op: "gt", value: 0 }], sort: [{ by: "lineAmount", dir: "desc" }] };
+const topCust = (n) => ({ ...byCust, sort: [{ by: "invoiceAmount", dir: "desc" }], limit: n });
+const cust = (name) => [{ dim: "customer", op: "eq_ci", value: name }];
+const MAR_APR = [vs("2025-03-20", "2025-04-20")];
+
+// question -> the plan a correct interpretation produces
+const PLANS = {
+  "sales this month": plan("sales", K("current_month")),
+  "sales last month": plan("sales", K("previous_month")),
+  "sales this month vs last month": plan("sales", K("current_month"), { compare: LFL }),
+  "sales this month vs same month last year": plan("sales", K("current_month"), { compare: SPLY }),
+  "top 5 customers by sales": plan("sales", K("all_time"), topCust(5)),
+  "sales from 2026-10-01 to 2026-10-31": plan("sales", C("2026-10-01", "2026-10-31")),
+  // coverage (section C): [question] -> plan
+  "Sales in January 2025 vs January 2024": plan("sales", C("2025-01-01", "2025-01-31"), { compare: vs("2024-01-01", "2024-01-31") }),
+  "Sales in April 2025 vs April 2024": plan("sales", C("2025-04-01", "2025-04-30"), { compare: vs("2024-04-01", "2024-04-30") }),
+  "sales FY 2024-25": plan("sales", { kind: "specific_fy", fy: "2024-25" }),
+  "sales this fy vs last fy": plan("sales", K("current_fy"), { compare: LFL }),
+  "sales in March 2025": plan("sales", C("2025-03-01", "2025-03-31")),
+  "sales in January 2026": plan("sales", C("2026-01-01", "2026-01-31")),
+  "sales for Aarav Traders in January 2025": plan("sales", C("2025-01-01", "2025-01-31"), { filters: cust("Aarav Traders") }),
+  "customers who stopped buying this month vs same month last year": plan("sales", K("current_month"), { ...stopped, compare: SPLY }),
+  "new products sold in May 2025 vs March 2025": plan("sales", C("2025-05-01", "2025-05-31"), { ...newProducts, compare: vs("2025-03-01", "2025-03-31") }),
+  "purchases in February 2025": plan("purchase", C("2025-02-01", "2025-02-28")),
+  "revenue in December 2024": plan("sales", C("2024-12-01", "2024-12-31"), { metrics: ["lineAmount"] }),
+  "top 5 customers by sales in 2025-01-01 to 2025-03-31": plan("sales", C("2025-01-01", "2025-03-31"), topCust(5)),
+  "sales yoy this quarter": plan("sales", K("current_quarter"), { compare: SPLY }),
+  "sales from 2025-03-15 to 2025-04-15": plan("sales", C("2025-03-15", "2025-04-15")),
+  "sales in December 2025": plan("sales", C("2025-12-01", "2025-12-31")),
+  "sales from 2025-05-01 to 2025-05-31 vs 2025-03-20 to 2025-04-20": plan("sales", C("2025-05-01", "2025-05-31"), { compare: MAR_APR[0] }),
+  "sales in April 2025": plan("sales", C("2025-04-01", "2025-04-30")),
+  "sales this quarter vs last quarter": plan("sales", K("current_quarter"), { compare: LFL }),
+  "sales last 90 days": plan("sales", K("last_90_days")),
+  "new products sold this month": plan("sales", K("current_month"), { ...newProducts, compare: FULL }),
+  "Who bought less this month than last month?": plan("sales", K("current_month"), { ...down, compare: LFL }),
+  "sales growth percentage this month vs last month": plan("sales", K("current_month"), { compare: LFL }),
+  "top 10 customers by sales": plan("sales", K("all_time"), topCust(10)),
+  "sales for Aarav Traders this month": plan("sales", K("current_month"), { filters: cust("Aarav Traders") }),
+  "purchases last month vs the month before": plan("purchase", K("previous_month"), { compare: LFL }),
+  "sales in November 2025 vs October 2025": plan("sales", C("2025-11-01", "2025-11-30"), { compare: vs("2025-10-01", "2025-10-31") }),
+  "sales this fy": plan("sales", K("current_fy")),
+  "customers whose sales grew by more than 20% this month vs last month": plan("sales", K("current_month"), { ...grew20, compare: LFL }),
+  "sales in May 2025 vs April 2025": plan("sales", C("2025-05-01", "2025-05-31"), { compare: vs("2025-04-01", "2025-04-30") }),
+  "sales from 2025-12-01 to 2025-12-31 vs 2025-11-01 to 2025-11-30": plan("sales", C("2025-12-01", "2025-12-31"), { compare: vs("2025-11-01", "2025-11-30") }),
+  // synthetic tenant (section I)
+  "Sales this month vs last month": plan("sales", K("current_month"), { compare: LFL }),
+  "Sales from 2025-07-01 to 2025-07-31": plan("sales", C("2025-07-01", "2025-07-31")),
+  "Sales this month vs same period last month": plan("sales", K("current_month"), { compare: LFL }),
+  "Sales growth percentage this month vs last month": plan("sales", K("current_month"), { compare: LFL }),
+  "new customers this month": plan("sales", K("current_month"), { ...byCust, filters: [{ dim: "customer", op: "new_in_period", value: "period" }], sort: [{ by: "invoiceAmount", dir: "desc" }] }),
+  "customers who stopped buying this month vs last month": plan("sales", K("current_month"), { ...stopped, compare: LFL }),
+  "sales for Cedar Stores this month vs last month": plan("sales", K("current_month"), { filters: cust("Cedar Stores"), compare: LFL }),
+  "Sales in March 2025": plan("sales", C("2025-03-01", "2025-03-31")),
+  "Sales from 2025-04-01 to 2025-04-30 vs 2025-03-01 to 2025-03-31": plan("sales", C("2025-04-01", "2025-04-30"), { compare: vs("2025-03-01", "2025-03-31") }),
+  "Sales from 2025-03-01 to 2025-03-31 vs 2025-02-01 to 2025-02-28": plan("sales", C("2025-03-01", "2025-03-31"), { compare: vs("2025-02-01", "2025-02-28") }),
+  "Sales from 2025-01-01 to 2025-01-31": plan("sales", C("2025-01-01", "2025-01-31")),
+  "Sales from 2025-02-01 to 2025-02-28 vs 2025-01-01 to 2025-01-31": plan("sales", C("2025-02-01", "2025-02-28"), { compare: vs("2025-01-01", "2025-01-31") }),
+  "Sales in June 2025 vs June 2024": plan("sales", C("2025-06-01", "2025-06-30"), { compare: vs("2024-06-01", "2024-06-30") }),
+  "Sales in December 2024 vs December 2023": plan("sales", C("2024-12-01", "2024-12-31"), { compare: vs("2023-12-01", "2023-12-31") }),
+  "sales for Aarav Traders in December 2024": plan("sales", C("2024-12-01", "2024-12-31"), { filters: cust("Aarav Traders") }),
+  "purchases this month vs last month": plan("purchase", K("current_month"), { compare: LFL }),
+  "Show sales this month vs last month": plan("sales", K("current_month"), { compare: LFL }),
+  "and by customer?": plan("sales", K("current_month"), { ...byCust, compare: FULL, sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 10 }),
+};
+const P = (q, planOverride) => async () => {
+  const p = planOverride || PLANS[q];
+  if (!p) throw new Error(`no plan fixture for: ${q}`);
+  return { content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { plan: p } }], usage: { input_tokens: 1, output_tokens: 1 } };
+};
+
+const askPure = (q, { dates = WINDOW, history = [], previousQuery = null, execute = fakeEngine(), plannerClient = null, plan: planOverride = null } = {}) =>
+  tryAnswerWithQueryEngine({ context: { tenantId: "SF-PURE" }, userMessage: q, conversationHistory: history, previousQuery, deps: { resolveEntity: resolver, getFreshness: async () => ({ state: "fresh", dataAsOf: null, message: "ok" }), plannerClient: plannerClient || P(q, planOverride), execute, getDateContext: async () => dates } });
 
 // ---------------------------------------------------------------- independent calendar oracle (no project code)
 const D = (y, m, d) => new Date(y, m, d);
@@ -200,75 +281,49 @@ function oracle(kind, mode, r) {
     void lazy;
     check("...and not read at all until something needs it", loads2 === 0);
 
-    // no wall-clock "today" left on the AI paths
-    let refusedTool = false;
-    try { tools.resolvePeriod({ period: "previous_month" }); } catch (e) { refusedTool = true; }
+    // no wall-clock "today" left on the request/AI paths
+    let refusedPeriod = false;
+    try { dateRanges.resolveRequestPeriod({ period: "previous_month" }); } catch (e) { refusedPeriod = true; }
     let refusedCmp = false;
-    try { tools.resolveComparisonPeriods("vs_previous_month"); } catch (e) { refusedCmp = true; }
-    let refusedPrompt = false;
-    try { buildSystemPromptBlocks(); } catch (e) { refusedPrompt = true; }
-    check("legacy tools and the legacy prompt refuse to run without the tenant date (no silent wall clock)", refusedTool && refusedCmp && refusedPrompt);
+    try { dateRanges.resolveRequestComparison("vs_previous_month"); } catch (e) { refusedCmp = true; }
+    check("REST period helpers refuse to run without the tenant date (no silent wall clock)", refusedPeriod && refusedCmp);
     const ctl = fs.readFileSync(require.resolve("./src/controllers/chatController.js"), "utf8");
-    check("controller: ONE createTurnDates per turn, shared by the engine AND legacy chat (getDateContext: turnDates)", (ctl.match(/createTurnDates\(tenantId\)/g) || []).length === 1 && (ctl.match(/getDateContext: turnDates/g) || []).length === 2);
-    const srcs = ["src/services/query/queryChat.js", "src/services/query/followUp.js", "src/services/query/localRouter.js", "src/services/ai/tools.js", "src/services/ai/chatOrchestrator.js", "src/services/analytics/coverage.js"].map((f) => [f, fs.readFileSync(f, "utf8")]);
+    check("controller: ONE createTurnDates per turn, handed to the query engine (getDateContext: turnDates)", (ctl.match(/createTurnDates\(tenantId\)/g) || []).length === 1 && (ctl.match(/getDateContext: turnDates/g) || []).length === 1);
+    const srcs = ["src/services/query/queryChat.js", "src/services/query/followUp.js", "src/services/query/planner.js", "src/services/analytics/coverage.js"].map((f) => [f, fs.readFileSync(f, "utf8")]);
     const wall = srcs.filter(([, t]) => /new Date\(\)/.test(t.replace(/\/\/.*$/gm, "")));
-    check("no `new Date()` (wall clock) in the AI query/legacy-chat/coverage code", wall.length === 0, wall.map(([f]) => f).join(","));
+    check("no `new Date()` (wall clock) in the AI query/coverage code", wall.length === 0, wall.map(([f]) => f).join(","));
 
-    // the SAME question -> the SAME boundaries through router/engine, legacy chat (prompt + tools) and the planner
+    // the SAME question -> the SAME boundaries through the engine and the planner
     const anchors = [U(2026, 4, 30), U(2026, 3, 31), U(2024, 2, 29), U(2026, 4, 1), U(2025, 12, 8)];
-    const QS = [
-      ["sales this month", { tool: "get_sales_summary", args: { period: "current_month" } }],
-      ["sales last month", { tool: "get_sales_summary", args: { period: "previous_month" } }],
-      ["sales this month vs last month", { tool: "get_sales_comparison", args: { comparisonType: "vs_previous_month" } }],
-      ["sales this month vs same month last year", { tool: "get_sales_comparison", args: { comparisonType: "vs_same_month_last_year" } }],
-    ];
-    const captured = [];
-    const origSummary = salesAnalytics.getSalesSummary;
-    const origCmp = salesAnalytics.getSalesComparison;
-    salesAnalytics.getSalesSummary = async (t, period) => (captured.push({ cur: period }), { hasData: true, totalSales: 1 });
-    salesAnalytics.getSalesComparison = async (t, current, previous) => (captured.push({ cur: current, prev: previous }), { hasData: true });
+    const CROSS = {
+      "sales this month": plan("sales", K("current_month")),
+      "sales last month": plan("sales", K("previous_month")),
+      "sales this month vs last month": plan("sales", K("current_month"), { compare: FULL }),
+      "sales this month vs same month last year": plan("sales", K("current_month"), { compare: SPLY }),
+    };
+    const QS = Object.keys(CROSS);
     let same = 0;
     const diffs = [];
-    let promptOk = 0;
     for (const ref of anchors) {
       const dates = buildDateContext({ sales: { earliest: U(2020, 1, 1), latest: ref }, purchase: {} }, ref); // "today" = the anchor
-      // legacy chat: one turn whose (fake) Claude calls the four tools; the handler resolves the periods itself
-      captured.length = 0;
-      let systemSeen = null;
-      let step = 0;
-      const claude = async (messages, defs, system) => {
-        systemSeen = system;
-        step += 1;
-        if (step === 1) return { content: QS.map(([, t], i) => ({ type: "tool_use", id: `t${i}`, name: t.tool, input: t.args })) };
-        return { content: [{ type: "text", text: "done" }] };
-      };
-      await handleChatTurn({ context: { tenantId: "SF-PURE" }, userMessage: "x", conversationHistory: [], claudeClient: claude, getDateContext: async () => dates });
-      if (systemSeen && systemSeen[1].text.includes(`Today's date is ${ymd(dates.referenceDate)}`)) promptOk += 1;
-      for (let i = 0; i < QS.length; i += 1) {
-        const [q] = QS[i];
-        const x = await route(q, dates.referenceDate);
+      for (const q of QS) {
+        const x = { plan: CROSS[q] };
         const v = validateQueryPlan(x.plan, { referenceDate: dates.referenceDate }).normalized;
-        const legacy = captured[i];
-        // the planner path: Claude's (scripted) plan is the router's plan; validated + executed with the turn's date
+        // the planner path: Claude's (scripted) plan is the plan; validated + executed with the turn's date
         const eng = fakeEngine();
         const planner = async () => ({ content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { plan: x.plan } }], usage: { input_tokens: 1, output_tokens: 1 } });
         await tryAnswerWithQueryEngine({ context: { tenantId: "SF-PURE" }, userMessage: q.replace("sales", "turnover"), conversationHistory: [], deps: { resolveEntity: resolver, getFreshness: async () => ({ state: "fresh", dataAsOf: null, message: "ok" }), plannerClient: planner, execute: eng, getDateContext: async () => dates } });
         const pv = eng.calls.length ? validateQueryPlan(eng.calls[0].plan, { referenceDate: eng.calls[0].ctx.referenceDate }).normalized : null;
         const e = `${range(v.period)} / ${range(v.comparison)}`;
-        const l = `${range(legacy.cur)} / ${legacy.prev ? range(legacy.prev) : "none"}`;
         const p = pv ? `${range(pv.period)} / ${range(pv.comparison)}` : "no plan";
-        if (e === l && e === p && eng.calls[0].ctx.referenceDate.getTime() === dates.referenceDate.getTime()) same += 1;
-        else diffs.push(`${ymd(ref)} "${q}": engine ${e} | legacy ${l} | planner ${p}`);
+        if (e === p && eng.calls[0].ctx.referenceDate.getTime() === dates.referenceDate.getTime()) same += 1;
+        else diffs.push(`${ymd(ref)} "${q}": engine ${e} | planner ${p}`);
       }
     }
-    salesAnalytics.getSalesSummary = origSummary;
-    salesAnalytics.getSalesComparison = origCmp;
-    check(`legacy chat's prompt "today" = the tenant reference date on every anchor (${promptOk}/${anchors.length})`, promptOk === anchors.length);
-    check(`same question -> same boundaries via router/engine, legacy chat tools and the planner: ${same}/${anchors.length * QS.length} (month-end, 31 Mar, 29 Feb, FY start, mid-month)`, same === anchors.length * QS.length, diffs.slice(0, 3).join(" | "));
+    check(`same question -> same boundaries via the engine and the planner path: ${same}/${anchors.length * QS.length} (month-end, 31 Mar, 29 Feb, FY start, mid-month)`, same === anchors.length * QS.length, diffs.slice(0, 3).join(" | "));
   }
-
   // =============================================================== B
-  section("B. relative periods: router meaning + boundaries vs an independent calendar oracle");
+  section("B. relative periods: engine boundaries vs an independent calendar oracle");
   {
     const RP = [
       ["sales this month", "sales", "current_month", "none"], ["sales last month", "sales", "previous_month", "none"],
@@ -293,21 +348,23 @@ function oracle(kind, mode, r) {
       ["compare sales previous month vs current month", "sales", "current_month", "full_previous"], ["sales this month vs last month like for like", "sales", "current_month", "like_for_like"],
     ];
     const anchors = [new Date(2026, 3, 30), new Date(2026, 2, 31), new Date(2024, 1, 29), new Date(2026, 3, 1), new Date(2026, 0, 1), new Date(2025, 11, 8)];
-    let meaning = 0;
+    let valid = 0;
     let bounds = 0;
     const bad = [];
     for (const [q, entity, kind, mode] of RP) {
-      const x = await route(q);
-      if (x.status === "supported" && x.plan.entity === entity && x.plan.period.kind === kind && (x.plan.compare ? x.plan.compare.mode : "none") === mode) meaning += 1;
-      else { bad.push(`${q}: ${x.status}/${x.code} ${x.plan ? sig(x.plan) : ""}`); continue; }
+      const p = plan(entity, K(kind), mode === "none" ? {} : { compare: { mode } });
+      if (parseQueryPlan(p).ok) valid += 1;
+      else { bad.push(`${q}: ${JSON.stringify(parseQueryPlan(p).errors)}`); continue; }
       for (const ref of anchors) {
-        const n = validateQueryPlan(x.plan, { referenceDate: ref }).normalized;
+        const v = validateQueryPlan(p, { referenceDate: ref });
+        if (!v.ok) { bad.push(`${ymd(ref)} ${q}: ${v.errors.map((e) => e.code).join(",")}`); continue; }
+        const n = v.normalized;
         const o = oracle(kind, mode, ref);
         if (range(n.period) === o.cur && range(n.comparison) === o.prev) bounds += 1;
         else bad.push(`${ymd(ref)} ${q}: engine ${range(n.period)} / ${range(n.comparison)} vs oracle ${o.cur} / ${o.prev}`);
       }
     }
-    check(`relative-period meaning (entity, period, comparison) for ${RP.length} questions`, meaning === RP.length, bad.slice(0, 3).join(" | "));
+    check(`${RP.length} period/comparison combinations are valid plans`, valid === RP.length, bad.slice(0, 3).join(" | "));
     check(`engine boundaries = independent oracle: ${bounds}/${RP.length * anchors.length} (30 Apr, 31 Mar, 29 Feb, 1 Apr, 1 Jan, 8 Dec)`, bounds === RP.length * anchors.length, bad.slice(0, 3).join(" | "));
   }
 
@@ -351,7 +408,7 @@ function oracle(kind, mode, r) {
       if (got === want) ok += 1;
       else bad.push(`${q}: ${got} (want ${want})`);
       if (want.startsWith("outside")) {
-        if (eng.calls.length === 0 && meta.claudeCalls === 0 && /missing data, not zero|false zero baseline/.test(text)) refusedWithoutEngine += 1;
+        if (eng.calls.length === 0 && meta.claudeCalls === 1 && /missing data, not zero|false zero baseline/.test(text)) refusedWithoutEngine += 1;
         const again = await askPure(q);
         if (again.structured.answer === text) deterministic += 1;
       }
@@ -359,7 +416,7 @@ function oracle(kind, mode, r) {
     }
     const outside = CQ.filter(([, w]) => w.startsWith("outside")).length;
     check(`coverage outcome for ${CQ.length} questions (${outside} outside, ${CQ.filter(([, w]) => w === "partial").length} partial, ${CQ.filter(([, w]) => w === "covered").length} covered)`, ok === CQ.length && bad.length === 0, bad.slice(0, 4).join(" | "));
-    check(`outside coverage: refused BEFORE the engine runs, saying the data is missing (not zero): ${refusedWithoutEngine}/${outside}`, refusedWithoutEngine === outside);
+    check(`outside coverage: the planner is paid for once, then the coverage gate refuses BEFORE the engine runs, saying the data is missing (not zero): ${refusedWithoutEngine}/${outside}`, refusedWithoutEngine === outside);
     check(`coverage messages are deterministic (identical on a second ask): ${deterministic}/${outside}`, deterministic === outside);
     const r = await askPure("Sales in April 2025 vs April 2024");
     check("comparison outside: names the missing range, the synced window and offers the subject alone", /1 Apr 2024 – 30 Apr 2024/.test(r.structured.answer) && /1 Apr 2025 – 8 Dec 2025/.test(r.structured.answer) && /on its own/.test(r.structured.answer) && r.structured.details.toolCalls[0].state === "no_usable_data", r.structured.answer);
@@ -371,247 +428,15 @@ function oracle(kind, mode, r) {
     check("purchase wording: 'not zero purchases'", /not zero purchases/.test(pure.message));
   }
 
-  // =============================================================== D
-  section("D. \"who\": the party comes from the surrounding words (customer / supplier / product / group / clarify)");
-  {
-    const CM = (dir, per = "current_month", cmp = per === "current_month" ? "full_previous" : "like_for_like") => `sales:invoiceAmount|customer|${dir}|${cmp}|${per}`;
-    const SP = (dir, per = "current_month", cmp = per === "current_month" ? "full_previous" : "like_for_like") => `purchase:purchaseAmount|supplier|${dir}|${cmp}|${per}`;
-    const W = [
-      ["Who bought less this month?", CM("down")], ["Who bought less this month than last month?", CM("down")],
-      ["Which customers bought less this month?", CM("down")], ["Who purchased less than last month?", CM("down")],
-      ["Which buyers declined this month vs last month?", CM("down")], ["Which customers reduced purchases this month?", CM("down")],
-      ["Who stopped buying this month?", CM("lost")], ["Who bought more this month?", CM("up")],
-      ["Who increased purchases this month?", CM("up")], ["Which customers increased sales this month?", CM("up")],
-      ["Who contributed to the sales increase this month?", CM("up")], ["Who drove the decline in sales this month?", CM("down")],
-      ["Which clients bought more this quarter than last quarter?", CM("up", "current_quarter")], ["who all bought less this month", CM("down")],
-      ["who's buying less this month", CM("down")], ["Who bought less than last month, pls?", CM("down")],
-      ["Who stopped buying from us this month vs last month?", CM("lost")], ["Whose sales fell this month?", CM("down")],
-      ["Whose purchases went down this month?", CM("down")], ["Which customers purchased more this month vs last month?", CM("up")],
-      ["Who did we sell more to this month?", CM("up")], ["Who did we sell less to this month than last month?", CM("down")],
-      ["Which parties bought less this month?", CM("down")], ["Which buyers bought more this month?", CM("up")],
-      ["Who are the customers that bought less this month?", CM("down")], ["Customers who bought less this month", CM("down")],
-      ["Who had lower revenue this month than last month?", "sales:lineAmount|customer|down|full_previous|current_month"], ["Who had the highest sales this month?", CM("-", "current_month", "none")],
-      ["Who bought the most this month?", CM("-", "current_month", "none")], ["who are my top 5 customers this month", `${CM("-", "current_month", "none")}|L5`],
-      ["Which customers drove the increase this month?", CM("up")], ["hi, who bought less this month vs last month? thanks", CM("down")],
-      ["Who did we buy less from this month?", SP("down")], ["From whom did we purchase more this month than last month?", SP("up")],
-      ["Who supplied us less this month?", SP("down")], ["Who sold us more this month vs last month?", SP("up")],
-      ["Which suppliers did we buy less from this month?", SP("down")], ["Which vendors sold us less this month?", SP("down")],
-      ["Who did we buy the most from this month?", SP("-", "current_month", "none")], ["who did we purchase less from last month compared to the month before", SP("down", "previous_month")],
-      ["parties with lower purchases this month", SP("down")],
-      ["Which products sold less this month?", "sales:lineAmount|product|down|full_previous|current_month"], ["Which product groups sold more this month vs last month?", "sales:lineAmount|productGroup|up|full_previous|current_month"],
-      ["Which goods sold more this month?", "sales:lineAmount|product|up|full_previous|current_month"], ["Which categories sold less this quarter vs last quarter?", "sales:lineAmount|productGroup|down|like_for_like|current_quarter"],
-      ["Which stock groups grew in sales this month?", "sales:lineAmount|productGroup|up|full_previous|current_month"], ["Which products sold the most this month?", "sales:lineAmount|product|-|none|current_month"],
-      // still ambiguous or unanswerable: an honest clarification/refusal, never a guess and never a name lookup
-      ["Who sold the most this month?", "needs_planner/who_ambiguous"], ["Who grew this month?", "needs_planner/who_ambiguous"],
-      ["Who declined in purchases this month?", CM("down")], ["Who is growing?", "needs_planner/who_ambiguous"],
-      ["Who drove the decline?", "needs_planner/who_ambiguous"], ["Who had the lowest purchases this month?", "needs_planner/who_ambiguous"], ["Who sold less this month?", "needs_planner/who_ambiguous"],
-      ["Who stopped buying?", "needs_planner/period_missing"], ["Who bought more?", "needs_planner/period_missing"],
-      ["Which buyers declined?", "needs_planner/period_missing"], ["Who bought for the first time this month?", "unsupported/unsupported_first_purchase"],
-      ["Who came back this month?", "unsupported/unsupported_reactivation"], ["Who is doing better this month?", "needs_planner/vague_performance"],
-    ];
-    const bad = [];
-    let lookups = 0;
-    const spyResolver = async (a) => ((lookups += 1), resolver(a));
-    for (const [q, want] of W) {
-      const x = await routeQuestion(q, { resolveEntity: spyResolver, referenceDate: REF });
-      const got = x.plan ? sig(x.plan) : `${x.status}/${x.code}`;
-      if (got !== want) bad.push(`${q}: ${got} (want ${want})`);
-    }
-    check(`"who" semantics (entity, dimension, metric, direction, period, comparison) for ${W.length} questions`, bad.length === 0, bad.slice(0, 4).join(" | "));
-    check("no \"who\" question looked a word up as a customer/product name (no false 'couldn't find that name')", lookups === 0, String(lookups));
-    const x = await route("Who bought less this month than last month?");
-    check("the audit's silent misread is gone: 'Who bought less ...' = customers (sales), with the reading stated", x.plan.entity === "sales" && x.plan.groupBy[0].dim === "customer" && x.assumptions.some((a) => a.code === "who_read_as_customers"));
-    const y = await route("Which customers reduced purchases this month?");
-    check("'customers ... purchases' is their buying (our sales), and the answer says so", y.plan.entity === "sales" && y.assumptions.some((a) => a.code === "customer_buying_is_sales"));
-    const z = await route("Who sold us more this month vs last month?");
-    check("'sold us' is our purchases from suppliers, and the answer says so", z.plan.entity === "purchase" && z.assumptions.some((a) => a.code === "supplier_selling_is_purchases"));
-    const c = await route("Who contributed to the sales increase this month?");
-    check("'who contributed/drove': ranked by change in amount, stated as arithmetic contribution, not a cause", c.assumptions.some((a) => a.code === "contribution_is_change") && c.plan.sort[0].by === "invoiceAmount.delta");
-    const r = await route("What drove the sales increase this month?");
-    check("'what drove ...' (no party) stays a request for a cause, not a breakdown", r.status !== "supported");
-  }
-
-  // =============================================================== E
-  section("E. growth and percentages: total %, grouped %, ranking by % (refused), thresholds, share, direction");
-  {
-    const T = (per = "current_month", cmp = per === "current_month" ? "full_previous" : "like_for_like", e = "sales:invoiceAmount") => `${e}|total|-|${cmp}|${per}`;
-    const G = [
-      ["Sales growth percentage this month vs last month", T()], ["What is the % change in sales this month vs last month?", T()],
-      ["sales growth % this month", T()], ["Purchases growth percentage this quarter vs last quarter", T("current_quarter", "like_for_like", "purchase:purchaseAmount")],
-      ["Revenue growth % this quarter vs last quarter", T("current_quarter", "like_for_like", "sales:lineAmount")], ["percentage change in sales this fy vs last fy", T("current_fy")],
-      ["sales growth rate this month vs last month", T()], ["how much did sales grow in percentage terms this month vs last month", T()],
-      ["% growth in purchases this month vs same month last year", T("current_month", "same_period_last_year", "purchase:purchaseAmount")], ["sales yoy growth % this month", T("current_month", "same_period_last_year")],
-      ["MoM sales growth % this month", T()], ["sales change % last month vs the month before", T("previous_month")],
-      ["sales growth vs last year this month", T("current_month", "same_period_last_year")], ["how did sales change this month vs last month", T()],
-      ["difference in purchases this month vs last month", T("current_month", "full_previous", "purchase:purchaseAmount")], ["sales variance this quarter vs last quarter", T("current_quarter")],
-      ["sales growth this month vs last month", T()],
-      ["sales growth % by customer this month vs last month", "sales:invoiceAmount|customer|-|full_previous|current_month"], ["percentage change in sales by product this month vs last month", "sales:lineAmount|product|-|full_previous|current_month"],
-      ["purchase growth % by supplier this quarter vs last quarter", "purchase:purchaseAmount|supplier|-|like_for_like|current_quarter"], ["revenue growth % by product group this month vs last month", "sales:lineAmount|productGroup|-|full_previous|current_month"],
-      ["customer growth this month", "sales:invoiceAmount|customer|up|full_previous|current_month"], ["which customers grew this month vs last month", "sales:invoiceAmount|customer|up|full_previous|current_month"],
-      ["top 10 customers by growth this month vs last month", "sales:invoiceAmount|customer|up|full_previous|current_month|L10"],
-      ["Which customers grew by more than 20% this month?", "sales:invoiceAmount|customer|pct>20|full_previous|current_month"], ["customers whose sales grew by more than 20% this month vs last month", "sales:invoiceAmount|customer|pct>20|full_previous|current_month"],
-      ["customers with growth above 20% this month", "sales:invoiceAmount|customer|pct>20|full_previous|current_month"], ["products whose sales fell by more than 10% this month vs last month", "sales:lineAmount|product|pct<-10|full_previous|current_month"],
-      ["suppliers whose purchases grew by more than 15% this quarter vs last quarter", "purchase:purchaseAmount|supplier|pct>15|like_for_like|current_quarter"], ["customers with sales up over 25 percent this month vs last month", "sales:invoiceAmount|customer|pct>25|full_previous|current_month"],
-      ["which customers declined by at least 30% this month", "sales:invoiceAmount|customer|pct<-30|full_previous|current_month"], ["customers whose sales dropped more than 50% vs last month", "sales:invoiceAmount|customer|pct<-50|full_previous|current_month"],
-      ["Which customers have the highest growth percentage this month?", "unsupported/unsupported_growth_rate"], ["Top 10 customers by growth % this month vs last month", "unsupported/unsupported_growth_rate"],
-      ["fastest growing customers this quarter", "unsupported/unsupported_growth_rate"], ["Which products grew the fastest this month?", "unsupported/unsupported_growth_rate"],
-      ["customers ranked by % growth this month vs last month", "unsupported/unsupported_growth_rate"], ["Which supplier has the biggest percentage increase this month vs last month?", "unsupported/unsupported_growth_rate"],
-      ["Bottom 5 products by % change this month vs last month", "unsupported/unsupported_growth_rate"], ["Which customers grew the most in percentage terms this month vs last month?", "unsupported/unsupported_growth_rate"],
-      ["highest growth rate customers this fy vs last fy", "unsupported/unsupported_growth_rate"], ["quickest growing product groups this month", "unsupported/unsupported_growth_rate"],
-      ["customers whose sales changed by more than 20% this month", "needs_planner/threshold_direction_missing"], ["customers with a sales variance above 10% this month vs last month", "needs_planner/threshold_direction_missing"],
-      ["customers who bought less than 20% last month", "needs_planner/unsupported_threshold"],
-      ["What % of sales came from Aarav Traders this month?", "unsupported/unsupported_share_of_total"], ["share of sales by customer this month", "unsupported/unsupported_share_of_total"],
-      ["What percentage of purchases were from Crescent Supplies last month?", "unsupported/unsupported_share_of_total"],
-      ["monthly sales growth % this fy", "unsupported/unsupported_growth_pattern"], ["customers growing every month", "unsupported/unsupported_growth_pattern"],
-    ];
-    const bad = [];
-    for (const [q, want] of G) {
-      const x = await route(q);
-      const got = x.plan ? sig(x.plan) : `${x.status}/${x.code}`;
-      if (got !== want) bad.push(`${q}: ${got} (want ${want})`);
-    }
-    check(`growth/% semantics for ${G.length} questions`, bad.length === 0, bad.slice(0, 4).join(" | "));
-    const g = await route("sales growth % by customer this month vs last month");
-    check("grouped %: rows are NOT silently ranked by % - ordered by amount, and the answer says so", g.plan.sort[0].by === "invoiceAmount" && g.assumptions.some((a) => a.code === "pct_shown_not_ranked"));
-    // formatter: zero baseline and null deltaPct are explained, never 0% or infinite
-    const plan = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount"], filters: [], compare: { mode: "like_for_like" } };
-    const res = (prev, pct) => ({ ok: true, metrics: ["invoiceAmount"], period: { label: "Month to date" }, comparison: { label: "Same date range, previous month" }, amountBasis: {}, rows: [], totals: { values: { invoiceAmount: 500 }, comparison: { invoiceAmount: { previous: prev, delta: 500 - prev, deltaPct: pct } } }, warnings: [], assumptions: [] });
-    const zero = formatQueryAnswer({ plan, result: res(0, null) }).text;
-    const normal = formatQueryAnswer({ plan, result: res(400, 25) }).text;
-    check("total % against a zero baseline: 'n/a: the comparison value is zero' (never 0% or infinite)", /% change n\/a: the comparison value is zero/.test(zero) && !/Infinity|NaN/.test(zero), zero);
-    check("total % normal case: +25.0%", /\+25\.0%/.test(normal));
-    const gp = { ...plan, groupBy: [{ dim: "customer" }], sort: [{ by: "invoiceAmount", dir: "desc" }] };
-    const rowsRes = { ...res(0, null), groupBy: [{ dim: "customer" }], totals: null, rows: [{ key: { customer: "Cedar Stores" }, values: { invoiceAmount: 826 }, comparison: { invoiceAmount: { previous: 0, delta: 826, deltaPct: null } }, presence: "current_only" }, { key: { customer: "Aarav Traders" }, values: { invoiceAmount: 1298 }, comparison: { invoiceAmount: { previous: 1652, delta: -354, deltaPct: -21.43 } }, presence: "both" }] };
-    const rt = formatQueryAnswer({ plan: gp, result: rowsRes }).text;
-    check("grouped rows: null deltaPct explained + flagged 'no activity in the comparison period'; others show their %", /Cedar Stores .*% change n\/a: the comparison value is zero\).*no activity in the comparison period/.test(rt) && /Aarav Traders .*-21\.4%/.test(rt), rt);
-  }
-
-  // =============================================================== F
-  section("F. new / reactivated / lost: only the definitions the data supports, each one stated");
-  {
-    const N = [
-      // decision 3: a new customer/supplier = Tally ledger created in the period (LedgerMaster) -> new_in_period, no comparison
-      ["new customers this month", "sales:invoiceAmount|customer|-|none|current_month|customer=period"], ["Who became a new customer this month?", "sales:invoiceAmount|customer|-|none|current_month|customer=period"],
-      ["which customers are new this quarter vs last quarter", "sales:invoiceAmount|customer|-|none|current_quarter|customer=period"], ["new suppliers this month", "purchase:purchaseAmount|supplier|-|none|current_month|supplier=period"],
-      ["new products sold this quarter vs last quarter", "sales:lineAmount|product|new|like_for_like|current_quarter"], ["new customers this month vs same month last year", "sales:invoiceAmount|customer|-|none|current_month|customer=period"], ["new products sold this month", "sales:lineAmount|product|new|full_previous|current_month"],
-      ["customers we lost this month vs last month", "sales:invoiceAmount|customer|lost|full_previous|current_month"], ["Which customers went inactive this month?", "sales:invoiceAmount|customer|lost|full_previous|current_month"],
-      ["lost customers this quarter vs last quarter", "sales:invoiceAmount|customer|lost|like_for_like|current_quarter"], ["customers who became inactive this month vs last month", "sales:invoiceAmount|customer|lost|full_previous|current_month"],
-      ["dormant customers this month", "sales:invoiceAmount|customer|lost|full_previous|current_month"], ["customers who stopped buying this quarter", "sales:invoiceAmount|customer|lost|like_for_like|current_quarter"],
-      ["suppliers we stopped buying from this month", "purchase:purchaseAmount|supplier|lost|full_previous|current_month"], ["Who stopped buying this month?", "sales:invoiceAmount|customer|lost|full_previous|current_month"],
-      ["First time customers this month", "unsupported/unsupported_first_purchase"], ["brand new customers this month", "unsupported/unsupported_first_purchase"],
-      ["customers who never bought before this month", "unsupported/unsupported_first_purchase"], ["customers making their first ever purchase this quarter", "unsupported/unsupported_first_purchase"],
-      ["returning customers this quarter", "unsupported/unsupported_reactivation"], ["customers won back this month", "unsupported/unsupported_reactivation"],
-      ["Reactivated customers this quarter", "unsupported/unsupported_reactivation"], ["Which customers came back this month after being inactive?", "unsupported/unsupported_reactivation"],
-      ["new customers", "needs_planner/period_missing"], ["lost customers", "needs_planner/period_missing"],
-    ];
-    const bad = [];
-    let notes = 0;
-    let supported = 0;
-    for (const [q, want] of N) {
-      const x = await route(q);
-      const got = x.plan ? sig(x.plan) : `${x.status}/${x.code}`;
-      if (got !== want) bad.push(`${q}: ${got} (want ${want})`);
-      if (x.plan) {
-        supported += 1;
-        const code = /=period$/.test(got) ? "new_party_by_ledger_created_date" : /\|new\|/.test(got) ? "new_means_absent_in_comparison" : "lost_means_absent_in_period";
-        if (x.assumptions.some((a) => a.code === code)) notes += 1;
-      }
-    }
-    check(`new/reactivated/lost semantics for ${N.length} questions`, bad.length === 0, bad.slice(0, 4).join(" | "));
-    check(`every answered new/lost question states its definition (absent in the comparison / this period): ${notes}/${supported}`, notes === supported && supported > 0);
-    // Decision 3 (tests 10-12, behaviour level): "new" = ledger created in the period; never labelled "new" by absence
-    const np = await route("new customers this month");
-    check("'new customers' reads the ledger master (new_in_period), not the comparison-period absence", np.status === "supported" && np.plan.filters.some((f) => f.op === "new_in_period") && !np.plan.compare, np.status + "/" + np.code);
-    const fu = await askPure("new customers?", { history: [{ role: "user", content: "Show sales this month" }, { role: "assistant", content: "x" }], previousQuery: (await askPure("Show sales this month")).queryContext });
-    check("...also as a follow-up ('new customers?') - never answered with the comparison-period reading", fu.handled && fu.structured.details.queryEngine.code === "unsupported_new_party" && /ledger was created in the period/.test(fu.structured.answer));
-    const planNew = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount"], filters: [], groupBy: [{ dim: "customer" }], compare: { mode: "full_previous" }, having: [{ metric: "invoiceAmount.previous", op: "eq", value: 0 }, { metric: "invoiceAmount", op: "gt", value: 0 }], sort: [{ by: "invoiceAmount", dir: "desc" }] };
-    const pn = await planQuestion("which customers are first-timers this month", { claudeClient: async () => ({ content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { plan: planNew } }], usage: {} }), resolveEntity: resolver });
-    check("...and a Claude plan with the 'absent in the comparison period' shape is refused server-side (Claude never decides 'new')", pn.status === "unsupported" && pn.code === "unsupported_new_party" && !pn.plan);
-    // a tenant whose item is literally named "New" (seen on real data): the refusal still wins, no Claude call
-    const withNew = createEntityResolver({ tenantId: "SF-NEW-ITEM", sources: { customer: async () => ["Aarav Traders"], supplier: async () => [], product: async () => ["New"], productGroup: async () => [] } });
-    const nn = await routeQuestion("new customers this month", { resolveEntity: withNew, entityIndex: withNew.spanIndex, referenceDate: REF });
-    check("a tenant item named 'New' does not turn 'new customers this month' into a planner call (ledger-master reading stays final)", nn.status === "supported" && nn.plan.filters.some((f) => f.op === "new_in_period"));
-    const u = await route("returning customers this quarter");
-    check("reactivated/first-ever: a final honest answer naming what CAN be asked (no planner, no guess)", u.status === "unsupported" && /full purchase history/.test(u.reason) && /customers who stopped buying this month vs last month/.test(u.reason));
-  }
-
-  // =============================================================== G
-  section("G. follow-up context through the real chat entry point (context carried exactly like the controller)");
-  {
-    const conversations = [
-      ["Show sales this month", [["by customer", "sales:invoiceAmount|customer|-|none|current_month"], ["top 5", "sales:invoiceAmount|customer|-|none|current_month|L5"], ["what about last month?", "sales:invoiceAmount|customer|-|none|previous_month|L5"], ["and products?", "sales:lineAmount|product|-|none|previous_month|L5"]]],
-      ["Show sales this month vs last month", [["top 10", "needs_clarification/followup_needs_dimension"], ["what about products?", "sales:lineAmount|product|-|full_previous|current_month"], ["only the ones that declined", "sales:lineAmount|product|down|full_previous|current_month"], ["by customer", "sales:invoiceAmount|customer|down|full_previous|current_month"]]],
-      ["Show customer growth this month", [["only above 20%", "sales:invoiceAmount|customer|pct>20|full_previous|current_month"], ["what about last quarter?", "sales:invoiceAmount|customer|pct>20|like_for_like|previous_quarter"], ["and suppliers?", "purchase:purchaseAmount|supplier|pct>20|like_for_like|previous_quarter"]]],
-      ["Show sales this FY", [["compare with last FY", "sales:invoiceAmount|total|-|like_for_like|current_fy"], ["by product group", "sales:lineAmount|productGroup|-|like_for_like|current_fy"], ["only growth above 10%", "sales:lineAmount|productGroup|pct>10|like_for_like|current_fy"]]],
-      ["Show revenue this month", [["by product group", "sales:lineAmount|productGroup|-|none|current_month"], ["vs last month", "sales:lineAmount|productGroup|-|full_previous|current_month"], ["and by customer?", "sales:lineAmount|customer|-|full_previous|current_month"]]],
-      ["Show purchases last month", [["which suppliers?", "purchase:purchaseAmount|supplier|-|none|previous_month"], ["top 3", "purchase:purchaseAmount|supplier|-|none|previous_month|L3"], ["compared with the month before", "purchase:purchaseAmount|supplier|-|like_for_like|previous_month|L3"], ["which declined?", "purchase:purchaseAmount|supplier|down|like_for_like|previous_month|L3"]]],
-      ["sales last month", [["and purchases?", "purchase:purchaseAmount|total|-|none|previous_month"], ["by supplier", "purchase:purchaseAmount|supplier|-|none|previous_month"], ["what about sales?", "sales:invoiceAmount|customer|-|none|previous_month"]]],
-      ["top 5 customers by sales this month", [["same for last month", "sales:invoiceAmount|customer|-|none|previous_month|L5"], ["vs the same month last year", "sales:invoiceAmount|customer|-|same_period_last_year|previous_month|L5"], ["which of them grew?", "sales:invoiceAmount|customer|up|same_period_last_year|previous_month|L5"]]],
-      ["sales for Aarav Traders this month", [["and last month?", "sales:invoiceAmount|total|-|none|previous_month|customer=Aarav Traders"], ["what about Bluebell Mart?", "sales:invoiceAmount|total|-|none|previous_month|customer=Bluebell Mart"], ["compare with the month before", "sales:invoiceAmount|total|-|like_for_like|previous_month|customer=Bluebell Mart"]]],
-      ["Which customers grew this quarter vs last quarter?", [["and products?", "sales:lineAmount|product|up|like_for_like|current_quarter"], ["only more than 25%", "sales:lineAmount|product|pct>25|like_for_like|current_quarter"], ["what about this month", "sales:lineAmount|product|pct>25|full_previous|current_month"]]],
-      ["Show sales this month vs last month", [["and by customer?", "sales:invoiceAmount|customer|-|full_previous|current_month"]]],
-      ["revenue last quarter", [["and quantity?", "sales:quantity|total|-|none|previous_quarter"], ["by product", "sales:quantity|product|-|none|previous_quarter"]]],
-      ["purchases this month", [["how many invoices?", "purchase:purchaseInvoiceCount|total|-|none|current_month"]]],
-      ["Show sales this month vs last month", [["why?", "LEGACY"], ["GST?", "unsupported/unsupported_capability"]]],
-      ["sales this month", [["new customers?", "needs_clarification/unsupported_new_party"], ["and lost customers?", "sales:invoiceAmount|customer|lost|full_previous|current_month"]]],
-      ["sales last month", [["and customers who bought less", "sales:invoiceAmount|customer|down|like_for_like|previous_month"]]],
-      ["Who bought less this month than last month?", [["what about suppliers?", "purchase:purchaseAmount|supplier|down|full_previous|current_month"]]],
-    ];
-    const bad = [];
-    let followUps = 0;
-    let exact = 0;
-    let legacy = 0;
-    let notesOk = 0;
-    let merged = 0;
-    const eng = fakeEngine();
-    // history from 2023, so "compare with last FY" is covered (coverage refusals are section C's job)
-    const WIDE = buildDateContext({ sales: { earliest: U(2023, 4, 1), latest: U(2025, 12, 8) }, purchase: {} }, new Date(2025, 11, 8, 12)); // today = 8 Dec 2025
-    for (const [first, turns] of conversations) {
-      const history = [];
-      let prev = null;
-      for (const [q, want] of [[first, null], ...turns]) {
-        const before = eng.calls.length;
-        const out = await askPure(q, { dates: WIDE, history: [...history], previousQuery: prev && prev.queryContext ? prev.queryContext : null, execute: eng });
-        const planned = eng.calls.length > before ? eng.calls[eng.calls.length - 1].plan : null;
-        const meta = out.handled ? out.structured.details.queryEngine : null;
-        const got = !out.handled ? "LEGACY" : planned ? sig(planned) : `${meta.status}/${meta.code}`;
-        if (want) {
-          followUps += 1;
-          if (got === want) exact += 1;
-          else bad.push(`[${first}] "${q}": ${got} (want ${want})`);
-          if (!out.handled) legacy += 1;
-          if (meta && meta.route === "follow_up" && meta.status === "answered") {
-            merged += 1;
-            if (/Follow-up to your previous question: kept the [^;]+; changed: /.test(out.structured.answer)) notesOk += 1;
-          }
-        }
-        prev = out;
-        history.push({ role: "user", content: q }, { role: "assistant", content: out.handled ? out.structured.answer : "(legacy)" });
-      }
-    }
-    check(`follow-ups: ${exact}/${followUps} keep the previous measure/period/comparison and change only what they name`, exact === followUps && followUps >= 40, bad.slice(0, 4).join(" | "));
-    check(`every merged follow-up states what it kept and what it changed: ${notesOk}/${merged}`, notesOk === merged && merged > 0);
-    check(`only the unanswerable follow-up ("why?") reaches history-aware legacy chat: ${legacy}`, legacy === 1);
-    const plannerCalls = [];
-    const planner = async (req) => (plannerCalls.push(req), { content: [{ type: "tool_use", id: "p", name: PLANNER_TOOL_NAME, input: { decline: { code: "needs_clarification", message: "x" } } }], usage: {} });
-    const s1 = await askPure("Show sales this month vs last month", { plannerClient: planner });
-    await askPure("and by customer?", { history: [{ role: "user", content: "Show sales this month vs last month" }, { role: "assistant", content: s1.structured.answer }], previousQuery: s1.queryContext, plannerClient: planner });
-    check("follow-ups never call Claude, and the stored plan is never part of what Claude could see", plannerCalls.length === 0 && Object.keys(s1).join(",") === "handled,structured" && !JSON.stringify(s1.structured).includes("queryContext"));
-    // continuation without a usable previous plan: never answered stand-alone
-    const noCtx = await askPure("and by customer?", { history: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }] });
-    check("a continuation ('and by customer?') with no stored plan is NOT answered as all-time sales by customer (goes to history-aware legacy chat)", noCtx.handled === false && noCtx.reason === "follow_up_uses_legacy_chat");
-    const selfC = await askPure("purchases last quarter", { history: [{ role: "user", content: "Show sales this month" }, { role: "assistant", content: "x" }], previousQuery: s1.queryContext });
-    check("a self-contained new question after an answer is answered on its own terms (not merged)", eng.calls.length > 0 && selfC.structured.details.queryEngine.route === "router");
-  }
-
   // =============================================================== H
-  section("H. month comparisons (decision 2): this month to date vs the COMPLETE previous month; same days only when asked");
+  section("H. month comparisons (decision 2, enforced by the planner): this month to date vs the COMPLETE previous month; same days only when asked");
   {
     // "today" = the given day; history from 2023 so every comparison is covered
     const at = (y, m, d) => buildDateContext({ sales: { earliest: U(2023, 4, 1), latest: U(y, m, d) }, purchase: {} }, new Date(y, m - 1, d, 12));
-    const resolved = async (q, dates) => {
+    // `claudePlan` is what a model would naively answer; the planner's product rules decide what reaches the engine.
+    const resolved = async (q, dates, claudePlan = plan("sales", K("current_month"), { compare: LFL })) => {
       const eng = fakeEngine();
-      const r = await askPure(q, { dates, execute: eng });
+      const r = await askPure(q, { dates, execute: eng, plan: claudePlan });
       if (!eng.calls.length) return { r, cur: "none", prev: "none" };
       const n = validateQueryPlan(eng.calls[0].plan, { referenceDate: eng.calls[0].ctx.referenceDate }).normalized;
       return { r, cur: range(n.period), prev: range(n.comparison), mode: eng.calls[0].plan.compare && eng.calls[0].plan.compare.mode };
@@ -620,9 +445,9 @@ function oracle(kind, mode, r) {
     const ex = await resolved("Compare sales previous month vs current month", at(2026, 9, 28));
     check("(5) 28-Sep-2026 'Compare sales previous month vs current month': current 1-Sep..28-Sep, previous 1-Aug..31-Aug", ex.cur === "2026-09-01..2026-09-28" && ex.prev === "2026-08-01..2026-08-31", `${ex.cur} vs ${ex.prev}`);
     check("...and both ranges are visible in the answer", /1 Sept? 2026 – 28 Sept? 2026/.test(ex.r.structured.answer) && /1 Aug 2026 – 31 Aug 2026/.test(ex.r.structured.answer), ex.r.structured.answer);
-    for (const q of ["this month vs last month", "sales growth over last month", "Sales this month vs last month"]) {
-      const x = await resolved(q.startsWith("sales") || q.startsWith("Sales") ? q : "sales " + q, at(2026, 9, 28));
-      check("(5) 28-Sep-2026 '" + q + "': 1-Sep..28-Sep vs the complete August, the default stated", x.cur === "2026-09-01..2026-09-28" && x.prev === "2026-08-01..2026-08-31" && /compared with the complete previous month/.test(x.r.structured.answer), `${x.cur} vs ${x.prev}`);
+    for (const q of ["sales this month vs last month", "sales growth over last month", "Sales this month vs last month"]) {
+      const x = await resolved(q, at(2026, 9, 28));
+      check("(5) 28-Sep-2026 '" + q + "': 1-Sep..28-Sep vs the complete August, the default stated", x.cur === "2026-09-01..2026-09-28" && x.prev === "2026-08-01..2026-08-31" && x.mode === "full_previous" && /compared with the complete previous month/.test(x.r.structured.answer), `${x.cur} vs ${x.prev}`);
     }
     // test 6: month-ends (the current month is complete on its last day; the previous one is always complete)
     const ends = [[2026, 3, 31, "2026-03-01..2026-03-31", "2026-02-01..2026-02-28"], [2026, 4, 30, "2026-04-01..2026-04-30", "2026-03-01..2026-03-31"], [2026, 5, 31, "2026-05-01..2026-05-31", "2026-04-01..2026-04-30"], [2026, 6, 30, "2026-06-01..2026-06-30", "2026-05-01..2026-05-31"], [2026, 7, 31, "2026-07-01..2026-07-31", "2026-06-01..2026-06-30"], [2026, 8, 31, "2026-08-01..2026-08-31", "2026-07-01..2026-07-31"], [2026, 9, 30, "2026-09-01..2026-09-30", "2026-08-01..2026-08-31"], [2026, 10, 31, "2026-10-01..2026-10-31", "2026-09-01..2026-09-30"], [2026, 11, 30, "2026-11-01..2026-11-30", "2026-10-01..2026-10-31"], [2026, 12, 31, "2026-12-01..2026-12-31", "2026-11-01..2026-11-30"], [2027, 1, 31, "2027-01-01..2027-01-31", "2026-12-01..2026-12-31"], [2027, 2, 28, "2027-02-01..2027-02-28", "2027-01-01..2027-01-31"], [2024, 2, 29, "2024-02-01..2024-02-29", "2024-01-01..2024-01-31"], [2024, 3, 1, "2024-03-01..2024-03-01", "2024-02-01..2024-02-29"]];
@@ -636,25 +461,25 @@ function oracle(kind, mode, r) {
     check(`(6) month-ends (31 Mar, 30 Apr, 31 May, 30 Jun, 31 Jul, 31 Aug, 30 Sep ... 29 Feb, 1 Mar): this month vs the complete previous month on all ${ends.length}`, endBad.length === 0 && noteless === ends.length, endBad.join(" | "));
     // test 7: explicit same-period / same-day-count / like-for-like / full wording keeps its meaning
     const explicit = [
-      ["sales this month vs same period last month", at(2026, 9, 28), "like_for_like", "2026-08-01..2026-08-28"],
-      ["sales this month vs the same days last month", at(2026, 9, 28), "like_for_like", "2026-08-01..2026-08-28"],
-      ["sales this month vs last month like for like", at(2026, 9, 28), "like_for_like", "2026-08-01..2026-08-28"],
-      ["sales mtd vs lmtd", at(2026, 9, 28), "like_for_like", "2026-08-01..2026-08-28"],
-      ["sales this month vs same number of days last month", at(2026, 9, 28), "like_for_like", "2026-08-01..2026-08-28"],
-      ["sales this month vs full last month", at(2026, 9, 28), "full_previous", "2026-08-01..2026-08-31"],
-      ["sales this month vs same month last year", at(2026, 9, 28), "same_period_last_year", "2025-09-01..2025-09-28"],
-      ["sales from 2026-08-01 to 2026-08-15 vs 2026-07-01 to 2026-07-15", at(2026, 9, 28), "custom", "2026-07-01..2026-07-15"],
+      ["sales this month vs same period last month", at(2026, 9, 28), plan("sales", K("current_month"), { compare: LFL }), "like_for_like", "2026-08-01..2026-08-28"],
+      ["sales this month vs the same days last month", at(2026, 9, 28), plan("sales", K("current_month"), { compare: LFL }), "like_for_like", "2026-08-01..2026-08-28"],
+      ["sales this month vs last month like for like", at(2026, 9, 28), plan("sales", K("current_month"), { compare: LFL }), "like_for_like", "2026-08-01..2026-08-28"],
+      ["sales mtd vs lmtd", at(2026, 9, 28), plan("sales", K("current_month"), { compare: LFL }), "like_for_like", "2026-08-01..2026-08-28"],
+      ["sales this month vs same number of days last month", at(2026, 9, 28), plan("sales", K("current_month"), { compare: LFL }), "like_for_like", "2026-08-01..2026-08-28"],
+      ["sales this month vs full last month", at(2026, 9, 28), plan("sales", K("current_month"), { compare: FULL }), "full_previous", "2026-08-01..2026-08-31"],
+      ["sales this month vs same month last year", at(2026, 9, 28), plan("sales", K("current_month"), { compare: SPLY }), "same_period_last_year", "2025-09-01..2025-09-28"],
+      ["sales from 2026-08-01 to 2026-08-15 vs 2026-07-01 to 2026-07-15", at(2026, 9, 28), plan("sales", C("2026-08-01", "2026-08-15"), { compare: vs("2026-07-01", "2026-07-15") }), "custom", "2026-07-01..2026-07-15"],
     ];
     const exBad = [];
-    for (const [q, dates, mode, prev] of explicit) {
-      const x = await resolved(q, dates);
+    for (const [q, dates, p, mode, prev] of explicit) {
+      const x = await resolved(q, dates, p);
       if (x.mode !== mode || x.prev !== prev) exBad.push(`${q}: ${x.mode} ${x.prev}`);
     }
     check(`(7) explicit same-period / same-day-count / full / same-month-last-year / literal ranges keep their explicit meaning (${explicit.length})`, exBad.length === 0, exBad.join(" | "));
     // other units keep like-for-like (decision 2 is about months); a complete period vs a shorter baseline is disclosed
-    const q = await resolved("sales this quarter vs last quarter", at(2026, 6, 30));
+    const q = await resolved("sales this quarter vs last quarter", at(2026, 6, 30), plan("sales", K("current_quarter"), { compare: LFL }));
     check("quarters unchanged (like-for-like): 30 Jun quarter vs 1 Jan..30 Mar, with the complete-period disclosure", q.mode === "like_for_like" && q.prev === "2026-01-01..2026-03-30" && /is complete .* but is compared with the same days/.test(q.r.structured.answer));
-    const same = await resolved("sales this month vs same period last month", at(2026, 4, 30));
+    const same = await resolved("sales this month vs same period last month", at(2026, 4, 30), plan("sales", K("current_month"), { compare: LFL }));
     check("explicit same days at a month-end: 1-30 Apr vs 1-30 Mar, disclosed with how to get complete months", same.prev === "2026-03-01..2026-03-30" && /1 Mar 2026 – 31 Mar 2026/.test(same.r.structured.answer) && /vs full last month/.test(same.r.structured.answer));
   }
 
@@ -665,20 +490,18 @@ function oracle(kind, mode, r) {
   // =============================================================== J
   section("J. safety");
   {
-    const all = [];
-    for (const q of ["Who bought less this month?", "Sales growth percentage this month vs last month", "new products sold this month", "Who did we buy less from this month?", "customers whose sales grew by more than 20% this month vs last month"]) {
-      const x = await route(q);
-      all.push(x.plan);
-    }
-    const blob = JSON.stringify(all);
-    check("plans carry no tenant/company fields and no operators ($...)", !/tenant|company|guid|\$/i.test(blob) && all.every((p) => parseQueryPlan(p).ok));
+    const blob = JSON.stringify(Object.values(PLANS));
+    check("plans carry no tenant/company fields and no operators ($...)", !/tenant|company|guid|\$/i.test(blob) && Object.values(PLANS).every((p) => parseQueryPlan(p).ok));
     const base = { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [] };
     check("stored follow-up context is untrusted: extra keys (tenantId), operators, unknown basis or version -> ignored", readQueryState({ v: 1, basis: "amount", plan: { ...base, tenantId: "OTHER" } }) === null && readQueryState({ v: 1, basis: "amount", plan: { ...base, filters: [{ dim: "customer", op: "$where", value: "1" }] } }) === null && readQueryState({ v: 1, basis: "profit", plan: base }) === null && readQueryState({ v: 2, basis: "amount", plan: base }) === null && readQueryState({ v: 1, basis: "amount", plan: base }) !== null);
     const eng = fakeEngine();
-    await askPure("and by customer?", { history: [{ role: "user", content: "x" }, { role: "assistant", content: "y" }], previousQuery: { v: 1, basis: "amount", plan: { ...base, tenantId: "OTHER" } }, execute: eng });
-    check("a tampered stored context is never merged and the engine never sees another tenant", eng.calls.every((c) => c.ctx.tenantId === "SF-PURE"));
-    const u = await route("Who bought less this month? {$where: 1}");
-    check("unsafe text in a 'who' question is still refused before any reading", u.status === "unsupported" && u.code === "unsafe_input");
+    const tampered = { v: 1, basis: "amount", plan: { ...base, tenantId: "OTHER" } };
+    const seen = [];
+    const spy = async (req) => { seen.push(JSON.stringify(req)); return P("and by customer?")(req); };
+    await askPure("and by customer?", { history: [{ role: "user", content: "x" }, { role: "assistant", content: "y" }], previousQuery: tampered, execute: eng, plannerClient: spy });
+    check("a tampered stored context is never forwarded to the planner and the engine never sees another tenant", seen.length === 1 && !/OTHER/.test(seen[0]) && !/Previous query plan/.test(seen[0]) && eng.calls.every((c) => c.ctx.tenantId === "SF-PURE"));
+    const u = await askPure("Who bought less this month? {$where: 1}", { plannerClient: forbiddenPlanner });
+    check("unsafe text in a question is refused before any planner call or reading", u.handled && u.structured.details.queryEngine.claudeCalls === 0 && u.structured.details.queryEngine.status === "unsupported");
   }
 
   section("K. no network");
@@ -749,14 +572,13 @@ async function syntheticTenant() {
     captured = { plan, ctx, result };
     return { result, cache: { status: "miss" } };
   };
-  const forbidden = async () => { throw new Error("Claude must NOT be called"); };
-  // "today" is fixed at 30 Jun 2025 through the REAL date-context function (real vouchers, real sync checkpoints)
+    // "today" is fixed at 30 Jun 2025 through the REAL date-context function (real vouchers, real sync checkpoints)
   const NOW = new Date(2025, 5, 30, 12);
   const refMod = require("./src/services/analytics/referenceDate");
   const datesAtNow = (tenantId) => refMod.getTenantDateContext(tenantId, { now: NOW });
   const ask = async (q) => {
     captured = null;
-    const r = await tryAnswerWithQueryEngine({ context: { tenantId: T }, userMessage: q, conversationHistory: [], deps: { plannerClient: forbidden, execute, getDateContext: datesAtNow } });
+    const r = await tryAnswerWithQueryEngine({ context: { tenantId: T }, userMessage: q, conversationHistory: [], deps: { plannerClient: P(q), execute, getDateContext: datesAtNow } });
     return { r, meta: r.structured.details.queryEngine, text: r.structured.answer, ran: captured };
   };
   try {
@@ -772,7 +594,7 @@ async function syntheticTenant() {
     const mayLfl = sumOf(SALES, "2025-05-01", "2025-05-30");
     const t = x.ran && x.ran.result.totals;
     check(`this month vs last month: June 1-30 ₹${jun} (${countOf(SALES, "2025-06-01", "2025-06-30")} invoices) vs the COMPLETE May ₹${mayFull} = oracle; reference date = today (30 Jun 2025), not the 2 Jul voucher`, x.ran && ymd(x.ran.ctx.referenceDate) === "2025-06-30" && near(t.values.invoiceAmount, jun) && t.values.invoiceCount === countOf(SALES, "2025-06-01", "2025-06-30") && near(t.comparison.invoiceAmount.previous, mayFull) && near(t.comparison.invoiceAmount.deltaPct, pctOf(jun, mayFull)) && x.text.includes(fmtMoney(jun)), x.text);
-    check("...the post-dated 2 Jul voucher is NOT in 'this month' (total excludes it) and the answer says post-dated vouchers exist; no coverage caveat", !x.text.includes(fmtMoney(jun + 5000)) && /vouchers dated after today \(latest 2 Jul 2025\); they are not included/.test(x.text) && !/Coverage:/.test(x.text) && x.meta.claudeCalls === 0, x.text);
+    check("...the post-dated 2 Jul voucher is NOT in 'this month' (total excludes it) and the answer says post-dated vouchers exist; no coverage caveat", !x.text.includes(fmtMoney(jun + 5000)) && /vouchers dated after today \(latest 2 Jul 2025\); they are not included/.test(x.text) && !/Coverage:/.test(x.text) && x.meta.claudeCalls === 1, x.text);
     x = await ask("Sales from 2025-07-01 to 2025-07-31");
     check("an explicit range that names the post-dated day returns it (explicit intent kept): ₹5,000.00", x.ran && near(x.ran.result.totals.values.invoiceAmount, sumOf(SALES, "2025-07-01", "2025-07-31")) && x.ran.result.totals.values.invoiceAmount === 5000);
     x = await ask("Sales this month vs same period last month");
@@ -786,11 +608,11 @@ async function syntheticTenant() {
     const prev = byParty(SALES, "2025-05-01", "2025-05-31"); // decision 2: complete May
     const down = [...new Set([...Object.keys(cur), ...Object.keys(prev)])].map((k) => [k, (cur[k] || 0) - (prev[k] || 0)]).filter(([, d]) => d < 0).sort((a, b) => a[1] - b[1]).map(([k]) => k);
     const rows = x.ran ? x.ran.result.rows.map((r) => r.key.customer) : [];
-    check(`"Who bought less ..." = customers whose sales fell, most first: ${down.join(", ")} (oracle)`, JSON.stringify(rows) === JSON.stringify(down) && /"Who" is read as your customers/.test(x.text), JSON.stringify(rows));
+    check(`"Who bought less ..." = customers whose sales fell, most first: ${down.join(", ")} (oracle)`, JSON.stringify(rows) === JSON.stringify(down), JSON.stringify(rows));
 
     // 3. new / lost with a genuinely new customer, a reactivated one and a month-end buyer
     x = await ask("new customers this month");
-    check("decision 3: tenant without a synced ledger master -> final honest answer (ledger_master_missing), no legacy fallback, so Delta Retail (bought in Feb, back in June) is never labelled new", x.r.handled && x.meta.status === "unsupported" && x.meta.code === "ledger_master_missing" && /ledger master has not been synced/.test(x.text) && !/Delta Retail|Cedar Stores/.test(x.text));
+    check("decision 3: tenant without a synced ledger master -> final honest answer (ledger_master_missing), so Delta Retail (bought in Feb, back in June) is never labelled new", x.r.handled && x.meta.status === "unsupported" && x.meta.code === "ledger_master_missing" && /ledger master has not been synced/.test(x.text) && !/Delta Retail|Cedar Stores/.test(x.text));
     x = await ask("customers who stopped buying this month vs last month");
     const lost = Object.keys(prev).filter((k) => !cur[k]);
     check(`lost customers = bought in the complete May, nothing in June: ${lost.join(", ")} (oracle)`, x.ran && JSON.stringify(x.ran.result.rows.map((r) => r.key.customer)) === JSON.stringify(lost));
@@ -821,10 +643,6 @@ async function syntheticTenant() {
     check("purchases: June vs the complete May = oracle", x.ran && near(x.ran.result.totals.values.purchaseAmount, sumOf(PURCHASES, "2025-06-01", "2025-06-30")) && near(x.ran.result.totals.comparison.purchaseAmount.previous, sumOf(PURCHASES, "2025-05-01", "2025-05-31")));
 
     // 5. controller round trip: the plan is stored on the assistant message and drives the follow-up
-    const orchPath = require.resolve("./src/services/ai/chatOrchestrator");
-    const realOrch = require.cache[orchPath];
-    let legacyCalls = 0;
-    require.cache[orchPath] = { id: orchPath, filename: orchPath, loaded: true, exports: { handleChatTurn: async () => { legacyCalls += 1; throw new Error("legacy must not run"); }, callClaude: async () => { throw new Error("no Claude"); } } };
     const refPath = require.resolve("./src/services/analytics/referenceDate");
     const realRef = require.cache[refPath];
     require.cache[refPath] = { id: refPath, filename: refPath, loaded: true, exports: { ...refMod, getTenantDateContext: (tid) => refMod.getTenantDateContext(tid, { now: NOW }) } };
@@ -836,15 +654,19 @@ async function syntheticTenant() {
       await sendChatMessage({ body: { message }, params: chatId ? { chatId } : {}, user: { id: String(userId) }, companyContext: { tenantId: T, companyGuid: "synthetic" } }, res);
       return res;
     };
+    const plannerSeen = [];
+    controllerPlanner.impl = async (req) => {
+      plannerSeen.push(req.messages[0].content);
+      const m = /Question: (.*)$/m.exec(req.messages[0].content);
+      return P(m ? m[1] : req.messages[0].content)();
+    };
     const a = await send("Show sales this month vs last month");
     const b = await send("and by customer?", a.body.chatId);
     const saved = await Chat.findOne({ _id: a.body.chatId, tenantId: T, userId }).lean();
     const stored = saved && saved.messages[3] && saved.messages[3].queryContext;
-    check("controller: the engine's plan is persisted on the assistant message (server-side), the follow-up keeps period + comparison and groups by customer, legacy never runs", a.code === 200 && b.code === 200 && legacyCalls === 0 && saved.messages[1].queryContext && saved.messages[1].queryContext.basis === "amount" && stored && stored.plan.groupBy[0].dim === "customer" && stored.plan.period.kind === "current_month" && stored.plan.compare.mode === "full_previous" && /by customer/.test(b.body.data.answer) && /Follow-up to your previous question/.test(b.body.data.answer), JSON.stringify(stored));
+    check("controller: the engine's plan is persisted on the assistant message (server-side), the follow-up keeps period + comparison and groups by customer", a.code === 200 && b.code === 200 && saved.messages[1].queryContext && saved.messages[1].queryContext.basis === "amount" && stored && stored.plan.groupBy[0].dim === "customer" && stored.plan.period.kind === "current_month" && stored.plan.compare.mode === "full_previous" && /by customer/.test(b.body.data.answer) && plannerSeen.length === 2 && /Previous query plan/.test(plannerSeen[1]) && !/Previous query plan/.test(plannerSeen[0]), JSON.stringify(stored));
     check("controller: the stored context is not in the API response", !JSON.stringify(a.body).includes("queryContext"));
     require.cache[refPath] = realRef;
-    if (realOrch) require.cache[orchPath] = realOrch;
-    else delete require.cache[orchPath];
   } catch (e) {
     check("synthetic tenant section ran without an exception", false, e && e.stack);
   } finally {
