@@ -21,6 +21,6 @@ npm run dev              # nodemon server.js
 | `src/models` | Mongoose models (every tenant-owned document carries `tenantId`) |
 | `eval/nlu-corpus.json` | Planner evaluation corpus (synthetic names) |
 | `verify-*.js` | Verification suites, run with plain `node` |
-| `refresh-*.js`, `run-adjustment-note-sync.js`, `migrate-*.js`, `*-indexes.js` | Operator scripts (master refreshes, one-off migrations, index tools) |
+| `refresh-*.js`, `run-adjustment-note-sync.js`, `migrate-*.js` | Operator scripts (master refreshes, one-off migrations) |
 
 See the [technical documentation](../docs/TALLYPULSE_TECHNICAL_DOCUMENTATION.md) for the architecture, data model, API reference and the list of test suites, and [`../docs/PROJECT_CONTEXT.md`](../docs/PROJECT_CONTEXT.md) for the code map.
