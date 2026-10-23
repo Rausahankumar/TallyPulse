@@ -32,13 +32,13 @@
  *   or nothing is open, these three are skipped with a clear message
  *   rather than run and produce a misleading guard-mismatch failure.
  *
- *   SYNTHETIC/STRUCTURAL (L): reads two pre-existing SyncCheckpoint
- *   documents to confirm Sales and Purchase checkpoints are independent
- *   documents. Never calls Tally. Deliberately uses a FIXED historical
- *   identity (LEGACY_COMPANY_GUID_FOR_CHECKPOINT_TEST, below) that is
- *   known to already have both a Sales and a Purchase checkpoint on
- *   record from when it was a real synced company - NOT whatever company
- *   happens to be open in Tally right now. Using the live-discovered guid
+ *   SYNTHETIC/STRUCTURAL (L): seeds a Sales and a Purchase SyncCheckpoint
+ *   under a synthetic company guid (CHECKPOINT_TEST_GUID, below) with the
+ *   worker's own upsert, advances Purchase and confirms Sales is untouched
+ *   and the unique key includes voucherType; deletes them afterwards.
+ *   Never calls Tally. It previously read documents left by a real synced
+ *   company, which a fresh test database never has. It does NOT use
+ *   whatever company happens to be open in Tally right now. Using the live-discovered guid
  *   here instead would make this test non-deterministic (it would only
  *   find a Purchase checkpoint, freshly created by test H under whatever
  *   company happens to be open at run time, with no matching Sales
@@ -86,7 +86,7 @@ const TENANT_A = "6a8e75cdf5f2a9694ed20472";
 // a Purchase checkpoint from when this was a real synced company. Do not
 // "fix" this to the live-open guid; that would make test L's outcome
 // depend on which company Tally happens to have open.
-const LEGACY_COMPANY_GUID_FOR_CHECKPOINT_TEST = "3fe86b69-3e5b-4e7e-8e25-46897ece9e31";
+const CHECKPOINT_TEST_GUID = "verify-lc-checkpoint-company-guid"; // synthetic: test L seeds and deletes its own checkpoints
 const TENANT_B = "verify-lc-tenant-b";
 const COMPANY_GUID_B = "verify-lc-company-b";
 
@@ -541,17 +541,36 @@ async function testK_tenantIsolation() {
 }
 
 async function testL_independentCheckpoints() {
-  const salesCp = await SyncCheckpoint.findOne({ tenantId: TENANT_A, companyGuid: LEGACY_COMPANY_GUID_FOR_CHECKPOINT_TEST, voucherType: "Sales" }).lean();
-  const purchaseCp = await SyncCheckpoint.findOne({ tenantId: TENANT_A, companyGuid: LEGACY_COMPANY_GUID_FOR_CHECKPOINT_TEST, voucherType: "Purchase" }).lean();
-
-  const pass = !!salesCp && !!purchaseCp && String(salesCp._id) !== String(purchaseCp._id);
-
-  report(
-    "L", "Sales checkpoint independent from Purchase checkpoint", "SYNTHETIC/STRUCTURAL (reads pre-existing checkpoint documents under a fixed historical identity, no Tally dependency)",
-    pass,
-    "two distinct SyncCheckpoint documents exist for Sales and Purchase",
-    `sales checkpoint exists=${!!salesCp}, purchase checkpoint exists=${!!purchaseCp}, distinct=${salesCp && purchaseCp && String(salesCp._id) !== String(purchaseCp._id)}`
+  // Seeds its own checkpoints under a synthetic identity (the worker's own upsert shape, ensureCheckpointExists), instead of
+  // relying on documents from a real company that a fresh test database never has.
+  const key = { tenantId: TENANT_A, companyGuid: CHECKPOINT_TEST_GUID };
+  const seed = (voucherType) => SyncCheckpoint.findOneAndUpdate(
+    { ...key, voucherType },
+    { $setOnInsert: { ...key, voucherType, lastAlterId: 0, lastRunStatus: "never_run", isRunning: false, lockedAt: null } },
+    { upsert: true }
   );
+  await SyncCheckpoint.deleteMany(key);
+  try {
+    await seed("Sales");
+    await seed("Purchase");
+    // advancing Purchase (as releaseLock does on success) must leave Sales where it was
+    await SyncCheckpoint.findOneAndUpdate({ ...key, voucherType: "Purchase" }, { $set: { lastAlterId: 500, lastRunStatus: "success" } });
+    let duplicateRejected = false;
+    try { await SyncCheckpoint.create({ ...key, voucherType: "Sales" }); } catch (e) { duplicateRejected = e && e.code === 11000; }
+    const salesCp = await SyncCheckpoint.findOne({ ...key, voucherType: "Sales" }).lean();
+    const purchaseCp = await SyncCheckpoint.findOne({ ...key, voucherType: "Purchase" }).lean();
+    const distinct = !!salesCp && !!purchaseCp && String(salesCp._id) !== String(purchaseCp._id);
+    const pass = distinct && salesCp.lastAlterId === 0 && purchaseCp.lastAlterId === 500 && duplicateRejected;
+
+    report(
+      "L", "Sales checkpoint independent from Purchase checkpoint", "SYNTHETIC/STRUCTURAL (seeds its own checkpoints under a synthetic company guid, no Tally dependency)",
+      pass,
+      "two distinct SyncCheckpoint documents for Sales and Purchase; advancing Purchase to 500 leaves Sales at 0; a second Sales checkpoint for the same key is rejected (E11000)",
+      `distinct=${distinct}, sales.lastAlterId=${salesCp && salesCp.lastAlterId}, purchase.lastAlterId=${purchaseCp && purchaseCp.lastAlterId}, duplicateRejected=${duplicateRejected}`
+    );
+  } finally {
+    await SyncCheckpoint.deleteMany(key);
+  }
 }
 
 async function testM_olderStateCannotOverwriteNewer() {

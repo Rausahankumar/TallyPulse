@@ -17,7 +17,7 @@ const INSIGHT_FIELDS = {
   product_trend: [["month", "Month"], ["saleQty", "Sold qty"], ["purchaseQty", "Bought qty"], ["netQty", "Net qty"], ["cumulativeNetQty", "Running net"]],
   supplier_rates: [["product", "Product"], ["bestSupplier", "Best supplier"], ["bestRate", "Best rate"], ["avgRate", "Average rate"], ["supplierCount", "Suppliers"], ["savingIfAllAtBest", "Indicative saving"]],
   discount_summary: [["key", "Group"], ["discountAmount", "Discount"], ["discountPct", "Discount %"], ["grossAmount", "List value"], ["billedAmount", "Billed"]],
-  product_margin: [["product", "Product"], ["saleAmount", "Sale value"], ["unitMargin", "Indicative unit margin"], ["marginPct", "Indicative margin %"], ["indicativeProfit", "Indicative profit"], ["costSource", "Cost from"]],
+  product_margin: [["product", "Product"], ["saleAmount", "Sale value"], ["unitMargin", "Indicative unit margin"], ["marginPct", "Indicative margin %"], ["indicativeProfit", "Indicative profit"], ["costSource", "Cost from"], ["costLastBought", "Cost last bought"]],
 };
 // Fixed headings: the discount basis and the indicative nature of the margin are stated in the heading itself.
 const TOOL_TITLES = {

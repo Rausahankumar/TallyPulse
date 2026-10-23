@@ -43,21 +43,21 @@ function check(id, description, actual, expected) {
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
 // A fixture line: [item, ACTUAL quantity, rate, amount, discount % Tally states, billed quantity Tally sent]. Stored exactly as the sync
-// stores it: the parser's own verified discount (deriveDiscountAmount, on the billed quantity) and the billed quantity when sent.
-const storedLine = ([itemName, quantity, rate, amount, pct = 0, billed = null]) => ({ itemName, quantity, rate, amount, discountPercentage: pct, discountAmount: deriveDiscountAmount(pct, { quantity: billed === null ? quantity : billed, rate, amount }), ...(billed === null ? {} : { billedQuantity: billed }) });
+// stores it: the parser's own verified discount (deriveDiscountAmount, on the billed quantity); the billed quantity is never stored.
+const storedLine = ([itemName, quantity, rate, amount, pct = 0, billed = null]) => ({ itemName, quantity, rate, amount, discountPercentage: pct, discountAmount: deriveDiscountAmount(pct, { quantity: billed === null ? quantity : billed, rate, amount }) });
 // The definitions, written out per line (insights.js PRICED_STAGES / DISCOUNT_GROUP in plain JS).
 function lineModel(line) {
-  const [, q, rate, amt, pct = 0, billed = null] = line;
+  const [, q, rate, amt, pct = 0] = line;
   const st = storedLine(line);
   const net = Math.abs(amt), hasList = rate > 0 && q > 0;
-  const bq = billed === null ? null : Math.min(Math.abs(billed), Math.abs(q));
-  const billedGross = Math.abs((bq === null ? q : bq) * rate);
+  const billedGross = Math.abs(q * rate); // the billed quantity is not stored: the list value is the stored quantity x rate
   const discOk = hasList && st.discountAmount > 0 && st.discountAmount <= billedGross + 0.05;
   const discBad = hasList && !discOk && (pct > 0 || st.discountAmount > 0);
   const free = hasList && net === 0 && !discOk && !(pct > 0);
   const reduction = hasList && !discOk && !(pct > 0) && net > 0 && billedGross - net > Math.max(0.05, billedGross * 0.005);
+  const above = hasList && !discOk && net - billedGross > Math.max(0.05, billedGross * 0.005);
   const disc = discOk ? st.discountAmount : 0;
-  return { q, rate, net, hasList, disc, discBad, free, reduction, list: net + disc, billedGross, gross: Math.abs(q * rate), freeQtyValue: hasList && bq !== null && net > 0 ? Math.abs((Math.abs(q) - bq) * rate) : 0, ambiguous: discBad || reduction, pricedQty: bq !== null ? bq : discOk ? (net + disc) / rate : q };
+  return { q, rate, net, hasList, disc, discBad, free, reduction, above, list: net + disc, billedGross, gross: Math.abs(q * rate), freeQtyValue: 0, ambiguous: discBad || reduction, pricedQty: discOk ? (net + disc) / rate : q };
 }
 
 const TA = "TEST-TENANT-A-insights";
@@ -117,7 +117,7 @@ const inRange = (v, from, to) => v.date >= from && v.date <= to;
 function oracleDiscount(kind, tenant, from, to, keyOf) {
   const groups = new Map();
   const add = (key, line) => {
-    const g = groups.get(key) || { gross: 0, billed: 0, discount: 0, lines: 0, listed: 0, discounted: 0, excluded: 0, free: 0, freeValue: 0, red: 0, redAmount: 0 };
+    const g = groups.get(key) || { gross: 0, billed: 0, discount: 0, lines: 0, listed: 0, discounted: 0, excluded: 0, free: 0, freeValue: 0, red: 0, redAmount: 0, above: 0, aboveAmount: 0 };
     groups.set(key, g);
     const m = lineModel(line);
     g.lines += 1;
@@ -129,13 +129,14 @@ function oracleDiscount(kind, tenant, from, to, keyOf) {
     g.gross += m.list; g.billed += m.net; g.discount += m.disc;
     if (m.disc > 0.005) g.discounted += 1;
     if (m.reduction) { g.red += 1; g.redAmount += m.billedGross - m.net; }
+    if (m.above) { g.above += 1; g.aboveAmount += m.net - m.billedGross; }
   };
   for (const v of VOUCHERS) {
     if (v.kind !== kind || v.tenant !== tenant || v.status !== "active" || !inRange(v, from, to)) continue;
     for (const line of v.lines) { add("ALL", line); if (keyOf) add(keyOf(v, line), line); }
   }
-  const shape = (g) => ({ grossAmount: r2(g.gross), billedAmount: r2(g.billed), discountAmount: r2(g.discount), discountPct: g.gross > 0 ? r2((g.discount / g.gross) * 100) : 0, lines: g.lines, listedLines: g.listed, discountedLines: g.discounted, excludedLines: g.excluded, freeLines: g.free, freeValue: r2(g.freeValue), reductionLines: g.red, reductionAmount: r2(g.redAmount) });
-  return { all: shape(groups.get("ALL") || { gross: 0, billed: 0, discount: 0, lines: 0, listed: 0, discounted: 0, excluded: 0, free: 0, freeValue: 0, red: 0, redAmount: 0 }), by: new Map([...groups].filter(([k, g]) => k !== "ALL" && g.gross > 0).map(([k, g]) => [k, shape(g)])) };
+  const shape = (g) => ({ grossAmount: r2(g.gross), billedAmount: r2(g.billed), discountAmount: r2(g.discount), discountPct: g.gross > 0 ? r2((g.discount / g.gross) * 100) : 0, lines: g.lines, listedLines: g.listed, discountedLines: g.discounted, excludedLines: g.excluded, freeLines: g.free, freeValue: r2(g.freeValue), reductionLines: g.red, reductionAmount: r2(g.redAmount), aboveListLines: g.above, aboveListAmount: r2(g.aboveAmount) });
+  return { all: shape(groups.get("ALL") || { gross: 0, billed: 0, discount: 0, lines: 0, listed: 0, discounted: 0, excluded: 0, free: 0, freeValue: 0, red: 0, redAmount: 0, above: 0, aboveAmount: 0 }), by: new Map([...groups].filter(([k, g]) => k !== "ALL" && g.gross > 0).map(([k, g]) => [k, shape(g)])) };
 }
 function oracleRates(tenant, from, to) {
   const rows = new Map();
@@ -251,7 +252,7 @@ const JUN26 = ["2026-06-01", "2026-06-30"], Q1_26 = ["2026-01-01", "2026-03-31"]
 
 async function cleanup() {
   const ids = { $in: [TA, TB] };
-  await Promise.all([Sale.deleteMany({ tenantId: ids }), Purchase.deleteMany({ tenantId: ids }), SyncCheckpoint.deleteMany({ tenantId: ids })]);
+  await Promise.all([Sale.deleteMany({ tenantId: ids }), Purchase.deleteMany({ tenantId: ids }), SyncCheckpoint.deleteMany({ tenantId: ids }), require("./src/models/adjustmentNote.model").deleteMany({ tenantId: ids })]);
 }
 
 async function main() {
@@ -589,6 +590,7 @@ async function main() {
     check("margin-free-sale", "10 billed + 2 free sold for 1,000 with no billed quantity stored: left out of the rates and disclosed, never priced at 83.33 (the old basis showed a false -6.67 against a cost of 90)", [mRow("Free A"), fm.summary.uncertain.saleLines], [null, 4]);
     check("margin-normal", "no free quantity, 10% discount: sale rate 9,000 / 50 = 180", mRow("Plain D").saleRate, 180);
     check("margin-weighted-cost", "purchase cost weighted by quantity: (1,500 + 5,100) / 40 = 165 (not the plain mean 160); margin 15, 8.33%", [mRow("Plain D").costRate, mRow("Plain D").unitMargin, mRow("Plain D").marginPct], [165, 15, 8.33]);
+    check("margin-cost-age", "the age of an earlier cost is shown: Free B's cost was last bought on 10 Dec 2026", mRow("Free B").costLastBought, "2026-12-10");
     check("margin-earlier-cost", "nothing bought in the period: cost from the 12 months before (70), margin 80 - 70 = 10", [mRow("Free B").costSource, mRow("Free B").costRate, mRow("Free B").unitMargin], ["earlier", 70, 10]);
     check("margin-no-cost", "sold but never bought: no margin, listed last, larger sale first (NoRate E 300, Legacy K 200)", fm.rows.slice(-2).map((r) => [r.product, r.unitMargin]), [["NoRate E", null], ["Legacy K", null]]);
     check("margin-ambiguous", "lines whose billed quantity is unknown (Free A, Box H, Odd I, Legacy J) are left out of the rates and disclosed: 4 lines, 1,000 + 1,000 + 100 + 900 = 3,000 of sales", [mRow("Box H"), mRow("Odd I"), mRow("Legacy J"), fm.summary.uncertain], [null, null, null, { saleLines: 4, saleValue: 3000, purchaseLines: 0, purchaseValue: 0 }]);
@@ -605,6 +607,55 @@ async function main() {
     check("margin-answer", "the answer states its order (margin %, lowest first), shows the indicative profit and discloses the left-out lines", [shown.includes("Ordered by indicative margin %, lowest first"), shown.includes("Indicative profit: 750"), /4 sale lines \(₹3,000\) are billed below quantity × rate/.test(shown)], [true, true, true]);
     const fdisc = await insightTools.runInsightTool("discount_summary", { period: { kind: "custom", from: FEB27[0], to: FEB27[1] } }, { tenantId: TA });
     check("discount-notes", "the discount answer discloses free goods, unverified and below-list lines (never silently)", [fdisc.coverage.notes.some((n) => /1 item line was given free \(list value ₹150\)/.test(n)), fdisc.coverage.notes.some((n) => /1 item line has a discount in Tally that does not agree/.test(n)), fdisc.coverage.notes.some((n) => /3 item lines are billed ₹11,300 below quantity × rate/.test(n))], [true, true, true]);
+    // ---------------------------------------------------------- edge cases, April 2027 (hand-derived; real parser, insight
+    // functions, insight tool and answer formatter; a credit note and a cancelled voucher alongside)
+    console.log("\n=== 10. Discount and margin edge cases through the answer ===");
+    const AdjustmentNote = require("./src/models/adjustmentNote.model");
+    const MAR27 = ["2027-04-01", "2027-04-30"];
+    await store("sale", TA, "2027-04-05", "Cust M", [
+      raw("Ten T", 10, 10, 100, 900, 10), // 10 billed at 100, billed 900, Tally states 10%: discount 100, list 1,000
+      raw("Ten U", 10, 10, 100, 900, 0), // the same numbers with NO discount in Tally: not a discount, disclosed 100 below list
+      raw("Above V", 5, 5, 100, 600, 0), // billed 600 on 5 x 100: counted at 600, no discount, disclosed 100 above list
+      raw("Free W", 12, 10, 100, 1000, 0), // 10 billed + 2 free, billed 1,000: discount 0; with no billed quantity stored the 2 free units are disclosed as 200 below list
+    ]);
+    await store("sale", TA, "2027-04-06", "Cust M", [raw("Ten T", 10, 10, 100, 100, 90)], "cancelled"); // never counted
+    await store("purchase", TA, "2027-04-02", "Sup M", [raw("Ten T", 10, 10, 120, -1200, 0)]); // cost 120 above the sale rate 90
+    await store("purchase", TA, "2027-04-03", "Sup M", [raw("TEN T", 10, 10, 10, -100, 0)]); // another spelling: never merged into Ten T
+    await AdjustmentNote.create({ tenantId: TA, companyGuid: GUID_A, header: { voucherNo: "CN-M1", voucherDate: new Date("2027-04-10T00:00:00Z"), voucherType: "Credit Note", voucherTotalAmount: 400, partyName: "Cust M" }, noteType: "credit", classification: "sales_return", inventory: [{ itemName: "Ten T", quantity: 5, rate: 100, amount: 400 }], ledgers: [] });
+    // counted: Ten T (900, 100), Ten U (900, 0), Above V (600, 0), Free W (1,000, 0): billed 3,400; discount 100; list 3,500; 2.86%
+    const me = await insights.discountSummary(TA, period(...MAR27), { by: "product", limit: 10 });
+    const eRow = (k) => me.rows.find((r) => r.key === k) || null;
+    check("edge-totals", "totals: discount 100 on a list value of 3,500 = billed 3,400 + 100 (2.86%); 4 lines (the cancelled voucher and the credit note never count)", [me.totals.discountAmount, me.totals.grossAmount, me.totals.billedAmount, me.totals.discountPct, me.totals.lines, me.totals.discountedLines], [100, 3500, 3400, 2.86, 4, 1]);
+    check("edge-case-1", "10 billed at 100, billed 900, Tally states 10%: discount 100 on 1,000", [eRow("Ten T").discountAmount, eRow("Ten T").grossAmount], [100, 1000]);
+    check("edge-unrecorded", "the same numbers with no discount in Tally: no discount counted; disclosed below list with Free W's free units: 2 lines, 100 + 200 = 300", [eRow("Ten U").discountAmount, me.totals.reductionLines, me.totals.reductionAmount], [0, 2, 300]);
+    check("edge-above-list", "billed above quantity x rate: counted at its billed 600, no discount, 100 above list disclosed", [eRow("Above V").grossAmount, eRow("Above V").discountAmount, me.totals.aboveListLines, me.totals.aboveListAmount], [600, 0, 1, 100]);
+    check("edge-free-units", "10 billed + 2 free: discount 0 and list 1,000 (not 1,200); without a stored billed quantity the free units are disclosed as below list, never as discount", [eRow("Free W").discountAmount, eRow("Free W").grossAmount, me.totals.freeLines, me.totals.freeValue], [0, 1000, 0, 0]);
+    const evD = await insightTools.runInsightTool("discount_summary", { period: { kind: "custom", from: MAR27[0], to: MAR27[1] }, by: "product" }, { tenantId: TA });
+    const textD = formatAnalysisAnswer({ steps: [{ id: "d", kind: "insight", tool: "discount_summary", status: "ok", result: evD, notes: [] }] }).text;
+    check("edge-answer-discount", "the answer states the total and every exclusion: below list (incl. free units), above list, returns not netted", [
+      textD.includes("Total: discount 100 on a list value of 3,500 (2.86%), billed 3,400."),
+      !textD.includes("given free"),
+      textD.includes("2 item lines are billed ₹300 below quantity × rate with no discount recorded in Tally"),
+      textD.includes("1 item line is billed ₹100 above quantity × rate"),
+      textD.includes("Returns (credit/debit notes) are not netted."),
+    ], [true, true, true, true, true]);
+    const mm = await insights.productMargin(TA, period(...MAR27), { limit: 10, sortBy: "marginPct", order: "asc" });
+    const nRow = (p) => mm.rows.find((r) => r.product === p) || null;
+    check("edge-negative-margin", "a genuinely negative indicative margin: sold at 90, bought at 120 -> -30 a unit, -33.33%, cost bought 2 Apr 2027", [nRow("Ten T").saleRate, nRow("Ten T").costRate, nRow("Ten T").unitMargin, nRow("Ten T").marginPct, nRow("Ten T").belowCost, nRow("Ten T").costLastBought], [90, 120, -30, -33.33, true, "2027-04-02"]);
+    check("edge-no-fuzzy-match", "a purchase under another spelling (TEN T at 10) is never merged into Ten T's cost", nRow("Ten T").costRate, 120);
+    check("edge-margin-free-and-above", "free units never lower a rate: Free W (billed quantity not stored) is left out, never priced at 1,000 / 12; Above V sells at 600 / 5 = 120, no cost", [nRow("Free W"), nRow("Above V").saleRate, nRow("Above V").unitMargin], [null, 120, null]);
+    check("edge-margin-ambiguous", "Ten U and Free W (billed below list, no discount in Tally) have no reliable rate: left out and disclosed (2 lines, 900 + 1,000 = 1,900)", [nRow("Ten U"), mm.summary.uncertain.saleLines, mm.summary.uncertain.saleValue], [null, 2, 1900]);
+    const evM = await insightTools.runInsightTool("product_margin", { period: { kind: "custom", from: MAR27[0], to: MAR27[1] }, sortBy: "marginPct", order: "asc", limit: 5 }, { tenantId: TA });
+    const textM = formatAnalysisAnswer({ steps: [{ id: "m", kind: "insight", tool: "product_margin", status: "ok", result: evM, notes: [] }] }).text;
+    check("edge-answer-margin", "the answer shows the basis, the cost source and age, the left-out line, and that it is not accounting profit", [
+      textM.includes("Indicative margin per product (not accounting profit)"),
+      textM.includes("Indicative unit margin: -30"),
+      textM.includes("Cost from: period · Cost last bought: 2027-04-02"),
+      textM.includes("2 sale lines (₹1,900) are billed below quantity × rate"),
+      textM.includes("Treat it as a direction, not as accounting profit."),
+      textM.includes("Ordered by indicative margin %, lowest first (products without a cost last)."),
+    ], [true, true, true, true, true, true]);
+    await AdjustmentNote.deleteMany({ tenantId: { $in: [TA, TB] } });
   } finally {
     await cleanup();
   }

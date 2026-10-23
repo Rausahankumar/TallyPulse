@@ -55,6 +55,7 @@ function discountNotes(d) {
   if (noRate > 0) out.push(`${plural(noRate, "item line has", "item lines have")} no rate or quantity and ${noRate === 1 ? "is" : "are"} not in the discount figures.`);
   if (t.excludedLines > 0) out.push(`${plural(t.excludedLines, "item line has", "item lines have")} a discount in Tally that does not agree with its quantity, rate and amount (often another unit) and ${t.excludedLines === 1 ? "is" : "are"} left out.`);
   if (t.freeLines > 0) out.push(`${plural(t.freeLines, "item line was", "item lines were")} given free (list value ${fmtAmount(t.freeValue)}): free goods are not counted as discount.`);
+  if (t.aboveListLines > 0) out.push(`${plural(t.aboveListLines, "item line is", "item lines are")} billed ${fmtAmount(t.aboveListAmount)} above quantity × rate (a price above the list rate, or another unit): counted at the billed amount, with no discount.`);
   if (t.reductionLines > 0) out.push(`${plural(t.reductionLines, "item line is", "item lines are")} billed ${fmtAmount(t.reductionAmount)} below quantity × rate with no discount recorded in Tally (free quantity on a billed line, another unit, or lines synced before discounts were read): not counted as discount, so the discount may be incomplete.`);
   return out;
 }

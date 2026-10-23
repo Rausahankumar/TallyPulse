@@ -319,6 +319,11 @@ function parseTallyVoucher(voucher) {
         ? explicitDiscountAmount
         : deriveDiscountAmount(discountPercentage, { quantity: billedQuantity.quantity, rate: rateInfo.rate, amount });
 
+      // Tally's billed quantity, on the PARSED line only (the mappers never store it; `quantity` is the actual quantity). It is a
+      // diagnostic: the voucher-line back-fill dry run counts lines where it differs from the actual quantity (free goods).
+      const billedField = entry.billedqty !== undefined ? parseQuantity(entry.billedqty) : null;
+      const billedQty = billedField && Number.isFinite(billedField.quantity) ? billedField.quantity : null;
+
       const itemName = safeString(entry.stockitemname ?? entry.stockItemName ?? entry.itemName ?? entry.name ?? entry.stockitem).trim();
 
       // The GST fields this line itself carried (HSN, taxability, rate rows). Only attached when the
@@ -332,6 +337,7 @@ function parseTallyVoucher(voucher) {
         amount,
         discountPercentage,
         discountAmount,
+        ...(billedQty !== null ? { billedQuantity: billedQty } : {}),
         ...(gst ? { gst } : {}),
       };
     })

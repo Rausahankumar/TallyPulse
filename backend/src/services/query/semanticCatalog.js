@@ -554,7 +554,7 @@ const UNSUPPORTED_CAPABILITIES = [
   {
     id: "tax_breakdown",
     reason:
-      "GST/tax amounts are not modelled, and there is no invoice-level total before tax: sales are shown as invoice totals including tax, or as revenue (the pre-tax value of the item lines only, which is not an invoice total before tax).",
+      "GST amounts are stored per item line as Tally sends them, but no answer uses them yet (they are not checked against the voucher's tax ledgers), and there is no invoice-level total before tax: sales are shown as invoice totals including tax, or as revenue (the pre-tax value of the item lines only, which is not an invoice total before tax).",
     unlocks: "identifying the tax ledger lines of each voucher (later phase)",
   },
   {

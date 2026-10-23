@@ -39,7 +39,7 @@ const UNIT_WARNING_SPREAD = 5;
 const LOW_VOLUME_SHARE = 0.05;
 
 const DISCOUNT_NOTE =
-  "Discount = the discount Tally records on each item line: billed quantity × rate − billed line amount, counted only when it agrees with the discount percentage Tally states. List value = billed amount + that discount. Free goods are not a discount (shown apart), and a line billed below quantity × rate with no discount in Tally is not read as one. Pre-tax item values: they do not add up to invoice totals.";
+  "Discount = the discount Tally records on each item line: billed quantity × rate − billed line amount, counted only when it agrees with the discount percentage Tally states. List value = billed amount + that discount. Free goods are not a discount (shown apart), and a line billed below quantity × rate with no discount in Tally is not read as one. Returns (credit/debit notes) are not netted. Pre-tax item values: they do not add up to invoice totals.";
 const RATE_NOTE =
   "Rates are billed amount ÷ billed quantity (after discount, before tax); free quantity is not part of a rate. No unit of measure is stored, so a rate assumes the same unit on every voucher line of a product; a product whose sale line rates (or purchase line rates) differ among themselves by more than 5× is flagged.";
 
@@ -136,6 +136,8 @@ const LINE_CLASS_STAGE = {
         { $gt: [{ $subtract: ["$_gross", "$_net"] }, tolerance("$_gross")] },
       ],
     },
+    // billed ABOVE quantity x rate (a price above the list rate, or another unit): no discount, disclosed
+    _above: { $and: ["$_hasList", { $not: ["$_discOk"] }, { $gt: [{ $subtract: ["$_net", "$_gross"] }, tolerance("$_gross")] }] },
     _disc: { $cond: ["$_discOk", "$_storedDisc", 0] },
     _list: { $add: ["$_net", { $cond: ["$_discOk", "$_storedDisc", 0] }] }, // list value of what was billed
   },
@@ -156,6 +158,8 @@ const DISCOUNT_GROUP = {
   freeValue: { $sum: { $cond: ["$_free", "$_gross", 0] } },
   reductionLines: { $sum: { $cond: [{ $and: [COUNTED, "$_reduction"] }, 1, 0] } },
   reductionAmount: { $sum: { $cond: [{ $and: [COUNTED, "$_reduction"] }, { $subtract: ["$_gross", "$_net"] }, 0] } },
+  aboveListLines: { $sum: { $cond: [{ $and: [COUNTED, "$_above"] }, 1, 0] } },
+  aboveListAmount: { $sum: { $cond: [{ $and: [COUNTED, "$_above"] }, { $subtract: ["$_net", "$_gross"] }, 0] } },
 };
 
 const shapeDiscount = (g) => ({
@@ -171,6 +175,8 @@ const shapeDiscount = (g) => ({
   freeValue: round2(g.freeValue),
   reductionLines: g.reductionLines,
   reductionAmount: round2(g.reductionAmount),
+  aboveListLines: g.aboveListLines,
+  aboveListAmount: round2(g.aboveListAmount),
 });
 // For average RATES (rates, indicative margins, supplier rates): each billed line at its BILLED quantity, so free quantity never
 // lowers a rate - (net + verified discount) / rate (the parser's own identity), else the stored quantity when the line shows no
@@ -209,7 +215,7 @@ async function discountSummary(tenantId, period, { entity = "sales", by = null, 
   if (by && !keyExpr) throw Object.assign(new Error(`Unknown breakdown "${by}".`), { status: 400 });
 
   const [totalsRow] = await aggregate(Model, [...prefix, { $group: { _id: null, ...DISCOUNT_GROUP } }], timeLimit);
-  const totals = totalsRow ? shapeDiscount(totalsRow) : shapeDiscount({ gross: 0, billed: 0, discount: 0, lines: 0, listedLines: 0, discountedLines: 0, excludedLines: 0, freeLines: 0, freeValue: 0, reductionLines: 0, reductionAmount: 0 });
+  const totals = totalsRow ? shapeDiscount(totalsRow) : shapeDiscount({ gross: 0, billed: 0, discount: 0, lines: 0, listedLines: 0, discountedLines: 0, excludedLines: 0, freeLines: 0, freeValue: 0, reductionLines: 0, reductionAmount: 0, aboveListLines: 0, aboveListAmount: 0 });
 
   let rows = [];
   if (keyExpr) {
@@ -256,6 +262,7 @@ async function sideTotals(Model, match, productMatch = [], timeLimit) {
         maxRate: { $max: usable({ $divide: ["$_net", "$_pricedQty"] }, null) },
         ambLines: { $sum: { $cond: ["$_ambiguous", 1, 0] } },
         ambNet: { $sum: { $cond: ["$_ambiguous", "$_net", 0] } },
+        lastDate: { $max: usable("$header.voucherDate", null) }, // the latest voucher the average is built from
       },
     },
     { $limit: MAX_GROUP_ROWS + 1 },
@@ -336,10 +343,11 @@ async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", 
     let costSource = cost ? "period" : null;
     if (!cost && earlierBy.has(s._id)) { cost = earlierBy.get(s._id); costSource = "earlier"; }
     const costRate = cost ? cost.billed / cost.qty : null;
+    const costLastBought = cost && cost.lastDate ? new Date(cost.lastDate).toISOString().slice(0, 10) : null;
     const unitMargin = costRate !== null ? saleRate - costRate : null;
     const spread = Math.max(s.minRate > 0 ? s.maxRate / s.minRate : 1, cost && cost.minRate > 0 ? cost.maxRate / cost.minRate : 1);
     return {
-      product: s._id, soldQty: s.qty, saleAmount: s.billed, saleRate, costRate, costSource, unitMargin, spread,
+      product: s._id, soldQty: s.qty, saleAmount: s.billed, saleRate, costRate, costSource, costLastBought, unitMargin, spread,
       marginPct: unitMargin !== null && saleRate > 0 ? (unitMargin / saleRate) * 100 : null,
       indicativeProfit: unitMargin !== null ? unitMargin * s.qty : null,
     };
@@ -376,6 +384,8 @@ async function productMargin(tenantId, period, { limit = 10, sortBy = "profit", 
     saleRate: round2(r.saleRate),
     costRate: round2(r.costRate),
     costSource: r.costSource,
+    // the latest purchase the cost is averaged from (calendar day), so an old cost is visible as old
+    costLastBought: r.costLastBought,
     unitMargin: round2(r.unitMargin),
     marginPct: round2(r.marginPct),
     indicativeProfit: round2(r.indicativeProfit),

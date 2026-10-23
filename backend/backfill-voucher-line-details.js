@@ -4,7 +4,8 @@
  * Why this exists: the voucher parser used to drop the item-line discount percentage (Tally's `discount` field) and ignore
  * the computed GST group, so every voucher synced before that fix has discount 0/0 and no `gst.amounts`. The incremental
  * sync will not re-read them (their AlterID did not change). This reads them once more from Tally, by explicit AlterID,
- * and sets ONLY: inventory[].discountPercentage, inventory[].discountAmount and inventory[].gst. It never changes an amount,
+ * and sets ONLY: inventory[].discountPercentage, inventory[].discountAmount and inventory[].gst (its output also counts, without
+ * writing anything for it, lines whose billed quantity differs from the actual quantity, i.e. free goods). It never changes an amount,
  * quantity, rate, header, ledger, status or AlterID. See src/services/sync/voucherLineBackfill.js for every safety rule.
  *
  * USAGE
