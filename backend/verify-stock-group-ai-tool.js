@@ -143,7 +143,10 @@ async function testPeriodForwardingAndInvocation() {
   };
 
   try {
-    const context = { tenantId: "MOCK-TENANT-XYZ", companyGuid: "irrelevant" };
+    // P-SF: handleChatTurn gives every tool the turn's tenant reference date + synced coverage window (server-built).
+    // A tenant with NO synced vouchers now gets a no-data refusal from the tool (checked below) instead of a
+    // wall-clock-anchored zero, so the forwarding tests supply the context the orchestrator builds.
+    const context = { tenantId: "MOCK-TENANT-XYZ", companyGuid: "irrelevant", referenceDate: new Date(2025, 11, 8), coverage: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } };
     await executeToolCall({ toolName: "get_stock_group_performance", toolInput: { period: "current_month", limit: 7 }, context });
 
     check("mock-called", "the real stockGroupAnalytics.getTopStockGroups function is the one invoked (not a duplicate calculation elsewhere)", capturedArgs !== null, true);
@@ -164,12 +167,25 @@ async function testPeriodForwardingAndInvocation() {
     return { items: [], totalGroups: 0, amountBasis: "line_item_pre_tax", summary: {}, mapping: { mappedLines: 0, unmappedLines: 0, mappedAmount: 0, unmappedAmount: 0 }, hasData: false };
   };
   try {
-    const context = { tenantId: "MOCK-TENANT-XYZ", companyGuid: "irrelevant" };
+    // P-SF: handleChatTurn gives every tool the turn's tenant reference date + synced coverage window (server-built).
+    // A tenant with NO synced vouchers now gets a no-data refusal from the tool (checked below) instead of a
+    // wall-clock-anchored zero, so the forwarding tests supply the context the orchestrator builds.
+    const context = { tenantId: "MOCK-TENANT-XYZ", companyGuid: "irrelevant", referenceDate: new Date(2025, 11, 8), coverage: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } };
     await executeToolCall({ toolName: "get_stock_group_performance", toolInput: { period: "current_month" }, context });
     const monthFrom = capturedPeriods.current.from.getTime();
     await executeToolCall({ toolName: "get_stock_group_performance", toolInput: { period: "current_quarter" }, context });
     const quarterFrom = capturedPeriods.current.from.getTime();
     check("period-kind-changes-resolved-range", "current_month and current_quarter resolve to genuinely different `from` boundaries", monthFrom !== quarterFrom, true);
+  } finally {
+    stockGroupAnalytics.getTopStockGroups = originalFn;
+  }
+
+  // P-SF: no synced vouchers at all -> the tool answers "no data" deterministically and never computes a zero
+  let called = false;
+  stockGroupAnalytics.getTopStockGroups = async () => { called = true; return { items: [], hasData: false }; };
+  try {
+    const empty = await executeToolCall({ toolName: "get_stock_group_performance", toolInput: { period: "current_month" }, context: { tenantId: "MOCK-TENANT-XYZ", companyGuid: "irrelevant", referenceDate: new Date(2025, 11, 8), coverage: { earliest: null, latest: null } } });
+    check("no-history-refused", "a tenant with no synced vouchers gets the fixed no-data message, and no calculation runs", !called && empty.result.state === "no_usable_data" && /no synced Sales or Purchase vouchers/.test(empty.result.message), true);
   } finally {
     stockGroupAnalytics.getTopStockGroups = originalFn;
   }

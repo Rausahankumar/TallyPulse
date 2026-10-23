@@ -31,7 +31,7 @@
 const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
-const { routeQuestion, isUnsafeQuestion } = require("./localRouter");
+const { routeQuestion, isUnsafeQuestion, mentionsRevenue, REVENUE_ASSUMPTION, NEW_PARTY_REASON, NOTES } = require("./localRouter");
 
 const { CATALOG, LIMITS } = catalog;
 
@@ -62,6 +62,23 @@ const SKIP_ROUTER_CODES = new Set([
   "invalid_fy",
   "unsupported_window",
   "period_missing",
+  // period wording the DSL cannot express; the planner has no reference date, so it could only guess dates
+  "period_label_unsupported",
+  "relative_offset_unsupported",
+  "open_ended_range",
+  // P-SF: the missing fact is which party / which direction / which measure - the user's to state
+  "who_ambiguous",
+  "threshold_direction_missing",
+  "vague_performance",
+  // P0 fix: the router has already deliberately refused to guess sales vs. purchase (e.g. "product
+  // growth") - handing that same refusal to Claude just lets it silently pick one, defeating the
+  // router's own "don't guess" decision and paying for a Claude call to do it. The missing fact
+  // (which side of the business) is the user's to state, same as who_ambiguous.
+  "entity_ambiguous",
+  // A question naming several time periods with no comparison word ("last month / this month / today"). The
+  // fix is the user rephrasing, and paying Claude to say so is exactly the leak this set exists to prevent.
+  "too_many_periods",
+  "two_periods_without_comparison",
 ]);
 
 // ---------------------------------------------------------------- prompt + tool (built once from the catalog)
@@ -84,6 +101,7 @@ function buildCatalogDigest() {
     "Rules: invoice-grain metrics (amount/count/average) cannot be grouped or filtered by product or productGroup - use lineAmount/quantity for those. Never mix invoice-grain and line-grain metrics in one plan. A date groupBy needs a bucket and cannot be combined with compare.",
     `Period kinds: ${catalog.PERIOD_KINDS.filter((k) => k !== "ytd").join(", ")}; custom needs from/to as YYYY-MM-DD; specific_fy needs fy like 2024-25. compare modes: ${CATALOG.compare.modes.join(", ")} (custom needs a period). all_time cannot be compared. Financial year is April-March.`,
     "having/sort may reference a selected metric or, when compare is set, metric.previous / metric.delta / metric.deltaPct. limit <= " + LIMITS.maxLimit + ".",
+    '"Revenue" has one fixed meaning: the pre-tax value of the items sold = entity sales with metric lineAmount (never invoiceAmount, invoiceCount or averageInvoiceValue). If a revenue question needs purchases or an invoice-level metric, decline.',
     "Copy customer/supplier/product/group names exactly as the user wrote them; never invent names. Never add a period the user did not state unless the question clearly implies one.",
     'If the question needs anything else (tax/GST, profit, returns/credit notes, payments/outstanding, orders, stock valuation, forecasts, explanations) or is truly ambiguous (for example "this year" without saying financial or calendar), do NOT guess: send decline {code, message}. Otherwise send plan, plus up to 3 short assumptions you made.',
   ].join("\n");
@@ -143,6 +161,45 @@ function newUsage() {
   return { calls: 0, input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 }
 
+const REVENUE_BASIS_REFUSAL = 'Revenue in TallyPulse means the pre-tax value of the items sold, and this question can\'t be answered on that basis. Ask for revenue on its own (for example "revenue last month" or "top 5 customers by revenue this month"), or ask for sales if you want tax-inclusive invoice totals.';
+
+function isRevenuePlan(plan) {
+  const metrics = plan.metrics || [];
+  return plan.entity === "sales" && metrics.includes("lineAmount") && metrics.every((m) => CATALOG.metrics[m] && CATALOG.metrics[m].grain === "line");
+}
+
+// Years the user actually wrote: 2025, '25, 2025-26, 24-25 (both years of an FY label).
+function statedYears(text) {
+  const years = new Set();
+  for (const m of text.matchAll(/\b(20\d{2})\b/g)) years.add(Number(m[1]));
+  for (const m of text.matchAll(/\b(?:20)?(\d{2})\s*-\s*(\d{2})\b/g)) {
+    years.add(2000 + Number(m[1]));
+    years.add(2000 + Number(m[2]));
+  }
+  for (const m of text.matchAll(/'(\d{2})\b/g)) years.add(2000 + Number(m[1]));
+  return years;
+}
+
+function datesStated(plan, text) {
+  const years = statedYears(String(text));
+  const ok = (p) => {
+    if (!p) return true;
+    if (p.kind === "custom") return years.has(Number(p.from.slice(0, 4))) && years.has(Number(p.to.slice(0, 4)));
+    if (p.kind === "specific_fy") return years.has(Number(p.fy.slice(0, 4))) || years.has(Number(p.fy.slice(0, 4)) + 1);
+    return true; // relative kinds stay symbolic: the server resolves them with the tenant reference date
+  };
+  return ok(plan.period) && (!plan.compare || plan.compare.mode !== "custom" || ok(plan.compare.period));
+}
+
+// Product rules the planner's plan must follow, enforced here (never left to Claude):
+//  decision 2 - "this month vs last month" compares with the COMPLETE previous month unless the user asked for the
+//               same days; decision 3 - "new customer/supplier" (absent in the comparison period) is not answerable
+//               without the party master.
+const SAME_DAYS_WORDING = /\b(?:same (?:period|days|dates|date range|number of days|day count|elapsed days)|like[- ]for[- ]like|month[- ]to[- ]date|lmtd|same[- ]day[- ]count)\b/i;
+const isNewPartyPlan = (plan) =>
+  (plan.groupBy || []).some((g) => g.dim === "customer" || g.dim === "supplier") &&
+  (plan.having || []).some((h) => /\.previous$/.test(h.metric) && h.op === "eq" && h.value === 0);
+
 const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed", route: "honest_response", source: "claude_planner", code, reason, usage, ...extra });
 
 // ---------------------------------------------------------------- the planner
@@ -174,16 +231,21 @@ async function planQuestion(question, options = {}) {
   let lastFailure = null;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
+    // Client disconnected (Stop): no first call and no repair call.
+    if (options.signal && options.signal.aborted) return failed("planner_call_failed", "The request was cancelled.", usage, { retryable: true });
     let response;
     usage.calls += 1;
     try {
-      response = await claudeClient({
-        system: prompt.system,
-        messages,
-        tools: [prompt.tool],
-        tool_choice: { type: "tool", name: PLANNER_TOOL_NAME },
-        max_tokens: PLANNER_MAX_TOKENS,
-      });
+      response = await claudeClient(
+        {
+          system: prompt.system,
+          messages,
+          tools: [prompt.tool],
+          tool_choice: { type: "tool", name: PLANNER_TOOL_NAME },
+          max_tokens: PLANNER_MAX_TOKENS,
+        },
+        { signal: options.signal || null }
+      );
     } catch (error) {
       const timedOut = !!error && (error.code === "PLANNER_DEADLINE_EXCEEDED" || /timeout|timed out|abort/i.test(`${error.name} ${error.message}`));
       return timedOut
@@ -239,6 +301,20 @@ async function planQuestion(question, options = {}) {
       return failed("planner_invalid_plan", "The planner produced a plan the query engine cannot run.", usage, { errors: errors.slice(0, 5) });
     }
 
+    // ---- revenue basis: enforced here, not trusted to the prompt. A revenue question may only become the
+    // pre-tax item-value plan (sales + lineAmount, no invoice-level metric); anything else is refused -
+    // never answered as the tax-inclusive Sales total.
+    const revenue = mentionsRevenue(text);
+    if (revenue && !isRevenuePlan(parsed.plan)) {
+      return { status: "unsupported", route: "honest_response", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL, usage };
+    }
+
+    // ---- dates (P-SF): the planner is never given a date, so a literal year in its plan that the user did not
+    // write would be invented. Custom ranges and specific FYs must use years stated in the question.
+    if (!datesStated(parsed.plan, text)) {
+      return { status: "needs_clarification", route: "honest_response", source: "date_guard", code: "year_missing", reason: "Which year do you mean?", usage };
+    }
+
     // ---- entity names: re-resolved against the tenant's own data
     let plan = JSON.parse(JSON.stringify(parsed.plan));
     if (typeof resolveEntity === "function" && Array.isArray(plan.filters)) {
@@ -265,6 +341,17 @@ async function planQuestion(question, options = {}) {
       plan = JSON.parse(JSON.stringify(reparsed.plan));
     }
 
+    if (isNewPartyPlan(plan)) {
+      return { status: "unsupported", route: "honest_response", source: "new_party_guard", code: "unsupported_new_party", reason: NEW_PARTY_REASON, usage };
+    }
+    const definitionNotes = revenue ? [REVENUE_ASSUMPTION] : [];
+    if (plan.period.kind === "current_month" && plan.compare && plan.compare.mode === "like_for_like" && !SAME_DAYS_WORDING.test(text)) {
+      plan.compare = { mode: "full_previous" };
+      validation = validateQueryPlan(plan, { referenceDate: referenceDate || VALIDATION_FALLBACK_REF });
+      if (!validation.ok) return failed("planner_invalid_plan", "The plan was not valid after applying the month comparison rule.", usage);
+      definitionNotes.push(NOTES.MONTH_FULL_NOTE);
+    }
+
     const plannerAssumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);
     return {
       status: "supported",
@@ -272,6 +359,7 @@ async function planQuestion(question, options = {}) {
       source: "claude_planner",
       plan,
       plannerAssumptions,
+      definitionNotes,
       assumptions: validation.assumptions,
       warnings: validation.warnings,
       usage,
@@ -307,7 +395,7 @@ async function routeAndPlan(question, { resolveEntity, claudeClient, referenceDa
  */
 function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEOUT_MS, maxRetries = PLANNER_MAX_RETRIES, deadlineMs = PLANNER_DEADLINE_MS, sdkOptions = {} } = {}) {
   let client = null;
-  return async function anthropicPlannerClient(request) {
+  return async function anthropicPlannerClient(request, { signal } = {}) {
     if (!client) {
       const Anthropic = require("@anthropic-ai/sdk");
       const apiKey = sdkOptions.apiKey || process.env.ANTHROPIC_API_KEY;
@@ -319,6 +407,12 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
       client = new Anthropic({ ...sdkOptions, apiKey, maxRetries, timeout: attemptTimeoutMs });
     }
     const controller = new AbortController();
+    // The caller's signal (client disconnected) aborts the same in-flight request as the deadline does.
+    const onClientAbort = () => controller.abort(signal.reason);
+    if (signal) {
+      if (signal.aborted) onClientAbort();
+      else signal.addEventListener("abort", onClientAbort, { once: true });
+    }
     let timer = null;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
@@ -338,6 +432,7 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
       ]);
     } finally {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onClientAbort);
     }
   };
 }

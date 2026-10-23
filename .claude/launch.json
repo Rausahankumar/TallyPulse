@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "5173"],
       "port": 5173
+    },
+    {
+      "name": "backend-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["-e", "process.chdir('backend'); require(require('path').resolve('server.js'))"],
+      "port": 5000
     }
   ]
 }

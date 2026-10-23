@@ -13,6 +13,13 @@ export async function getChat(chatId) {
   return data.data; // {_id, tenantId, userId, title, messages:[...]}
 }
 
+// PATCH /api/chat/:chatId - only the title changes (the backend trims, bounds and ownership-checks it).
+export const MAX_CHAT_TITLE_CHARS = 100;
+export async function renameChat(chatId, title) {
+  const { data } = await client.patch(`/chat/${chatId}`, { title });
+  return data.data; // {_id, title, createdAt, updatedAt}
+}
+
 export async function deleteChat(chatId) {
   const { data } = await client.delete(`/chat/${chatId}`);
   return data;
@@ -33,9 +40,11 @@ export async function deleteChat(chatId) {
 // untouched for every other call.
 const CHAT_TIMEOUT_MS = 60000;
 
-export async function sendChatMessage({ chatId, message }) {
+// `signal` (AbortController): aborting it cancels the HTTP request; the backend sees the disconnect and
+// stops the turn (no further Claude call, nothing saved). It rejects with ApiError code "CANCELED".
+export async function sendChatMessage({ chatId, message, signal }) {
   const path = chatId ? `/chat/${chatId}/message` : "/chat/message";
-  const { data } = await client.post(path, { message }, { timeout: CHAT_TIMEOUT_MS });
+  const { data } = await client.post(path, { message }, { timeout: CHAT_TIMEOUT_MS, signal });
   return data; // { success, chatId, data: structuredResponse }
 }
 

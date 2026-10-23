@@ -9,7 +9,7 @@ import AiNotConnectedNotice from "../components/chat/AiNotConnectedNotice";
 import DemoInsightCard from "../components/chat/DemoInsightCard";
 import Button from "../components/ui/Button";
 import { useCompany } from "../context/useCompany";
-import { listChats, getChat, sendChatMessage, deleteChat } from "../api/chat";
+import { listChats, getChat, sendChatMessage, deleteChat, renameChat } from "../api/chat";
 import { ApiError } from "../api/client";
 import { MOCK_AI_DEMO_TURN, MOCK_SUGGESTED_QUESTIONS } from "../mock/mockData";
 
@@ -26,11 +26,17 @@ export default function AskAI() {
   const [turns, setTurns] = useState([]);
   const [sending, setSending] = useState(false);
   const bottomRef = useRef(null);
+  // The one in-flight chat request: {controller, cancelledBy: null | "user" | "navigation"}.
+  const inflight = useRef(null);
 
   useEffect(() => {
     refreshChatList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCompany?.tenantId]);
+
+  // Leaving the page cancels a running request (nothing would show its answer).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => cancelInflight("navigation"), []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -48,7 +54,19 @@ export default function AskAI() {
     }
   }
 
+  // Aborts the HTTP request itself (not just the spinner): the backend sees the disconnect and ends the
+  // turn - no further Claude call and nothing saved. Never retried or re-sent.
+  function cancelInflight(by) {
+    const req = inflight.current;
+    if (!req) return;
+    req.cancelledBy = by;
+    req.controller.abort();
+    inflight.current = null;
+    setSending(false); // immediately: the next question can be sent right away
+  }
+
   async function handleSelect(chatId) {
+    cancelInflight("navigation");
     setActiveChatId(chatId);
     try {
       const chat = await getChat(chatId);
@@ -59,21 +77,33 @@ export default function AskAI() {
   }
 
   function handleNew() {
+    cancelInflight("navigation");
     setActiveChatId(null);
     setTurns([]);
   }
 
+  // Throws on failure (the sidebar shows it) - the chat is removed from the list only once the server confirms.
   async function handleDelete(chatId) {
-    await deleteChat(chatId).catch(() => {});
+    await deleteChat(chatId);
     setChats((c) => c.filter((chat) => chat._id !== chatId));
     if (activeChatId === chatId) handleNew();
   }
 
+  // Throws on failure (the sidebar shows it); the list and header update from the server's saved title.
+  async function handleRename(chatId, title) {
+    const saved = await renameChat(chatId, title);
+    setChats((c) => c.map((chat) => (chat._id === chatId ? { ...chat, title: saved.title } : chat)));
+  }
+
   async function handleSend(text) {
+    if (inflight.current) return; // one request at a time: no duplicate submits
+    const req = { controller: new AbortController(), cancelledBy: null };
+    inflight.current = req;
     setTurns((t) => [...t, { kind: "message", message: { role: "user", text } }]);
     setSending(true);
     try {
-      const result = await sendChatMessage({ chatId: activeChatId, message: text });
+      const result = await sendChatMessage({ chatId: activeChatId, message: text, signal: req.controller.signal });
+      if (req.cancelledBy) return;
       setActiveChatId(result.chatId);
       setTurns((t) => [
         ...t,
@@ -81,6 +111,15 @@ export default function AskAI() {
       ]);
       refreshChatList();
     } catch (err) {
+      if (err instanceof ApiError && err.code === "CANCELED") {
+        // Stop: a fixed local note, no request of any kind. Navigation: the view already changed - say nothing.
+        if (req.cancelledBy === "user") {
+          setTurns((t) => [...t, { kind: "stopped" }]);
+          // If the server had already finished and saved before the abort arrived, the list picks that up.
+          refreshChatList();
+        }
+        return;
+      }
       if (err instanceof ApiError && (err.status === 503 || err.status === 501)) {
         setTurns((t) => [...t, { kind: "not-connected", message: err.message }]);
       } else {
@@ -94,9 +133,14 @@ export default function AskAI() {
         ]);
       }
     } finally {
-      setSending(false);
+      if (inflight.current === req) {
+        inflight.current = null;
+        setSending(false);
+      }
     }
   }
+
+  const activeTitle = (activeChatId && chats.find((c) => c._id === activeChatId)?.title) || "New chat";
 
   function handleShowDemo() {
     setTurns((t) => [...t, { kind: "demo", turn: MOCK_AI_DEMO_TURN }]);
@@ -122,15 +166,21 @@ export default function AskAI() {
             onSelect={handleSelect}
             onNew={handleNew}
             onDelete={handleDelete}
+            onRename={handleRename}
             loading={chatsLoading}
           />
         </div>
 
-        <div className="flex flex-1 flex-col">
-          <div className="flex items-center justify-between border-b border-surface-border px-4 py-2.5">
-            <span className="flex items-center gap-1.5 text-[12.5px] text-ink-500">
+        {/* min-w-0: without it this flex child grows to the widest answer table instead of letting it scroll */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-surface-border px-4 py-2.5">
+            <h2 className="min-w-0 truncate text-[13.5px] font-semibold text-ink-900" title={activeTitle}>
+              {activeTitle}
+            </h2>
+            <span className="flex shrink-0 items-center gap-1.5 text-[12.5px] text-ink-500">
               <Sparkles className="h-3.5 w-3.5 text-brand-600" />
-              Answering for <strong className="font-medium text-ink-700">{activeCompany?.companyName}</strong>
+              <span className="hidden sm:inline">Answering for</span>
+              <strong className="max-w-[10rem] truncate font-medium text-ink-700">{activeCompany?.companyName}</strong>
             </span>
           </div>
 
@@ -152,6 +202,12 @@ export default function AskAI() {
               if (turn.kind === "not-connected")
                 return <AiNotConnectedNotice key={i} message={turn.message} onShowDemo={handleShowDemo} />;
               if (turn.kind === "demo") return <DemoInsightCard key={i} turn={turn.turn} onFollowUp={handleSend} />;
+              if (turn.kind === "stopped")
+                return (
+                  <p key={i} role="status" className="text-center text-[12.5px] text-ink-500">
+                    Generation stopped.
+                  </p>
+                );
               if (turn.kind === "error")
                 return (
                   <div key={i} className="flex flex-col items-center gap-1">
@@ -191,7 +247,7 @@ export default function AskAI() {
           </div>
 
           <SuggestedQuestions questions={MOCK_SUGGESTED_QUESTIONS} onPick={handleSend} />
-          <ChatInput onSend={handleSend} disabled={sending} />
+          <ChatInput onSend={handleSend} onStop={() => cancelInflight("user")} sending={sending} />
         </div>
       </div>
     </div>

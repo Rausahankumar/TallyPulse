@@ -30,7 +30,7 @@
 const crypto = require("crypto");
 const periodEngine = require("../analytics/periodEngine");
 
-const CATALOG_VERSION = "sp-1.2.0";
+const CATALOG_VERSION = "sp-1.3.0";
 
 const AMOUNT_BASIS = {
   // header.voucherTotalAmount: the corrected PARTY-LEDGER total (includes
@@ -56,6 +56,22 @@ const ENTITIES = {
     storage: { model: "Purchase", collection: "purchases" },
     partyDimension: "supplier",
   },
+  // AdjustmentNote-backed. forcedMatch is baked into every compiled pipeline's
+  // scope stage (compile.js scopeStage) - never a user-controlled filter, so
+  // a value_adjustment note can never be counted as a return no matter what
+  // the plan asks for. See docs/PROJECT_CONTEXT.md and the CN/DN diagnostic.
+  sales_return: {
+    id: "sales_return",
+    label: "Sales returns (Credit Notes)",
+    storage: { model: "AdjustmentNote", collection: "adjustmentnotes", forcedMatch: { classification: "sales_return" } },
+    partyDimension: "customer",
+  },
+  purchase_return: {
+    id: "purchase_return",
+    label: "Purchase returns (Debit Notes)",
+    storage: { model: "AdjustmentNote", collection: "adjustmentnotes", forcedMatch: { classification: "purchase_return" } },
+    partyDimension: "supplier",
+  },
 };
 
 // ---------- dimensions ----------
@@ -66,7 +82,7 @@ const DIMENSIONS = {
   date: {
     id: "date",
     label: "Date",
-    entities: ["sales", "purchase"],
+    entities: ["sales", "purchase", "sales_return", "purchase_return"],
     grains: ["voucher", "line"],
     source: { path: "header.voucherDate" },
     buckets: ["day", "week", "month", "quarter", "fy"],
@@ -78,33 +94,33 @@ const DIMENSIONS = {
   customer: {
     id: "customer",
     label: "Customer",
-    entities: ["sales"],
+    entities: ["sales", "sales_return"],
     grains: ["voucher", "line"],
     source: { path: "header.partyName" },
     cardinality: "high",
-    filterOps: ["eq_ci", "in_ci", "contains_ci"],
+    filterOps: ["eq_ci", "in_ci", "contains_ci", "new_in_period"],
     notes:
-      "Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). No customer master exists in Phase 1.",
+      "Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). new_in_period (value \"period\") keeps only parties whose Tally ledger was CREATED inside the query period (LedgerMaster.createdDate, exact name match); it cannot be combined with compare.",
   },
   supplier: {
     id: "supplier",
     label: "Supplier",
-    entities: ["purchase"],
+    entities: ["purchase", "purchase_return"],
     grains: ["voucher", "line"],
     source: { path: "header.partyName" },
     cardinality: "high",
-    filterOps: ["eq_ci", "in_ci", "contains_ci"],
-    notes: "Same party-name semantics as customer, on the Purchase collection (same as getTopSuppliers).",
+    filterOps: ["eq_ci", "in_ci", "contains_ci", "new_in_period"],
+    notes: "Same party-name semantics as customer, on the Purchase collection (same as getTopSuppliers), including new_in_period.",
   },
   product: {
     id: "product",
     label: "Product",
-    entities: ["sales", "purchase"],
+    entities: ["sales", "purchase", "sales_return", "purchase_return"],
     grains: ["line"],
     source: { path: "inventory.itemName" },
     cardinality: "high",
     filterOps: ["eq_ci", "in_ci", "contains_ci"],
-    notes: "Stock item name as stored on the voucher line.",
+    notes: "Stock item name as stored on the voucher line - the same raw-name identity already used for sales/purchase (no StockItemMaster merge; a differently-cased or misspelled name is a different product, exactly as elsewhere).",
   },
   productGroup: {
     id: "productGroup",
@@ -215,6 +231,68 @@ const METRICS = {
     status: "supported",
     description: "purchaseAmount / purchaseInvoiceCount (0 when there are no invoices).",
     disclosures: [],
+  },
+  returnAmount: {
+    id: "returnAmount",
+    label: "Return amount",
+    entities: ["sales_return", "purchase_return"],
+    grain: "voucher",
+    aggregation: { op: "sum", path: "header.voucherTotalAmount" },
+    sign: "positive",
+    amountBasis: AMOUNT_BASIS.VOUCHER_TOTAL_INCL_TAX,
+    status: "supported",
+    description: "Total value (party-ledger total, tax-inclusive) of active Credit/Debit Notes deterministically classified as a return (see docs/PROJECT_CONTEXT.md) for the given entity.",
+    disclosures: ["Only notes classified as a return by their item accounting-allocation pattern are counted; value-adjustment notes are excluded, never netted against sales/purchase totals."],
+  },
+  returnCount: {
+    id: "returnCount",
+    label: "Return count",
+    entities: ["sales_return", "purchase_return"],
+    grain: "voucher",
+    aggregation: { op: "count" },
+    sign: "n/a",
+    amountBasis: null,
+    status: "supported",
+    description: "Number of active Credit/Debit Notes classified as a return.",
+    disclosures: [],
+  },
+  // Product-level return metrics. Confirmed against real WE FOUR data (1,277 sampled active return lines):
+  // quantity is always positive on both sides; inventory.amount is Tally's own signed entry (negative on
+  // every sales_return line, positive on every purchase_return line - the item's inward/outward accounting
+  // sign, not a data error), so returnLineAmount sums the ABSOLUTE value (`abs: true`, compile.js) to read as
+  // a positive "value returned" regardless of side. This is the pre-tax LINE-item value (does not reconcile
+  // to returnAmount, which is the tax-inclusive voucher total and cannot be safely split across lines without
+  // a GST allocation the source data doesn't carry - same basis distinction as lineAmount vs invoiceAmount).
+  returnQuantity: {
+    id: "returnQuantity",
+    label: "Return quantity",
+    entities: ["sales_return", "purchase_return"],
+    grain: "line",
+    aggregation: { op: "sum", path: "inventory.quantity" },
+    sign: "positive",
+    amountBasis: null,
+    status: "supported",
+    description: "Sum of returned quantities on active Credit/Debit Note lines classified as a return.",
+    disclosures: [],
+    caveatRules: [
+      {
+        code: "mixed_units",
+        appliesUnless: { groupByIncludes: ["product"], orFilterOn: ["product"] },
+        message: "No unit of measure is stored, so this quantity may add unlike units (e.g. pieces and boxes).",
+      },
+    ],
+  },
+  returnLineAmount: {
+    id: "returnLineAmount",
+    label: "Return value (pre-tax, per item)",
+    entities: ["sales_return", "purchase_return"],
+    grain: "line",
+    aggregation: { op: "sum", path: "inventory.amount", abs: true },
+    sign: "positive",
+    amountBasis: AMOUNT_BASIS.LINE_ITEM_PRE_TAX,
+    status: "supported",
+    description: "Sum of the absolute pre-tax item value on active Credit/Debit Note lines classified as a return. Does not reconcile to returnAmount (the tax-inclusive voucher total).",
+    disclosures: ["Pre-tax line-item basis; does not reconcile to returnAmount (tax-inclusive voucher total)."],
   },
   lineAmount: {
     id: "lineAmount",
@@ -431,7 +509,12 @@ const QUERY_RULES = [
 
 const UNSUPPORTED_CAPABILITIES = [
   { id: "tax_breakdown", reason: "GST/tax amounts are not modelled in this phase.", unlocks: "ledger classification (later phase)" },
-  { id: "net_of_returns", reason: "Credit and debit notes are not imported, so sales/purchases are shown gross of returns.", unlocks: "credit/debit note sync (later phase)" },
+  {
+    id: "net_of_returns",
+    reason:
+      'Sales and purchase totals are shown gross of returns (Credit/Debit Notes are not netted against them). Sales/purchase returns themselves can be asked directly, for example "sales returns this month" or "purchase returns this month" - return reasons, return rate, partial/full status, GST-head impact, a per-product breakdown and net sales/purchases after returns are not available yet.',
+    unlocks: "per-product returns, return rate, net sales/purchases after returns",
+  },
   { id: "profit_margin", reason: "No cost/COGS data is available.", unlocks: "cost data (later phase)" },
   { id: "discount_analysis", reason: "Line discounts are not captured (stored discount fields are always zero).", unlocks: "parser change (later phase)" },
   { id: "cancelled_invoices", reason: "Cancelled vouchers are not reliably stored, so their counts would be wrong.", unlocks: "sync change (later phase)" },

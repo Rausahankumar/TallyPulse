@@ -163,7 +163,7 @@ function buildCases(ctx) {
   const { t, topCustomer } = ctx;
   const cases = [
     {
-      id: "Q01", area: "period+metric", q: "What was our revenue in August 2025?",
+      id: "Q01", area: "period+metric", q: "What was our turnover in August 2025?",
       expect: { entity: "sales", period: S.AUG, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [], filters: [] },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: S.AUG, metrics: ["invoiceAmount"], filters: [] },
       oracle: async (res) => cmpScalar(res, null, { invoiceAmount: (await oTotals(t, "sales", "2025-08-01", "2025-08-31")).amount, invoiceCount: (await oTotals(t, "sales", "2025-08-01", "2025-08-31")).count }),
@@ -181,7 +181,7 @@ function buildCases(ctx) {
       oracle: async (res) => { const o = await oTotals(t, "purchase", "2025-09-01", "2025-09-30"); return cmpScalar(res, null, { purchaseAmount: o.amount, purchaseInvoiceCount: o.count }); },
     },
     {
-      id: "Q04", area: "ranking", q: "Top 5 customers by revenue in FY 2025-26",
+      id: "Q04", area: "ranking", q: "Top 5 customers by turnover in FY 2025-26",
       expect: { entity: "sales", period: FY2526, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [{ dim: "customer" }], filters: [], limit: 5, sort: { by: "invoiceAmount", dir: "desc" } },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: FY2526, metrics: ["invoiceAmount"], groupBy: [{ dim: "customer" }], filters: [], sort: [{ by: "invoiceAmount", dir: "desc" }], limit: 5 },
       oracle: async (res) => cmpTop(res, sortedDesc(await oByParty(t, "sales", FY_FROM, FY_TO), (x) => x.amount), "invoiceAmount", 5, (x) => x.amount, "customer"),
@@ -193,13 +193,13 @@ function buildCases(ctx) {
       oracle: async (res) => cmpTop(res, sortedDesc(await oByParty(t, "purchase", "2025-04-01", "2025-09-30"), (x) => x.amount), "purchaseAmount", 5, (x) => x.amount, "supplier"),
     },
     {
-      id: "Q06", area: "dimension+metric", q: "Top 10 products by revenue in August 2025",
+      id: "Q06", area: "dimension+metric", q: "Top 10 products by turnover in August 2025",
       expect: { entity: "sales", period: S.AUG, requiredMetrics: ["lineAmount"], allowedExtraMetrics: ["quantity", "lineCount"], groupBy: [{ dim: "product" }], filters: [], limit: 10, sort: { by: "lineAmount", dir: "desc" } },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: S.AUG, metrics: ["lineAmount"], groupBy: [{ dim: "product" }], filters: [], sort: [{ by: "lineAmount", dir: "desc" }], limit: 10 },
       oracle: async (res) => cmpTop(res, sortedDesc(await oByItem(t, "sales", "2025-08-01", "2025-08-31"), (x) => x.amount), "lineAmount", 10, (x) => x.amount, "product"),
     },
     {
-      id: "Q07", area: "dimension(date)", q: "Monthly revenue and number of invoices for FY 2025-26",
+      id: "Q07", area: "dimension(date)", q: "Monthly turnover and number of invoices for FY 2025-26",
       expect: { entity: "sales", period: FY2526, requiredMetrics: ["invoiceAmount", "invoiceCount"], groupBy: [{ dim: "date", bucket: "month" }], filters: [] },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: FY2526, metrics: ["invoiceAmount", "invoiceCount"], groupBy: [{ dim: "date", bucket: "month" }], filters: [] },
       oracle: async (res) => {
@@ -229,7 +229,7 @@ function buildCases(ctx) {
       oracle: async (res) => cmpChange(res, await oByParty(t, "purchase", "2025-09-01", "2025-09-30"), await oByParty(t, "purchase", "2025-08-01", "2025-08-31"), "purchaseAmount", "supplier", (d) => d > 0),
     },
     {
-      id: "Q10", area: "dimension(2)", q: "Monthly revenue by voucher type for FY 2025-26",
+      id: "Q10", area: "dimension(2)", q: "Monthly turnover by voucher type for FY 2025-26",
       expect: { entity: "sales", period: FY2526, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [{ dim: "date", bucket: "month" }, { dim: "voucherType" }], filters: [] },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: FY2526, metrics: ["invoiceAmount"], groupBy: [{ dim: "date", bucket: "month" }, { dim: "voucherType" }], filters: [] },
       oracle: async (res) => {
@@ -246,7 +246,7 @@ function buildCases(ctx) {
       },
     },
     {
-      id: "Q11", area: "comparison", q: "Revenue in August 2025 compared with July 2025",
+      id: "Q11", area: "comparison", q: "Turnover in August 2025 compared with July 2025",
       expect: { entity: "sales", period: S.AUG, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [], filters: [], compare: { mode: "custom", period: S.JUL } },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: S.AUG, metrics: ["invoiceAmount"], filters: [], compare: { mode: "custom", period: S.JUL } },
       oracle: async (res) => {
@@ -262,7 +262,7 @@ function buildCases(ctx) {
       },
     },
     {
-      id: "Q12", area: "filter", q: `Revenue from ${topCustomer} in FY 2025-26`,
+      id: "Q12", area: "filter", q: `Turnover from ${topCustomer} in FY 2025-26`,
       expect: { entity: "sales", period: FY2526, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [], filters: [{ dim: "customer", value: topCustomer }] },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: FY2526, metrics: ["invoiceAmount"], filters: [{ dim: "customer", op: "eq_ci", value: topCustomer }] },
       oracle: async (res) => {
@@ -272,25 +272,25 @@ function buildCases(ctx) {
       },
     },
     {
-      id: "Q13", area: "period(relative)+series", q: "Weekly revenue for the last 90 days",
+      id: "Q13", area: "period(relative)+series", q: "Weekly turnover for the last 90 days",
       expect: { entity: "sales", period: { kind: "last_90_days" }, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [{ dim: "date", bucket: "week" }], filters: [] },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "last_90_days" }, metrics: ["invoiceAmount"], groupBy: [{ dim: "date", bucket: "week" }], filters: [] },
       oracle: null, // relative window: bounds come from periodEngine, so no independent oracle
     },
     {
-      id: "Q14", area: "comparison(mode)", q: "How is revenue this month doing against the complete last month?",
+      id: "Q14", area: "comparison(mode)", q: "How is turnover this month doing against the complete last month?",
       expect: { entity: "sales", period: { kind: "current_month" }, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [], filters: [], compare: { mode: "full_previous" } },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_month" }, metrics: ["invoiceAmount"], filters: [], compare: { mode: "full_previous" } },
       oracle: null,
     },
     {
-      id: "Q15", area: "comparison(mode)", q: "Revenue for the current quarter versus the same period last year",
+      id: "Q15", area: "comparison(mode)", q: "Turnover for the current quarter versus the same period last year",
       expect: { entity: "sales", period: { kind: "current_quarter" }, requiredMetrics: ["invoiceAmount"], allowedExtraMetrics: ["invoiceCount"], groupBy: [], filters: [], compare: { mode: "same_period_last_year" } },
       golden: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "current_quarter" }, metrics: ["invoiceAmount"], filters: [], compare: { mode: "same_period_last_year" } },
       oracle: null,
     },
-    { id: "D01", area: "unsupported-intent", q: "Why did revenue drop in November 2025?", expectDecline: true },
-    { id: "D02", area: "unsupported-intent", q: "Forecast revenue for next quarter", expectDecline: true },
+    { id: "D01", area: "unsupported-intent", q: "Why did turnover drop in November 2025?", expectDecline: true },
+    { id: "D02", area: "unsupported-intent", q: "Forecast turnover for next quarter", expectDecline: true },
     { id: "D03", area: "unsupported-intent", q: "Which customers should I focus on?", expectDecline: true },
   ];
   return cases;

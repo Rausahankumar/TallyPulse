@@ -5,6 +5,7 @@ const SyncCheckpoint = require("../../models/syncCheckpoint.model");
 const {
   getSalesVouchersSinceAlterId,
   getPurchaseVouchersSinceAlterId,
+  getAdjustmentNoteVouchersSinceAlterId,
   getPendingVoucherAlterIds,
 } = require("../odbc/odbcService");
 const { parseTallyId } = require("../parser/tallyParser");
@@ -20,6 +21,7 @@ const {
 const {
   processSinglePurchaseVoucher,
 } = require("../import/tallyPurchaseImport");
+const { createAdjustmentNotePersistence } = require("./adjustmentNotePersistence");
 const { verifyOpenTallyCompany } = require("../auth/tallyCompanyGuard");
 const { assertBatchOwnership } = require("../tally/companyOwnership");
 const {
@@ -77,7 +79,30 @@ const PURCHASE_SYNC_MODULE = {
   processVoucher: processSinglePurchaseVoucher,
 };
 
-const SYNC_MODULES = [SALES_SYNC_MODULE, PURCHASE_SYNC_MODULE];
+// Credit Note / Debit Note - two modules (own checkpoint, own lock each,
+// matching the Sales/Purchase convention exactly) sharing one Tally fetch
+// shape (getAdjustmentNoteVouchersSinceAlterId) and one persistence factory
+// (adjustmentNotePersistence.js), parameterized by noteType.
+const { processSingleAdjustmentNoteVoucher: processCreditNote } = createAdjustmentNotePersistence({ noteType: "credit" });
+const { processSingleAdjustmentNoteVoucher: processDebitNote } = createAdjustmentNotePersistence({ noteType: "debit" });
+
+const CREDIT_NOTE_SYNC_MODULE = {
+  voucherType: "Credit Note",
+  classificationKey: "creditNote",
+  fetchVouchersSinceAlterId: getAdjustmentNoteVouchersSinceAlterId,
+  fetchPendingAlterIds: getPendingVoucherAlterIds,
+  processVoucher: processCreditNote,
+};
+
+const DEBIT_NOTE_SYNC_MODULE = {
+  voucherType: "Debit Note",
+  classificationKey: "debitNote",
+  fetchVouchersSinceAlterId: getAdjustmentNoteVouchersSinceAlterId,
+  fetchPendingAlterIds: getPendingVoucherAlterIds,
+  processVoucher: processDebitNote,
+};
+
+const SYNC_MODULES = [SALES_SYNC_MODULE, PURCHASE_SYNC_MODULE, CREDIT_NOTE_SYNC_MODULE, DEBIT_NOTE_SYNC_MODULE];
 
 const DEFAULT_INTERVAL_SECONDS =
   Number(process.env.TALLY_SYNC_INTERVAL_SECONDS) || 60;
@@ -428,7 +453,10 @@ async function runSyncForCompanyModule(
     let firstFailureMessage = null;
 
     for (const voucher of vouchers) {
-      const result = await processVoucher(voucher, tenantId);
+      // companyGuid is passed through too (Sales/Purchase mappers ignore the
+      // extra argument) - AdjustmentNote's mapper needs it, and it must come
+      // from this trusted, already-ownership-verified scope, never guessed.
+      const result = await processVoucher(voucher, tenantId, companyGuid);
 
       if (result.status === "failed") {
         failed += 1;
@@ -640,4 +668,6 @@ module.exports = {
   runSyncForCompanyModule,
   SALES_SYNC_MODULE,
   PURCHASE_SYNC_MODULE,
+  CREDIT_NOTE_SYNC_MODULE,
+  DEBIT_NOTE_SYNC_MODULE,
 };

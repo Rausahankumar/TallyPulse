@@ -58,6 +58,10 @@ export class ApiError extends Error {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Cancelled by the caller (AbortController - e.g. the chat's Stop button): not a failure, never retried.
+    if (axios.isCancel(error)) {
+      return Promise.reject(new ApiError("The request was cancelled.", { code: "CANCELED" }));
+    }
     if (error.code === "ECONNABORTED") {
       return Promise.reject(
         new ApiError(

@@ -107,7 +107,7 @@ function accumulators(metrics) {
   const acc = {};
   for (const id of baseMetricsNeeded(metrics)) {
     const a = CATALOG.metrics[id].aggregation;
-    acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: `$${a.path}` };
+    acc[`m_${id}`] = a.op === "count" ? { $sum: 1 } : { $sum: a.abs ? { $abs: `$${a.path}` } : `$${a.path}` };
   }
   return acc;
 }
@@ -140,17 +140,23 @@ const HAVING_OPS = { gt: "$gt", gte: "$gte", lt: "$lt", lte: "$lte", eq: "$eq", 
 
 // ---------- shared prefix: scope -> filters -> unwind ----------
 
-function scopeStage(tenantId, range) {
-  return { $match: buildVoucherMatchStage({ tenantId, from: range.from || undefined, to: range.to || undefined }) };
+function scopeStage(tenantId, range, entity) {
+  const match = buildVoucherMatchStage({ tenantId, from: range.from || undefined, to: range.to || undefined });
+  // sales_return / purchase_return: a HARD, never-user-controlled match on
+  // AdjustmentNote.classification - the user's filters/groupBy can never
+  // widen this to include value_adjustment notes. See semanticCatalog.js's
+  // entity definitions.
+  const forced = CATALOG.entities[entity] && CATALOG.entities[entity].storage.forcedMatch;
+  return { $match: forced ? { ...match, ...forced } : match };
 }
 
-function buildPrefix(n, tenantId, range, { groupItemNames } = {}) {
-  const stages = [scopeStage(tenantId, range)];
+function buildPrefix(n, tenantId, range, { groupItemNames, newPartyNames } = {}) {
+  const stages = [scopeStage(tenantId, range, n.entity)];
 
   const voucherMatch = {};
   const and = [];
   for (const f of n.filters) {
-    if (PARTY_DIMS.has(f.dim)) voucherMatch["header.partyName"] = regexCondition(f);
+    if (PARTY_DIMS.has(f.dim)) voucherMatch["header.partyName"] = f.op === "new_in_period" ? { $in: newPartyNames } : regexCondition(f);
     else if (f.dim === "voucherType") voucherMatch["header.voucherType"] = regexCondition(f);
     else if (n.grain === "voucher") {
       // Invoice-level query filtered by a line attribute: keep invoices that CONTAIN it.
@@ -303,9 +309,11 @@ function assertPipelineSafe(pipeline, tenantId) {
  * @param {string} context.tenantId       from the authorized company context ONLY
  * @param {string[]} [context.groupItemNames] required when the plan filters by productGroup:
  *        the item names the executor read from THIS tenant's Stock Item master
+ * @param {string[]} [context.newPartyNames] required when the plan has a new_in_period filter: exact
+ *        party names the executor read from THIS tenant's Ledger master
  * @returns {{model:string, entity:string, rollup:boolean, queries:Array<{key,model,pipeline,options}>}}
  */
-function compileQuery(n, { tenantId, groupItemNames } = {}) {
+function compileQuery(n, { tenantId, groupItemNames, newPartyNames } = {}) {
   if (!isValidatedPlan(n)) throw new Error("compileQuery only accepts plans produced by validateQueryPlan.");
   if (typeof tenantId !== "string" || !tenantId.trim()) throw new Error("compileQuery requires the authorized tenantId.");
 
@@ -313,7 +321,11 @@ function compileQuery(n, { tenantId, groupItemNames } = {}) {
   if (needsGroupNames && (!Array.isArray(groupItemNames) || groupItemNames.length > LIMITS.maxGroupItemNames)) {
     throw new Error("compileQuery: a productGroup filter needs resolved item names.");
   }
-  const ctx = { groupItemNames };
+  const needsNewParties = n.filters.some((f) => f.op === "new_in_period");
+  if (needsNewParties && (!Array.isArray(newPartyNames) || newPartyNames.length > LIMITS.maxGroupItemNames)) {
+    throw new Error("compileQuery: a new_in_period filter needs resolved party names.");
+  }
+  const ctx = { groupItemNames, newPartyNames };
   const model = CATALOG.entities[n.entity].storage.model;
   const options = { maxTimeMS: LIMITS.queryTimeoutMs, allowDiskUse: false };
   const queries = [];

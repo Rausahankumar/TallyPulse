@@ -374,4 +374,10 @@ module.exports = {
   parseTallyBoolean,
   unwrapJsonExValue,
   computePartyLedgerTotal,
+  // Exported for adjustmentNoteParser.js, which needs the same JSONEx
+  // unwrap/collection-finding conventions as this file's own
+  // parseTallyVoucher without duplicating them. Not used by any other
+  // existing caller - purely additive.
+  safeString,
+  findCollectionByKeywords,
 };

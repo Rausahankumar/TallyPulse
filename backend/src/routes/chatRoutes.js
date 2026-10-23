@@ -5,6 +5,7 @@ const {
   sendChatMessage,
   listChats,
   getChat,
+  renameChat,
   deleteChat,
 } = require("../controllers/chatController");
 
@@ -19,6 +20,7 @@ router.get("/", listChats);
 router.post("/message", sendChatMessage);
 router.post("/:chatId/message", sendChatMessage);
 router.get("/:chatId", getChat);
+router.patch("/:chatId", renameChat);
 router.delete("/:chatId", deleteChat);
 
 module.exports = router;

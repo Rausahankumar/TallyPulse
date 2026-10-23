@@ -25,7 +25,12 @@ global.fetch = () => { netCalls += 1; throw new Error("network blocked in test")
 http.request = () => { netCalls += 1; throw new Error("network blocked in test"); };
 https.request = () => { netCalls += 1; throw new Error("network blocked in test"); };
 
-const { tryAnswerWithQueryEngine, getTenantResolver } = require("./src/services/query/queryChat");
+const { tryAnswerWithQueryEngine: realTryAnswer, getTenantResolver } = require("./src/services/query/queryChat");
+// P-SF: the engine now reads ONE tenant date context per turn. Synthetic (fake-resolver) turns have no database,
+// so they get a fixed one (latest voucher 2025-12-08 = the fake freshness date; history from 2024-04-01).
+const { buildDateContext } = require("./src/services/analytics/referenceDate");
+const SYNTH_DATES = buildDateContext({ sales: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) }, purchase: { earliest: new Date(2024, 3, 1), latest: new Date(2025, 11, 8) } }, new Date(2025, 11, 8, 18));
+const tryAnswerWithQueryEngine = (a) => realTryAnswer(a && a.deps && a.deps.resolveEntity && !a.deps.getDateContext ? { ...a, deps: { ...a.deps, getDateContext: async () => SYNTH_DATES } } : a);
 const { formatQueryAnswer, formatNonAnswer, fmtMoney } = require("./src/services/query/answerFormatter");
 const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
@@ -98,7 +103,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       r = await ask(q, { plannerClient: p, execute: e2 });
       check(`unsupported "${q}": honest message, no engine, no Claude`, r.handled && e2.calls.length === 0 && p.requests.length === 0 && r.structured.details.toolCalls.length === 0 && r.structured.details.queryEngine.status === "unsupported" && r.structured.answer.length > 20, r.structured && r.structured.answer);
     }
-    const clarify = [["sales this year", /financial year/i], ["sales in April", /Which year/], ["total sales", /Which period/], ["sales in fy 2024-27", /consecutive/i], ["sales of Nonexistent Corp last month", /couldn.t find/i]];
+    const clarify = [["sales this year", /financial year/i], ["sales in April", /Which year/], ["total sales", /Which period/], ["sales in fy 2024-27", /consecutive/i], ["sales of Nonexistent Corp last month", /couldn.t find/i], ["product growth", /sales or purchase/i], ["growth", /sales or purchase/i]];
     for (const [q, re] of clarify) {
       const e2 = engine(okScalar());
       const p = planner(() => { throw new Error("no"); });
@@ -117,14 +122,15 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   {
     const eng = engine(okScalar());
     const p = planner(() => toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }), assumptions: ["Treated revenue as invoice amount"] }));
-    let r = await ask("show revenue last month", { plannerClient: p, execute: eng });
+    let r = await ask("show turnover last month", { plannerClient: p, execute: eng });
     check("exactly one planner call, then the engine runs the validated plan", r.handled && p.requests.length === 1 && eng.calls.length === 1 && eng.calls[0].plan.metrics[0] === "invoiceAmount");
     check("planner-derived plan is disclosed in the answer text", /Interpretation \(AI-assisted\): Treated revenue as invoice amount/.test(r.structured.answer));
     check("usage/meta is returned for cost visibility", r.structured.details.queryEngine.route === "planner" && r.structured.details.queryEngine.claudeCalls === 1 && r.structured.details.queryEngine.usage.cache_read_input_tokens === 2694);
     check("planner request has no tenant/company terms", !/tenant|company|guid|mongo/i.test(JSON.stringify(p.requests[0])));
 
     const e2 = engine(okScalar());
-    r = await ask("why did revenue drop last month", { plannerClient: planner(() => toolReply({ decline: { code: "not_a_data_query", message: "That asks for an explanation, not a figure." } })), execute: e2 });
+    // (question changed from "why did revenue drop last month", which G7 now answers without the planner)
+    r = await ask("explain the trend in purchases", { plannerClient: planner(() => toolReply({ decline: { code: "not_a_data_query", message: "That asks for an explanation, not a figure." } })), execute: e2 });
     check("planner decline (unsupported): honest message + scope hint, engine not called", r.handled && e2.calls.length === 0 && /explanation/.test(r.structured.answer) && /Sales and Purchase/.test(r.structured.answer));
     r = await ask("which customers should i focus on", { plannerClient: planner(() => toolReply({ decline: { code: "needs_clarification", message: "Focus by what measure - amount or growth?" } })), execute: e2 });
     check("planner decline (clarification): the planner's question goes back to the user", r.handled && /amount or growth/.test(r.structured.answer) && e2.calls.length === 0);
@@ -138,14 +144,14 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     ];
     for (const [label, client] of failures) {
       const e3 = engine(okScalar());
-      r = await ask("show revenue last month", { plannerClient: client, execute: e3 });
+      r = await ask("show turnover last month", { plannerClient: client, execute: e3 });
       // F3: a planner failure is answered honestly HERE (handled) so the legacy Claude chat is never called.
       check(`planner failure (${label}) -> honest failure message, handled (no legacy chat), engine never runs`, r.handled === true && r.structured.details.queryEngine.status === "planner_failed" && /^planner_/.test(r.structured.details.queryEngine.code) && e3.calls.length === 0 && r.structured.details.toolCalls.length === 0, JSON.stringify(r.structured && r.structured.details.queryEngine));
     }
 
     const e4 = engine(okScalar());
     const p4 = planner(() => toolReply({ plan: planOf({ tenantId: "EVIL" }) }));
-    r = await ask("show revenue last month", { plannerClient: p4, execute: e4 });
+    r = await ask("show turnover last month", { plannerClient: p4, execute: e4 });
     check("a tenant field smuggled through the planner never reaches the engine", e4.calls.length === 0);
   }
 
@@ -154,14 +160,21 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   {
     const p = planner(() => toolReply({ plan: planOf({}) }));
     const eng = engine(okScalar());
-    let r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "show revenue last month", conversationHistory: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: p, execute: eng } });
+    let r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "show turnover last month", conversationHistory: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: p, execute: eng } });
     check("needs_planner + chat history -> NOT handled (legacy keeps follow-up context), no planner call", r.handled === false && r.reason === "follow_up_uses_legacy_chat" && p.requests.length === 0);
     r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "total sales last month", conversationHistory: [{ role: "user", content: "hi" }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
     check("a self-contained router-supported question is still answered mid-conversation", r.handled === true);
     r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "GST on sales", conversationHistory: [{ role: "user", content: "hi" }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
     check("an unsupported question is still refused honestly mid-conversation", r.handled === true && r.structured.details.queryEngine.status === "unsupported");
+    // P0 cost-leak fix (2nd live incident): year_missing is a SKIP_ROUTER_CODES dead-end - the same real-money
+    // leak proven live for period_label_unsupported and entity_not_resolved - so this is now a free refusal
+    // even mid-conversation, not a legacy-with-history detour (plannerClient: forbidden proves 0 Claude).
     r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "sales in April", conversationHistory: [{ role: "user", content: "hi" }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
-    check("a clarification-type question mid-conversation goes to the legacy path (it may use context)", r.handled === false);
+    check("a dead-end clarification code stays free even mid-conversation (no more legacy detour)", r.handled === true && r.structured.details.queryEngine.status === "needs_clarification" && r.structured.details.queryEngine.code === "year_missing" && r.structured.details.queryEngine.claudeCalls === 0);
+
+    // a follow-up whose name points at an earlier turn keeps the history-aware legacy path (not a free refusal)
+    r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "compare the two", conversationHistory: [{ role: "user", content: "Top 5 customers this month" }, { role: "assistant", content: "..." }], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
+    check("a follow-up that points at earlier turns (unresolved name + follow-up cue) still reaches history-aware legacy chat", r.handled === false && r.reason === "follow_up_uses_legacy_chat");
 
     process.env.QUERY_ENGINE_CHAT = "off";
     const e5 = engine(okScalar());
@@ -170,6 +183,31 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     delete process.env.QUERY_ENGINE_CHAT;
     r = await ask("total sales last month", { plannerClient: forbidden, execute: e5 });
     check("switch removed -> handled again", r.handled === true);
+  }
+
+  // ============================================================ C2. P0 cost leak (widened after a 2nd live
+  // incident): EVERY SKIP_ROUTER_CODES dead-end must stay a free deterministic refusal even mid-conversation,
+  // not just period_label_unsupported. A single-code allowlist here was whack-a-mole: fixing
+  // period_label_unsupported alone still left entity_not_resolved (and every other dead-end code) leaking to
+  // legacy chat live. Any structured follow-up context already had its chance via the merge-follow-up path
+  // above; what's left for legacy-with-history to add for a dead-end code is Claude guessing past a refusal
+  // the router deliberately gave, at real Claude cost.
+  section("C2. P0 cost leak: every SKIP_ROUTER_CODES dead-end stays free even with conversation history");
+  {
+    const history = [{ role: "user", content: "Sales performance by product group/category of aug 2025" }, { role: "assistant", content: "..." }];
+    for (const q of [
+      "top 10 customers grew or declined — q2 FY-2025 vs q1 FY-2025 Sales performance by product group/category",
+      "top 10 customers grew or declined q2 FY-2025 vs q1 FY-2025",
+      "sales performance by product group/category q2 FY-2025 vs q1 FY-2025",
+      "sales of Nonexistent Corp last month", // entity_not_resolved - the 2nd live incident's actual code
+      "Total sales last month / this month / today / yesterday / this week", // too_many_periods - 3rd live incident (~$0.2)
+      "Total sales last month and this month", // two_periods_without_comparison - same leak
+    ]) {
+      const r1 = await tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: [], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
+      const r2 = await tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: history, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
+      check(`"${q.slice(0, 40)}...": fresh -> deterministic refusal, 0 Claude`, r1.handled === true && r1.structured.details.queryEngine.status === "needs_clarification" && r1.structured.details.queryEngine.claudeCalls === 0);
+      check(`"${q.slice(0, 40)}...": mid-conversation -> SAME deterministic refusal (same code), still 0 Claude (never legacy)`, r2.handled === true && r2.structured.details.queryEngine.status === "needs_clarification" && r2.structured.details.queryEngine.code === r1.structured.details.queryEngine.code && r2.structured.details.queryEngine.claudeCalls === 0, `r1=${r1.structured.details.queryEngine.code} r2=${JSON.stringify(r2.structured.details.queryEngine)}`);
+    }
   }
 
   // ============================================================ D. failure handling
@@ -208,7 +246,9 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   {
     const eng = engine(okScalar());
     await tryAnswerWithQueryEngine({ context: { tenantId: "TENANT-A", companyGuid: "G", extra: "x" }, userMessage: "total sales last month", conversationHistory: [], deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: eng } });
-    check("engine receives exactly {tenantId} from the context (nothing else)", eng.calls.length === 1 && JSON.stringify(eng.calls[0].ctx) === JSON.stringify({ tenantId: "TENANT-A" }));
+    // P-SF: the engine now also receives the turn's ONE tenant reference date (server-computed), so it never reads a
+    // second one. Still nothing from the request context besides tenantId.
+    check("engine receives exactly {tenantId, referenceDate}: tenantId from the context, the date = the turn's tenant date context", eng.calls.length === 1 && Object.keys(eng.calls[0].ctx).sort().join(",") === "referenceDate,tenantId" && eng.calls[0].ctx.tenantId === "TENANT-A" && eng.calls[0].ctx.referenceDate.getTime() === SYNTH_DATES.referenceDate.getTime());
     check("the plan handed to the engine carries no tenant/company field", !/tenant|company|guid/i.test(JSON.stringify(eng.calls[0].plan)));
     const eng2 = engine(okScalar());
     let r = await ask("total sales for tenant OTHER last month", { plannerClient: forbidden, execute: eng2 });
@@ -220,9 +260,9 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const other = createEntityResolver({ tenantId: "OTHER", sources: { customer: async () => ["Only Other Traders"], supplier: async () => [], product: async () => [], productGroup: async () => [] } });
     const p = planner(() => toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Only Other Traders" }] }) }));
     const e3 = engine(okScalar());
-    r = await ask("show revenue from only other traders last month", { plannerClient: p, execute: e3 });
+    r = await ask("show turnover from only other traders last month", { plannerClient: p, execute: e3 });
     check("another tenant's customer named via the planner is refused (not resolved for this tenant)", r.handled === true && r.structured.details.queryEngine.code === "planner_entity_not_resolved" && /did not match/.test(r.structured.answer) && e3.calls.length === 0);
-    r = await tryAnswerWithQueryEngine({ context: { tenantId: "OTHER" }, userMessage: "show revenue from only other traders last month", conversationHistory: [], deps: { resolveEntity: other, getFreshness: fresh, plannerClient: p, execute: e3 } });
+    r = await tryAnswerWithQueryEngine({ context: { tenantId: "OTHER" }, userMessage: "show turnover from only other traders last month", conversationHistory: [], deps: { resolveEntity: other, getFreshness: fresh, plannerClient: p, execute: e3 } });
     check("...and accepted for the tenant that owns it", r.handled === true && e3.calls.length === 1);
 
     const src = fs.readFileSync(path.join(__dirname, "src/services/query/queryChat.js"), "utf8").replace(/\/\/.*$/gm, "");
@@ -270,7 +310,8 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     f = formatQueryAnswer({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }] }), result: okScalar({ assumptions: [{ code: "a", message: "Relative periods are anchored to the latest synced voucher date (2025-12-08), not the wall clock." }], warnings: [{ code: "w", message: "Careful." }] }), routerAssumptions: [{ code: "period_defaulted_to_all_time", message: "No period was stated, so all available history is used." }], plannerAssumptions: ["I assumed X"], source: "planner" });
     check("header shows the filter; notes list interpretation, router assumption, anchoring and basis; warnings separate", /customer: Dhingra General Store/.test(f.text) && /Interpretation \(AI-assisted\): I assumed X/.test(f.text) && /all available history/.test(f.text) && /anchored to the latest synced voucher date/.test(f.text) && f.warnings.length === 1 && f.warnings[0] === "Careful.");
     const many = formatQueryAnswer({ plan: pl, result: okScalar({ assumptions: Array.from({ length: 12 }, (_, i) => ({ message: `note ${i}` })) }) });
-    check("notes are capped and de-duplicated", (many.text.match(/•/g) || []).length <= 6);
+    // P-SF raised the cap from 6 to 8 so coverage / period-scope / follow-up notes never push the basis note out.
+    check("notes are capped (8) and de-duplicated", (many.text.match(/•/g) || []).length <= 8);
     f = formatQueryAnswer({ plan: planOf({ entity: "purchase", metrics: ["lineAmount", "quantity"] }), result: okScalar({ entity: "purchase", metrics: ["lineAmount", "quantity"], amountBasis: { lineAmount: "line_item_pre_tax" }, totals: { values: { lineAmount: 10, quantity: 3.5 } } }) });
     check("line amounts disclosed as before tax; quantities are plain numbers", /before tax/.test(f.text) && /Quantity: 3\.5/.test(f.text));
     const a = formatQueryAnswer({ plan: pl, result: okScalar() }).text;
@@ -330,7 +371,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   section("I. real tenant + fake planner: planner plan executed by the real engine");
   {
     const p = planner(() => toolReply({ plan: planOf({ period: { kind: "custom", from: "2025-08-01", to: "2025-08-31" }, metrics: ["invoiceAmount"] }), assumptions: ["Revenue = invoice amount"] }));
-    const r = await tryAnswerWithQueryEngine({ context: realCtx, userMessage: "show revenue in August 2025", conversationHistory: [], deps: { plannerClient: p } });
+    const r = await tryAnswerWithQueryEngine({ context: realCtx, userMessage: "show turnover in August 2025", conversationHistory: [], deps: { plannerClient: p } });
     const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const day = { $dateToString: { format: "%Y-%m-%d", date: "$header.voucherDate", timezone: TZ } };
     const o = await Sale.aggregate([{ $match: { tenantId, voucherStatus: "active" } }, { $addFields: { d: day } }, { $match: { d: { $gte: "2025-08-01", $lte: "2025-08-31" } } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
@@ -350,7 +391,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     const { sendChatMessage } = require("./src/controllers/chatController");
     const Chat = require("./src/models/chat.model");
     const userId = new mongoose.Types.ObjectId();
-    const mkRes = () => { const r = { code: 0, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
+    const mkRes = () => { const r = { code: 0, body: null, on() { return r; }, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
     const made = [];
     const send = async (message, chatId) => {
       const res = mkRes();
@@ -378,8 +419,12 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       // a question the engine path does not handle (needs_planner + history) reaches legacy
       const first = await send("total sales from 2025-08-01 to 2025-08-31");
       legacyCalls.length = 0;
-      res = await send("show revenue last month", first.body.chatId);
+      res = await send("show turnover last month", first.body.chatId);
       check("controller: needs_planner inside an existing chat falls through to the legacy handler with full context", res.code === 200 && legacyCalls.length === 1 && legacyCalls[0].conversationHistory.length >= 2 && res.body.data.answer === "LEGACY ANSWER");
+      // G7 through the REAL controller, mid-conversation: answered here, legacy chat NOT called
+      legacyCalls.length = 0;
+      res = await send("How is my business doing?", first.body.chatId);
+      check("controller: G7 question inside an existing chat -> 200 honest answer, legacy chat NOT called, 0 Claude", res.code === 200 && legacyCalls.length === 0 && /broader interpretation/.test(res.body.data.answer) && res.body.data.details.queryEngine.code === "reasoning_not_supported" && res.body.data.details.queryEngine.claudeCalls === 0);
       res = await send("");
       check("controller: empty message still rejected (400) exactly as before", res.code === 400);
 
@@ -389,11 +434,31 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       delete process.env.ANTHROPIC_API_KEY;
       try {
         legacyCalls.length = 0;
-        res = await send("show revenue last month");
+        res = await send("show turnover last month");
         check("controller: planner failure in a new chat -> 200 with an honest 'planner unavailable' answer, legacy chat NOT called", res.code === 200 && legacyCalls.length === 0 && /planner is unavailable/i.test(res.body.data.answer) && res.body.data.details.queryEngine.status === "planner_failed", JSON.stringify(res.body).slice(0, 240));
       } finally {
         if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey;
       }
+
+      // P0-1 end to end through the REAL controller and the REAL per-tenant resolver: the name lookup
+      // fails (Sale.distinct rejects - nothing is read or written), so no legacy chat and no planner.
+      const origDistinct = Sale.distinct;
+      const missing = Symbol("none");
+      const ownDistinct = Object.prototype.hasOwnProperty.call(Sale, "distinct") ? origDistinct : missing;
+      getTenantResolver(tenantId, Date.now() + 6 * 60 * 1000); // swap in a fresh (unloaded) resolver for this tenant
+      Sale.distinct = () => ({ maxTimeMS: () => Promise.reject(new Error("MongoNetworkError: simulated")) });
+      try {
+        legacyCalls.length = 0;
+        res = await send('sales to "Zeta Imaginary Traders" last month');
+        check("controller: resolver outage in a new chat -> 200 honest 'try again', legacy chat NOT called", res.code === 200 && legacyCalls.length === 0 && /try again/i.test(res.body.data.answer) && res.body.data.details.queryEngine.status === "temporarily_unavailable", JSON.stringify(res.body).slice(0, 240));
+        res = await send('sales to "Zeta Imaginary Traders" last month', res.body.chatId);
+        check("controller: resolver outage mid-conversation -> still honest, legacy chat NOT called", res.code === 200 && legacyCalls.length === 0 && res.body.data.details.queryEngine.status === "temporarily_unavailable");
+      } finally {
+        if (ownDistinct === missing) delete Sale.distinct;
+        else Sale.distinct = ownDistinct;
+      }
+      res = await send('sales to "Zeta Imaginary Traders" last month');
+      check("controller: after the outage the same tenant resolver reloads (lookup works again: honest 'not found', not 'unavailable')", res.code === 200 && legacyCalls.length === 0 && res.body.data.details.queryEngine.code === "entity_not_resolved");
     } finally {
       await Chat.deleteMany({ _id: { $in: made }, tenantId, userId });
       delete require.cache[orchPath];
@@ -446,12 +511,12 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       events.length = 0;
       const p = tracingPlanner(reply);
       const e = tracingEngine();
-      const r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      const r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr() });
       check(`${label}: exactly ONE planner call, handled with an honest message (${code}), no engine, no legacy`, r.handled === true && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.code === code && r.structured.details.queryEngine.status === "planner_failed" && r.structured.details.queryEngine.claudeCalls === 1 && msg.test(r.structured.answer), `${JSON.stringify(r.structured && r.structured.details.queryEngine)} :: ${r.structured && r.structured.answer}`);
       check(`  -> the answer does not pretend to contain figures`, !/₹|Invoice amount:/.test(r.structured.answer) && r.structured.details.toolCalls.length === 0 && r.structured.freshness === null);
     }
     {
-      const r = await run("show revenue last month", { plannerClient: tracingPlanner(() => new Error("sk-ant-secret-key internal stack")), execute: tracingEngine(), getFreshness: fr() });
+      const r = await run("show turnover last month", { plannerClient: tracingPlanner(() => new Error("sk-ant-secret-key internal stack")), execute: tracingEngine(), getFreshness: fr() });
       check("failure text never leaks the underlying error", !/sk-ant|secret|stack|529/.test(JSON.stringify(r.structured)));
     }
 
@@ -459,14 +524,14 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     events.length = 0;
     let p = tracingPlanner(toolReply({ decline: { code: "not_a_data_query", message: "That asks for an explanation, not a figure." } }));
     let e = tracingEngine();
-    let r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    let r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr() });
     check("valid planner decline: unchanged honest decline (status unsupported), one call, no engine", r.handled && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.status === "unsupported" && /explanation/.test(r.structured.answer));
 
     // successful planner question: planner -> validated plan -> engine, no legacy
     events.length = 0;
     p = tracingPlanner(toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }) }));
     e = tracingEngine();
-    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr() });
     check("successful planner question: one planner call, the engine runs once, answered (handled)", r.handled && p.calls === 1 && e.calls === 1 && r.structured.details.queryEngine.status === "answered" && /Invoice amount:/.test(r.structured.answer));
     check("ORDER: freshness (both entities) -> planner -> execute", JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase", "planner", "execute"]), JSON.stringify(events));
     check("freshness is read once per entity (no second read after planning)", events.filter((x) => x.startsWith("freshness")).length === 2);
@@ -475,7 +540,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     events.length = 0;
     p = tracingPlanner(toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }) }));
     e = tracingEngine({ ok: false, errors: [{ code: "query_failed" }] });
-    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr() });
+    r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr() });
     check("planner plan + engine failure: handled honestly, no legacy fallback", r.handled === true && r.structured.details.queryEngine.status === "execution_failed" && p.calls === 1 && /couldn.t compute/i.test(r.structured.answer));
     e = tracingEngine({ ok: false, errors: [{ code: "query_failed" }] });
     r = await run("total sales last month", { plannerClient: forbidden, execute: e, getFreshness: fr() });
@@ -485,14 +550,14 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     events.length = 0;
     p = tracingPlanner(toolReply({ plan: planOf({}) }));
     e = tracingEngine();
-    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced", Purchase: "never_synced" }) });
+    r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced", Purchase: "never_synced" }) });
     check("nothing ever synced: planner NOT called, honest no-data answer", r.handled && p.calls === 0 && e.calls === 0 && r.structured.details.toolCalls[0].state === "no_usable_data" && r.structured.details.queryEngine.claudeCalls === 0 && /Sales sync/.test(r.structured.answer) && /Purchase sync/.test(r.structured.answer));
     check("  -> event order shows freshness checks and no planner", JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase"]), JSON.stringify(events));
 
     events.length = 0;
     p = tracingPlanner(toolReply({ plan: planOf({}) }));
     e = tracingEngine();
-    r = await run("show revenue last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced" }) });
+    r = await run("show turnover last month", { plannerClient: p, execute: e, getFreshness: fr({ Sales: "never_synced" }) });
     check("only Sales never synced: planner must run (it chooses the entity); a sales plan then gets the honest no-data answer, engine not called", r.handled && p.calls === 1 && e.calls === 0 && r.structured.details.toolCalls[0].state === "no_usable_data" && JSON.stringify(events) === JSON.stringify(["freshness-check:Sales", "freshness-check:Purchase", "planner"]), JSON.stringify(events));
 
     events.length = 0;
@@ -502,13 +567,13 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     check("only Sales never synced + purchase plan: answered with Purchase freshness", r.handled && p.calls === 1 && e.calls === 1 && r.structured.freshness.message === "Purchase data is current.");
 
     events.length = 0;
-    r = await run("show revenue last month", { plannerClient: tracingPlanner(toolReply({ plan: planOf({}) })), execute: tracingEngine(), getFreshness: fr({ Sales: "stale" }) });
+    r = await run("show turnover last month", { plannerClient: tracingPlanner(toolReply({ plan: planOf({}) })), execute: tracingEngine(), getFreshness: fr({ Sales: "stale" }) });
     check("stale (not never-synced) data does not block the planner; the answer carries the stale warning", r.handled && events.includes("planner") && r.structured.warnings.includes("Sales data is current.") && r.structured.details.toolCalls[0].state === "stale_data");
 
     events.length = 0;
     const throwing = async (t, type) => { events.push(`freshness-check:${type}`); throw new Error("db down"); };
     p = tracingPlanner(toolReply({ plan: planOf({}) }));
-    r = await run("show revenue last month", { plannerClient: p, execute: tracingEngine(), getFreshness: throwing });
+    r = await run("show turnover last month", { plannerClient: p, execute: tracingEngine(), getFreshness: throwing });
     check("freshness lookup error before planning: planner NOT called (no Claude spent)", p.calls === 0 && !events.includes("planner"));
 
     // ---- Claude-free paths stay Claude-free, and router questions read freshness once for their own entity
@@ -523,8 +588,236 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     r = await run("sales this year", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() });
     check("clarification: 0 Claude, no freshness read", r.handled && p.calls === 0 && events.length === 0);
     events.length = 0;
-    r = await run("show revenue last month", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() }, [{ role: "user", content: "hi" }]);
+    r = await run("show turnover last month", { plannerClient: p, execute: tracingEngine(), getFreshness: fr() }, [{ role: "user", content: "hi" }]);
     check("mid-conversation needs_planner: unchanged (legacy path; no planner, no freshness read here)", r.handled === false && r.reason === "follow_up_uses_legacy_chat" && p.calls === 0 && events.length === 0);
+  }
+
+  // ============================================================ P0. resolver failure + revenue consistency (fakes only)
+  section("P0-1. entity lookup failure -> honest 'temporarily unavailable', zero Claude, never 'not found'");
+  {
+    const counter = () => { const fn = async (...a) => { fn.calls += 1; return fn.impl(...a); }; fn.calls = 0; fn.impl = async () => ({ state: "fresh", dataAsOf: null, message: "ok" }); return fn; };
+    const dims = ["customer", "supplier", "product", "productGroup"];
+    const failingIn = (failDim, times = Infinity) => {
+      const loads = {};
+      const src = Object.fromEntries(dims.map((d) => [d, async () => { loads[d] = (loads[d] || 0) + 1; if (d === failDim && loads[d] <= times) throw new Error("MongoServerSelectionError: secret-host"); return NAMES[d]; }]));
+      return createEntityResolver({ tenantId: "TEST-TENANT", sources: src });
+    };
+    const cases = [
+      ["G. customer", "customer", "Sales from Dhingra General Store last month"],
+      ["H. product", "product", "Sales of Maggi Noodles last month"],
+      ["I. supplier", "supplier", "Purchases from Acme Foods Pvt Ltd last month"],
+      ["I. product group", "productGroup", "Sales of Snacks last month"],
+    ];
+    for (const [label, dim, q] of cases) {
+      for (const history of [[], [{ role: "user", content: "earlier question" }, { role: "assistant", content: "earlier answer" }]]) {
+        const p = planner(() => { throw new Error("Claude must NOT be called"); });
+        const e = engine(okScalar());
+        const fr = counter();
+        const r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: history, deps: { resolveEntity: failingIn(dim), plannerClient: p, execute: e, getFreshness: fr } });
+        const qe = r.structured && r.structured.details.queryEngine;
+        check(`E/F ${label}${history.length ? " (mid-conversation)" : ""}: handled honestly, 0 Claude, no legacy, no engine`, r.handled === true && qe.status === "temporarily_unavailable" && qe.code === "entity_lookup_unavailable" && qe.claudeCalls === 0 && p.requests.length === 0 && e.calls.length === 0 && fr.calls === 0, JSON.stringify(r).slice(0, 200));
+        check(`  -> says 'try again', not 'not found', and leaks no DB detail`, /try again/i.test(r.structured.answer) && !/couldn.t find|check the spelling/i.test(r.structured.answer) && !/Mongo|secret-host/.test(JSON.stringify(r.structured)));
+      }
+    }
+    // D. recovery: the same resolver answers the next question normally
+    const flaky = failingIn("customer", 1);
+    let r = await ask("Sales from Dhingra General Store last month", { resolveEntity: flaky, plannerClient: forbidden, execute: engine(okScalar()) });
+    check("first question during the outage: temporarily unavailable", r.handled && r.structured.details.queryEngine.status === "temporarily_unavailable");
+    const e2 = engine(okScalar());
+    r = await ask("Sales from Dhingra General Store last month", { resolveEntity: flaky, plannerClient: forbidden, execute: e2 });
+    check("D. next question retries the load and is answered normally (tenant-scoped customer filter)", r.handled && r.structured.details.queryEngine.status === "answered" && e2.calls.length === 1 && e2.calls[0].ctx.tenantId === "TEST-TENANT" && e2.calls[0].plan.filters[0].value === "Dhingra General Store");
+    // B. zero matches: existing clarification, still Claude-free
+    r = await ask("Sales from Ghost Traders last month", { plannerClient: forbidden, execute: engine(okScalar()) });
+    check("B. resolver works + zero matches -> existing 'couldn't find' clarification (unchanged), 0 Claude", r.handled && r.structured.details.queryEngine.code === "entity_not_resolved" && /couldn.t find/i.test(r.structured.answer) && r.structured.details.queryEngine.claudeCalls === 0);
+    // planner path: a name Claude used cannot be verified because the lookup failed
+    const p = planner(toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Dhingra General Store" }] }) }));
+    const e3 = engine(okScalar());
+    r = await ask("show turnover from dhingra last month", { resolveEntity: failingIn("customer"), plannerClient: p, execute: e3, getFreshness: fresh });
+    check("planner plan whose names cannot be verified (lookup down): ONE call, honest 'try again', no engine, no legacy", r.handled && p.requests.length === 1 && e3.calls.length === 0 && r.structured.details.queryEngine.code === "planner_entity_check_failed" && /try again/i.test(r.structured.answer), JSON.stringify(r.structured && r.structured.details.queryEngine));
+  }
+
+  section("P0-2. 'revenue' has one meaning on every path: pre-tax item value (lineAmount), disclosed; never the Sales total");
+  {
+    const revResult = okScalar({ metrics: ["lineAmount"], amountBasis: { lineAmount: "line_item_pre_tax" }, totals: { values: { lineAmount: 987654.32 } } });
+    const DEF = /Revenue = pre-tax value of the items sold/;
+    // router path
+    let e = engine(revResult);
+    let r = await ask("Revenue last month", { plannerClient: forbidden, execute: e });
+    check("router: revenue -> lineAmount plan, 0 Claude, answer discloses the revenue definition + pre-tax basis", r.handled && e.calls[0].plan.metrics.join() === "lineAmount" && r.structured.details.queryEngine.claudeCalls === 0 && DEF.test(r.structured.answer) && /before tax/.test(r.structured.answer) && !/including tax/.test(r.structured.answer));
+    e = engine(okScalar());
+    r = await ask("Sales last month", { plannerClient: forbidden, execute: e });
+    check("router: sales -> invoiceAmount plan, answer says tax-inclusive and carries NO revenue definition", r.handled && e.calls[0].plan.metrics[0] === "invoiceAmount" && /including tax/.test(r.structured.answer) && !DEF.test(r.structured.answer));
+    // planner path (router defers: entity conflict)
+    let p = planner(toolReply({ plan: planOf({ metrics: ["lineAmount"] }) }));
+    e = engine(revResult);
+    r = await ask("Revenue and purchases last month", { plannerClient: p, execute: e });
+    check("planner: revenue plan (lineAmount) is answered with the SAME revenue definition as the router", r.handled && p.requests.length === 1 && r.structured.details.queryEngine.route === "planner" && e.calls[0].plan.metrics.join() === "lineAmount" && DEF.test(r.structured.answer), r.structured && r.structured.answer);
+    p = planner(toolReply({ plan: planOf({ metrics: ["invoiceAmount"] }) }));
+    e = engine(okScalar());
+    r = await ask("Revenue and purchases last month", { plannerClient: p, execute: e });
+    check("planner: revenue mapped to invoiceAmount by Claude -> refused honestly, engine never runs, one call, no legacy", r.handled && p.requests.length === 1 && e.calls.length === 0 && r.structured.details.queryEngine.code === "revenue_basis_unsupported" && /pre-tax value of the items sold/.test(r.structured.answer) && !/₹/.test(r.structured.answer));
+    // legacy exits are closed for revenue
+    const hist = [{ role: "user", content: "Revenue last month" }, { role: "assistant", content: "..." }];
+    p = planner(() => { throw new Error("no"); });
+    r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "and what about revenue for the same period last year then", conversationHistory: hist, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: p, execute: engine(okScalar()) } });
+    check("mid-conversation revenue follow-up the router cannot parse -> honest 'ask in full', NOT legacy chat, 0 Claude", r.handled === true && r.structured.details.queryEngine.code === "revenue_follow_up" && r.structured.details.queryEngine.claudeCalls === 0 && p.requests.length === 0 && /ask it in full/i.test(r.structured.answer));
+    r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "and what about turnover for the same period last year then", conversationHistory: hist, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: p, execute: engine(okScalar()) } });
+    check("mid-conversation non-revenue follow-up: unchanged (legacy path)", r.handled === false && r.reason === "follow_up_uses_legacy_chat");
+    e = engine(revResult);
+    r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "Revenue last month", conversationHistory: hist, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: e } });
+    check("mid-conversation revenue question the router CAN parse -> answered deterministically (lineAmount)", r.handled && e.calls[0].plan.metrics.join() === "lineAmount" && DEF.test(r.structured.answer));
+    r = await ask("Revenue last month", { plannerClient: forbidden, execute: engine({ ok: false, errors: [{ code: "query_failed" }] }) });
+    check("router revenue plan + engine failure -> honest 'couldn't compute', NOT legacy chat", r.handled === true && /couldn.t compute/i.test(r.structured.answer) && r.structured.details.queryEngine.claudeCalls === 0);
+    r = await ask("Total sales last month", { plannerClient: forbidden, execute: engine({ ok: false, errors: [{ code: "query_failed" }] }) });
+    check("router sales plan + engine failure: unchanged (falls through to legacy)", r.handled === false && r.reason === "execution_query_failed");
+    const boom = async () => { throw new Error("unexpected"); };
+    r = await ask("Revenue last month", { plannerClient: forbidden, execute: engine(revResult), getFreshness: boom });
+    check("unexpected exception on a revenue question -> honest answer, NOT legacy chat", r.handled === true && /couldn.t compute/i.test(r.structured.answer));
+    r = await ask("Total sales last month", { plannerClient: forbidden, execute: engine(okScalar()), getFreshness: boom });
+    check("unexpected exception on a sales question: unchanged (legacy fallback)", r.handled === false && r.reason === "exception");
+    // legacy chat prompt (kill switch / follow-ups without the word) defines revenue the same way
+    const orch = require("./src/services/ai/chatOrchestrator");
+    const rule = orch.SYSTEM_PROMPT.split("\n").find((l) => /"Revenue" has ONE fixed meaning/.test(l)) || "";
+    check("legacy SYSTEM_PROMPT defines revenue as the pre-tax item value", /pre-tax value of the items sold/.test(rule) && /excludes GST, freight/.test(rule));
+    check("  -> names every tax-inclusive tool and forbids calling its figures revenue", ["get_sales_summary", "get_sales_comparison", "get_sales_growth", "get_top_customers", "get_customer_sales"].every((t) => rule.includes(t)) && /never call those figures revenue/.test(rule));
+    check("  -> only line-amount tools are allowed for revenue by product/group", ["get_top_products", "get_product_growth", "get_declining_products", "get_stock_group_performance"].every((t) => rule.includes(t)));
+    check("  -> the prompt is still a single static block (cache-friendly, no per-tenant text)", !/tenant|companyGuid/i.test(rule));
+  }
+
+  // ============================================================ P1-2. span matching through the chat path (fakes only)
+  section("P1-2. resolver-first span matching through queryChat (tenant resolver's own name index)");
+  {
+    const spanNames = { customer: ["Daily Needs Store", "Zenora Collections"], supplier: ["Acme Foods Pvt Ltd"], product: ["* Stikfast 203 [20gm]20", "Maggi Noodles"], productGroup: ["Snacks"] };
+    const spanResolver = createEntityResolver({ tenantId: "TEST-TENANT", sources: Object.fromEntries(Object.entries(spanNames).map(([k, v]) => [k, async () => v])) });
+    const history = [{ role: "user", content: "earlier" }, { role: "assistant", content: "earlier answer" }];
+    const run = (q, deps = {}, hist = []) => tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: hist, deps: { resolveEntity: spanResolver, getFreshness: fresh, plannerClient: forbidden, ...deps } });
+    let e = engine(okScalar());
+    let r = await run("sales of Stikfast 203 [20gm]20 last month", { execute: e });
+    check("bracket product name (unquoted) answered by the engine, 0 Claude, tenant-scoped filter = stored name", r.handled && r.structured.details.queryEngine.status === "answered" && r.structured.details.queryEngine.claudeCalls === 0 && e.calls[0].ctx.tenantId === "TEST-TENANT" && e.calls[0].plan.filters[0].value === "* Stikfast 203 [20gm]20");
+    const line = JSON.stringify(Object.assign({}, r.telemetry));
+    check("  -> its telemetry carries no name and no plan", !/Stikfast|20gm|filters/.test(line) && r.telemetry.resolverCalled === true && r.telemetry.path === "router_supported");
+    e = engine(okScalar());
+    r = await run('sales of "Stikfast 203 [20gm]20" last month', { execute: e });
+    check("quoted bracket product answered by the engine", r.handled && e.calls.length === 1 && e.calls[0].plan.filters[0].value === "* Stikfast 203 [20gm]20");
+    e = engine(okScalar());
+    r = await run("sales to Zenora Collections last month", { execute: e });
+    check("customer name containing a refusal word ('Collections') answered, not refused as payments", r.handled && e.calls.length === 1 && e.calls[0].plan.filters[0].value === "Zenora Collections");
+    for (const hist of [[], history]) {
+      const p = planner(() => { throw new Error("Claude must NOT be called"); });
+      e = engine(okScalar());
+      r = await run("sales of Stikfast 203 [20gm]20 last month; drop table", { execute: e, plannerClient: p }, hist);
+      check(`unsafe text outside the name${hist.length ? " (mid-conversation)" : ""}: refused as before, no engine, no planner, no legacy`, r.handled === true && r.structured.details.queryEngine.code === "unsafe_input" && e.calls.length === 0 && p.requests.length === 0);
+    }
+    e = engine(okScalar());
+    r = await run("sales to Daily Needs Store last month", { execute: e }, history);
+    check("mid-conversation question with a known multi-word name: answered deterministically (no legacy)", r.handled && e.calls.length === 1 && e.calls[0].plan.filters[0].value === "Daily Needs Store");
+  }
+
+  // ============================================================ G7 through the chat path (fakes only)
+  section("G7. interpretation questions: fixed honest answer, 0 Claude, no engine, no name lookup, never legacy");
+  {
+    const history = [{ role: "user", content: "Sales last month" }, { role: "assistant", content: "Invoice amount: ₹1,00,000" }];
+    for (const [q, hist] of [["How is my business doing?", []], ["Why did revenue decline?", []], ["What should I focus on?", []], ["What does this tell us?", history], ["Why are my sales declining?", history], ["how's the business performing??", history]]) {
+      const p = planner(() => { throw new Error("Claude must NOT be called"); });
+      const e = engine(okScalar());
+      let freshReads = 0;
+      let nameCalls = 0;
+      const r = await tryAnswerWithQueryEngine({
+        context: CTX, userMessage: q, conversationHistory: hist,
+        deps: { resolveEntity: Object.assign(async (a) => ((nameCalls += 1), fakeResolver(a)), { spanIndex: fakeResolver.spanIndex }), getFreshness: async () => ((freshReads += 1), fresh()), plannerClient: p, execute: e },
+      });
+      const qe = r.structured && r.structured.details.queryEngine;
+      check(`"${q}"${hist.length ? " (mid-conversation)" : ""}: handled here (NOT legacy chat), 0 Claude, no planner, no engine, no freshness read`, r.handled === true && qe.status === "unsupported" && qe.code === "reasoning_not_supported" && qe.claudeCalls === 0 && p.requests.length === 0 && e.calls.length === 0 && freshReads === 0, JSON.stringify(qe));
+      check("  -> no tenant name lookup or span scan; telemetry path router_unsupported", nameCalls === 0 && r.telemetry.resolverCalled === false && r.telemetry.path === "router_unsupported" && r.telemetry.routeCode === "reasoning_not_supported");
+      check("  -> honest answer offering measurable questions, no internals", /broader interpretation/.test(r.structured.answer) && /sales this month vs last month/.test(r.structured.answer) && !/planner|router|claude|dsl|reasoning_not_supported/i.test(r.structured.answer) && r.structured.details.toolCalls.length === 0);
+    }
+    // a factual follow-up is unchanged: needs_planner + history still goes to the legacy path as before
+    const r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: "show turnover last month", conversationHistory: history, deps: { resolveEntity: fakeResolver, getFreshness: fresh, plannerClient: forbidden, execute: engine(okScalar()) } });
+    check("non-G7 follow-up keeps its existing route (legacy follow-up path)", r.handled === false && r.reason === "follow_up_uses_legacy_chat");
+  }
+
+  // ============================================================ P1-4 through the chat path (fakes only)
+  section("P1-4. period/growth wording answered honestly in chat: no false 'not found', 0 Claude");
+  {
+    const history = [{ role: "user", content: "Sales last month" }, { role: "assistant", content: "..." }];
+    const cases = [
+      ["Which customers grew over the last 6 months?", [], "needs_clarification", /Rolling windows are limited to the last 7, 30 or 90 days/],
+      ["Sales in Q1 2025", [], "needs_clarification", /financial year \(Q1 = April/],
+      ["Sales two months ago", [], "needs_clarification", /count back periods/],
+      ["Sales since April 2025", [], "needs_clarification", /both ends of the range/],
+      ["Which customers are growing fastest?", [], "unsupported", /rank by growth rate/],
+      ["Which customers are growing fastest?", history, "unsupported", /rank by growth rate/],
+      ["Which customers are consistently growing?", history, "unsupported", /every month or quarter of a range/],
+    ];
+    for (const [q, hist, status, text] of cases) {
+      const p = planner(() => { throw new Error("Claude must NOT be called"); });
+      const e = engine(okScalar());
+      let lookups = 0;
+      const r = await tryAnswerWithQueryEngine({ context: CTX, userMessage: q, conversationHistory: hist, deps: { resolveEntity: Object.assign(async (a) => ((lookups += 1), fakeResolver(a)), { spanIndex: fakeResolver.spanIndex }), getFreshness: fresh, plannerClient: p, execute: e } });
+      const qe = r.structured && r.structured.details.queryEngine;
+      check(`"${q}"${hist.length ? " (mid-conversation)" : ""}: honest ${status} answer, 0 Claude, no engine, no name lookup`, r.handled === true && qe.status === status && qe.claudeCalls === 0 && p.requests.length === 0 && e.calls.length === 0 && lookups === 0 && text.test(r.structured.answer) && !/couldn.t find/i.test(r.structured.answer), JSON.stringify(qe) + " " + (r.structured && r.structured.answer));
+    }
+    const e = engine(okScalar());
+    const r = await ask("Sales growth over last month", { plannerClient: forbidden, execute: e });
+    // Decision 2 (2026-09-28): this month to date is compared with the COMPLETE previous month (was like-for-like)
+    check("'Sales growth over last month' reaches the engine as this month vs the complete previous month", r.handled && e.calls.length === 1 && e.calls[0].plan.period.kind === "current_month" && e.calls[0].plan.compare.mode === "full_previous");
+  }
+
+  // ============================================================ P0 cost-leak fixes (Findings A + B)
+  section("P0 Finding A: count grammar - deterministic, 0 Claude");
+  {
+    const e = engine(okScalar());
+    let r = await ask("sales count this month", { plannerClient: forbidden, execute: e });
+    check("'sales count this month': engine called, Claude never called", r.handled && e.calls.length === 1 && forbidden.requests.length === 0 && e.calls[0].plan.metrics[0] === "invoiceCount");
+
+    const e2 = engine(okScalar({ entity: "purchase", metrics: ["purchaseAmount", "purchaseInvoiceCount"], totals: { values: { purchaseAmount: 100, purchaseInvoiceCount: 5 } } }));
+    r = await ask("purchase count this month", { plannerClient: forbidden, execute: e2 });
+    check("'purchase count this month': engine called, Claude never called", r.handled && e2.calls.length === 1 && forbidden.requests.length === 0 && e2.calls[0].plan.metrics[0] === "purchaseInvoiceCount");
+
+    for (const q of ["customer count this month", "supplier count this month"]) {
+      r = await ask(q, { plannerClient: forbidden });
+      check(`'${q}': honest deterministic refusal (distinct-party count is genuinely unsupported), 0 Claude`, r.handled && forbidden.requests.length === 0 && r.structured.details.queryEngine.status === "unsupported" && r.structured.details.queryEngine.code === "unsupported_party_count");
+    }
+
+    const e3 = engine(okScalar({ groupBy: [{ dim: "customer" }], rows: [] }));
+    r = await ask("how many new customers this month", { plannerClient: forbidden, execute: e3 });
+    check("'how many new customers this month': deterministic new-customer query, 0 Claude", r.handled && e3.calls.length === 1 && forbidden.requests.length === 0 && e3.calls[0].plan.filters.some((f) => f.op === "new_in_period"));
+
+    const e4 = engine(okScalar({ entity: "purchase", groupBy: [{ dim: "supplier" }], metrics: ["purchaseAmount", "purchaseInvoiceCount"], rows: [] }));
+    r = await ask("how many new suppliers this month", { plannerClient: forbidden, execute: e4 });
+    check("'how many new suppliers this month': deterministic new-supplier query, 0 Claude", r.handled && e4.calls.length === 1 && forbidden.requests.length === 0 && e4.calls[0].plan.filters.some((f) => f.op === "new_in_period"));
+  }
+
+  section("P0 Finding B: 'performance' is context-aware, not an unconditional reasoning trigger");
+  {
+    const perfCases = [
+      ["sales performance this month", { entity: "sales" }],
+      ["purchase performance this month", { entity: "purchase", metrics: ["purchaseAmount", "purchaseInvoiceCount"] }],
+      ["customer performance this month", { entity: "sales" }],
+      ["revenue performance this month", { entity: "sales", metrics: ["lineAmount"] }],
+    ];
+    for (const [q, over] of perfCases) {
+      const e = engine(okScalar(over));
+      const r = await ask(q, { plannerClient: forbidden, execute: e });
+      check(`'${q}': resolves to the underlying deterministic query, 0 Claude`, r.handled && e.calls.length === 1 && forbidden.requests.length === 0, r.structured && r.structured.answer);
+    }
+
+    // No sales/purchase word at all: still a deterministic clarification (entity_ambiguous), never Claude -
+    // same P0 fix as "product growth", reached here via the performance-stripped probe.
+    for (const q of ["product performance this month", "product group performance this month"]) {
+      const r = await ask(q, { plannerClient: forbidden });
+      check(`'${q}': deterministic entity clarification, 0 Claude`, r.handled && forbidden.requests.length === 0 && r.structured.details.queryEngine.status === "needs_clarification");
+    }
+
+    // Genuine reasoning must still reach the planner (or the G7 fixed-refusal path) - never silently
+    // become a deterministic metric query.
+    const p1 = planner(() => toolReply({ decline: { code: "not_a_data_query", message: "That needs interpretation, not a figure." } }));
+    let r = await ask("why is sales performance declining?", { plannerClient: p1 });
+    check("'why is sales performance declining?': still a reasoning path (G7 refusal), never a metric query", r.handled && !/Invoice amount/.test(r.structured.answer));
+
+    const p2 = planner(() => toolReply({ decline: { code: "not_a_data_query", message: "That needs interpretation, not a figure." } }));
+    r = await ask("what should i focus on based on sales performance?", { plannerClient: p2 });
+    check("'what should i focus on based on sales performance?': still a reasoning path, never a metric query", r.handled && !/Invoice amount/.test(r.structured.answer));
   }
 
   // ============================================================ K. no network

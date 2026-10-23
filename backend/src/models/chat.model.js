@@ -61,6 +61,15 @@ const chatMessageSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+
+    // Present only on answers from the Query Engine: the validated query plan that produced this answer plus the
+    // measure the user asked for ({v, plan, basis} - built and re-validated by the query engine's follow-up module). It lets a follow-up such as
+    // "and by customer?" keep the period, comparison and measure. It holds no figures and no tenant fields, is
+    // re-validated before any reuse, and is never sent to Claude.
+    queryContext: {
+      type: mongoose.Schema.Types.Mixed,
+      default: undefined,
+    },
   },
   { timestamps: true, _id: false }
 );

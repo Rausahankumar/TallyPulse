@@ -31,12 +31,14 @@ const catalog = require("./semanticCatalog");
 const { computeGrowth } = require("../analytics/salesAnalytics");
 
 const { CATALOG, LIMITS } = catalog;
+const { buildVoucherMatchStage } = require("../analytics/analyticsScope");
 
 // ---------- MongoDB access (injectable for tests) ----------
 
 function getModel(name) {
   if (name === "Sale") return require("../../models/sales.model");
   if (name === "Purchase") return require("../../models/purchase.model");
+  if (name === "AdjustmentNote") return require("../../models/adjustmentNote.model");
   throw new Error(`execute: unknown model ${name}`);
 }
 
@@ -67,6 +69,83 @@ async function defaultFindGroupItemNames(tenantId, filter, timeoutMs) {
     .maxTimeMS(timeoutMs)
     .lean();
   return docs.map((d) => d.itemName);
+}
+
+// New party (decision 3): ledgers of THIS tenant created inside the period, from its own Ledger master.
+// Names shared by two live ledgers are ambiguous and never counted as new.
+const BULK_LEDGER_DAY_THRESHOLD = 50; // ledgers created on one day at or above this look like a bulk import
+
+async function defaultFindNewParties(tenantId, period, timeoutMs) {
+  const LedgerMaster = require("../../models/ledgerMaster.model");
+  const live = { tenantId, removedAt: null };
+  const [latest, docs, undated] = await Promise.all([
+    LedgerMaster.findOne(live, { syncedAt: 1, _id: 0 }).sort({ syncedAt: -1 }).maxTimeMS(timeoutMs).lean(),
+    LedgerMaster.find({ ...live, createdDate: { $gte: period.from, $lte: period.to } }, { name: 1, createdDate: 1, _id: 0 })
+      .limit(LIMITS.maxGroupItemNames + 1)
+      .maxTimeMS(timeoutMs)
+      .lean(),
+    LedgerMaster.countDocuments({ ...live, createdDate: null }).maxTimeMS(timeoutMs),
+  ]);
+  if (!latest) return { masterMissing: true };
+  const names = [...new Set(docs.map((d) => d.name))];
+  const dupes = names.length
+    ? await LedgerMaster.aggregate([{ $match: { ...live, name: { $in: names } } }, { $group: { _id: "$name", n: { $sum: 1 } } }, { $match: { n: { $gt: 1 } } }])
+        .option({ maxTimeMS: timeoutMs })
+        .exec()
+    : [];
+  const perDay = new Map();
+  for (const d of docs) {
+    const day = d.createdDate.toISOString().slice(0, 10);
+    if (!perDay.has(day)) perDay.set(day, []);
+    perDay.get(day).push(d.name);
+  }
+  const bulk = [...perDay].filter(([, list]) => list.length >= BULK_LEDGER_DAY_THRESHOLD);
+  return {
+    masterMissing: false,
+    names,
+    ambiguous: dupes.map((d) => d._id),
+    bulkDays: bulk.map(([day, list]) => ({ day, names: list })),
+    undated,
+    syncedAt: latest.syncedAt,
+  };
+}
+
+// One bounded read: for the candidate names, first/last voucher up to the period end. Tells who
+// actually traded in the period and who already traded BEFORE their ledger's creation period.
+async function newPartyActivity(runAggregate, model, tenantId, period, names) {
+  if (!names.length) return [];
+  const pipeline = [
+    { $match: { ...buildVoucherMatchStage({ tenantId, to: period.to }), "header.partyName": { $in: names } } },
+    { $group: { _id: "$header.partyName", first: { $min: "$header.voucherDate" }, last: { $max: "$header.voucherDate" } } },
+  ];
+  return runAggregate(model, pipeline, { maxTimeMS: LIMITS.queryTimeoutMs, allowDiskUse: false });
+}
+
+const nameList = (list) => list.slice(0, 5).join(", ") + (list.length > 5 ? `, and ${list.length - 5} more` : "");
+
+function newPartyWarnings(info, activity, period) {
+  const out = [];
+  const traded = activity.filter((a) => a.last && a.last >= period.from);
+  const tradedSet = new Set(traded.map((a) => a._id));
+  const prior = traded.filter((a) => a.first && a.first < period.from).map((a) => a._id);
+  if (prior.length) {
+    out.push({ code: "new_party_traded_before_ledger", message: `${prior.length} of these parties already had vouchers before this period even though their ledger was created in it (for example a re-created ledger): ${nameList(prior)}.` });
+  }
+  const bulkTraded = info.bulkDays.flatMap((b) => b.names.filter((nm) => tradedSet.has(nm)).map((nm) => ({ nm, day: b.day })));
+  if (bulkTraded.length) {
+    const days = [...new Set(bulkTraded.map((b) => b.day))].join(", ");
+    out.push({ code: "new_party_bulk_created_ledgers", message: `${bulkTraded.length} of these parties' ledgers were created in a bulk batch (${days}, likely an import), so their creation date may not be when they became customers/suppliers.` });
+  }
+  if (info.ambiguous.length) {
+    out.push({ code: "new_party_ambiguous_names", message: `${info.ambiguous.length} ledger name(s) created in this period are shared by more than one ledger and were not counted as new: ${nameList(info.ambiguous)}.` });
+  }
+  if (info.undated > 0) {
+    out.push({ code: "new_party_undated_ledgers", message: `${info.undated} ledger(s) have no creation date in Tally and are never counted as new.` });
+  }
+  if (info.syncedAt && info.syncedAt < period.to) {
+    out.push({ code: "ledger_master_as_of", message: `The ledger master was last refreshed on ${info.syncedAt.toISOString().slice(0, 10)}; parties whose ledger was created after that are not counted as new.` });
+  }
+  return out;
 }
 
 function isTimeout(error) {
@@ -284,6 +363,7 @@ function fail(stage, errors, extra = {}) {
  * @param {Function} [context.runAggregate] injectable (model, pipeline, options) => Promise<rows>
  * @param {Function} [context.findGroupItemNames] injectable (tenantId, filter) => Promise<string[]>
  * @param {Function} [context.loadStockGroupMap] injectable (tenantId) => Promise<Map(item -> group)>
+ * @param {Function} [context.findNewParties] injectable (tenantId, period) => Promise<{masterMissing, names, ambiguous, bulkDays, undated, syncedAt}>
  */
 async function executeQuery(rawPlan, context = {}) {
   const { tenantId } = context;
@@ -296,8 +376,8 @@ async function executeQuery(rawPlan, context = {}) {
   let referenceDate = context.referenceDate;
   const pre = parseQueryPlan(rawPlan);
   if (pre.ok && !referenceDate && pre.plan.period.kind !== "all_time" && pre.plan.period.kind !== "custom") {
-    const { getTenantReferenceDate } = require("../analytics/referenceDate");
-    referenceDate = await getTenantReferenceDate(tenantId);
+    // the AI reporting rule (today); chat passes the turn's date, this is only the stand-alone fallback
+    referenceDate = (await require("../analytics/referenceDate").getTenantDateContext(tenantId)).referenceDate;
   }
 
   const validation = validateQueryPlan(rawPlan, { referenceDate });
@@ -317,7 +397,22 @@ async function executeQuery(rawPlan, context = {}) {
       }
     }
 
-    const compiled = compileQuery(n, { tenantId, groupItemNames });
+    // A new_in_period party filter is resolved to exact names from this tenant's Ledger master.
+    let newPartyNames;
+    let newPartyInfo = null;
+    if (n.filters.some((f) => f.op === "new_in_period")) {
+      newPartyInfo = await (context.findNewParties || ((tid, p) => defaultFindNewParties(tid, p, timeoutMs)))(tenantId, n.period);
+      if (newPartyInfo.masterMissing) {
+        return fail("execution", [{ code: "ledger_master_missing", path: "filters", message: "The Tally ledger master has not been synced for this company yet, so new customers/suppliers cannot be identified." }], { warnings: validation.warnings });
+      }
+      if (newPartyInfo.names.length > LIMITS.maxGroupItemNames) {
+        return fail("execution", [{ code: "result_too_large", path: "filters", message: "Too many ledgers were created in that period to filter by; choose a shorter period." }], { warnings: validation.warnings });
+      }
+      const ambiguous = new Set(newPartyInfo.ambiguous);
+      newPartyNames = newPartyInfo.names.filter((nm) => !ambiguous.has(nm));
+    }
+
+    const compiled = compileQuery(n, { tenantId, groupItemNames, newPartyNames });
     const settled = await Promise.all(compiled.queries.map((q) => runAggregate(q.model, q.pipeline, q.options)));
     const results = Object.fromEntries(compiled.queries.map((q, i) => [q.key, settled[i]]));
 
@@ -354,6 +449,12 @@ async function executeQuery(rawPlan, context = {}) {
       assembled = assemblePlain(n, results);
     }
 
+    let warnings = validation.warnings;
+    if (newPartyInfo) {
+      const activity = await newPartyActivity(runAggregate, compiled.queries[0].model, tenantId, n.period, newPartyNames);
+      warnings = [...warnings, ...newPartyWarnings(newPartyInfo, activity, n.period)];
+    }
+
     return {
       ok: true,
       entity: n.entity,
@@ -369,7 +470,7 @@ async function executeQuery(rawPlan, context = {}) {
       truncated: assembled.truncated,
       rowLimit: n.limit,
       mapping,
-      warnings: validation.warnings,
+      warnings,
       assumptions: validation.assumptions,
       diagnostics: { catalogVersion: catalog.CATALOG_VERSION, complexity: n.complexity, queryCount: compiled.queries.length, timeoutMs },
     };

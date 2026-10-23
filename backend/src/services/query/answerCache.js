@@ -193,8 +193,11 @@ function createDefaultCachedExecutor(options = {}) {
   const cache = createAnswerCache(options);
   const { getTenantVersion, onBump } = require("./dataVersion");
   const { executeQuery } = require("./execute");
+  const { timeEngineDeps } = require("./turnTelemetry");
   onBump((tenantId) => (tenantId === "*" ? cache.invalidateAll() : cache.invalidateTenant(tenantId)));
-  return { cache, execute: (plan, context) => cache.run(plan, context, { execute: executeQuery, getVersion: getTenantVersion }) };
+  const deps = { execute: executeQuery, getVersion: getTenantVersion };
+  // `timing` (optional, telemetry only) records how long the engine itself ran; the cache logic is unchanged.
+  return { cache, execute: (plan, context, timing) => cache.run(plan, context, timeEngineDeps(deps, timing)) };
 }
 
 module.exports = { createAnswerCache, createDefaultCachedExecutor, stableStringify, DEFAULTS };
