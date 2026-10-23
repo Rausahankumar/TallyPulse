@@ -85,6 +85,7 @@
 
 
 const axios = require("axios");
+const { resolveTallyUrl } = require("./tallyUrl");
 
 // Default Tally HTTP/JSONEx gateway. Every function below accepts an
 // optional `baseUrl` override (falling back to this) so the connection can
@@ -177,7 +178,7 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -336,7 +337,7 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -356,6 +357,83 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
   } catch (error) {
     console.error(
       "TALLY VOUCHERTYPE MASTER API ERROR:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
+// ============================================================
+// GET STOCK ITEM MASTERS (Stock Item -> Stock Group)
+// ============================================================
+//
+// Confirmed live against this project's own connected TallyPrime
+// instance (WE FOUR, 2026-09): "Type": "StockItem" is a flat master
+// collection, exactly like "Type": "VoucherType" above - every Stock
+// Item in the company, each carrying its own $Parent (the Stock Group
+// it belongs to) and $Guid. Live result: 2,696 Stock Items returned,
+// 100% with a non-empty Parent, 100% with a Guid, 100% passing
+// validateMasterOwnership against the trusted company GUID, 74 distinct
+// Stock Group names. This is a masters-only query - no voucher/
+// transactional data is requested, and no inventoryentries.* voucher
+// query anywhere in this file needed to change for this to work.
+const getStockItemMasters = async ({ baseUrl } = {}) => {
+  try {
+    const requestBody = {
+      static_variables: [
+        {
+          name: "svExportFormat",
+          value: "jsonex"
+        }
+      ],
+
+      tdlmessage: [
+        {
+          definitions: [
+            {
+              metadata: {
+                name: "RTS StockItem Master Collection",
+                type: "Collection"
+              },
+
+              attributes: [
+                {
+                  "Type": "StockItem"
+                },
+
+                {
+                  "Native Method": "Name, Parent, Guid"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await axios.post(
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Version": "1",
+          "TallyRequest": "Export",
+          "Type": "Collection",
+          "ID": "RTS StockItem Master Collection"
+        },
+
+        timeout: 30000
+      }
+    );
+
+    return response.data;
+
+  } catch (error) {
+    console.error(
+      "TALLY STOCKITEM MASTER API ERROR:",
       error.response?.data || error.message
     );
 
@@ -463,7 +541,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -579,7 +657,7 @@ const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucher
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -676,7 +754,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -777,7 +855,7 @@ const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTyp
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -890,7 +968,7 @@ const getVouchersByAlterIds = async ({ alterIds, baseUrl, voucherTypeNames } = {
     };
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
         headers: {
@@ -985,7 +1063,7 @@ const getAllSalesVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) => {
     requireVoucherTypeNames(voucherTypeNames, "getAllSalesVoucherGuids");
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Sales All Guids Collection"),
       {
         headers: {
@@ -1014,7 +1092,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
     requireVoucherTypeNames(voucherTypeNames, "getAllPurchaseVoucherGuids");
 
     const response = await axios.post(
-      baseUrl || DEFAULT_TALLY_URL,
+      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Purchase All Guids Collection"),
       {
         headers: {
@@ -1042,6 +1120,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
 module.exports = {
   getCompanyInfo,
   getVoucherTypeMasters,
+  getStockItemMasters,
   getPendingVoucherAlterIds,
   getVouchersByAlterIds,
   MAX_ALTERIDS_PER_RECOVERY_QUERY,

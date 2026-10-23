@@ -4,7 +4,7 @@ import { User, Mail, KeyRound } from "lucide-react";
 import AuthLayout from "./AuthLayout";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";
-import { useAuth } from "../../context/AuthContext";
+import { useAuth } from "../../context/useAuth";
 import { ApiError } from "../../api/client";
 
 // Just an account: name, email, password. Registering signs the user in and

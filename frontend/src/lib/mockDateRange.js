@@ -43,6 +43,36 @@ export function formatRangeLabel({ from, to }) {
   return `${fmt(from)} – ${fmt(to)}`;
 }
 
+const SHORT_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+// Formats a Date as "1-May-2025" — the typed format the date-range
+// fields display and accept (see parseTypedDate below).
+export function formatTypedDate(date) {
+  const day = date.getDate();
+  const month = date.toLocaleDateString("en-GB", { month: "short" });
+  const year = date.getFullYear();
+  return `${day}-${month}-${year}`;
+}
+
+// Parses text like "1-May-2025", "1 may 2025" or "01/May/2025" as a
+// LOCAL date. Returns null for anything that doesn't match or isn't a
+// real calendar date (e.g. "31-Feb-2025"), so callers can fall back to
+// the last known-good value instead of silently accepting garbage.
+export function parseTypedDate(text) {
+  if (!text) return null;
+  const match = text.trim().match(/^(\d{1,2})\s*[-/\s]\s*([a-zA-Z]+)\s*[-/\s]\s*(\d{4})$/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const monthIndex = SHORT_MONTHS.indexOf(match[2].slice(0, 3).toLowerCase());
+  const year = Number(match[3]);
+  if (monthIndex === -1) return null;
+
+  const date = new Date(year, monthIndex, day);
+  if (date.getMonth() !== monthIndex || date.getDate() !== day) return null; // rejects overflow, e.g. 31-Feb
+  return date;
+}
+
 // Keeps only the monthly points whose month overlaps [from, to].
 export function filterMonthlySeries(series, range, labelKey = "label") {
   if (!range) return series;

@@ -1,6 +1,5 @@
-import { DollarSign, ShoppingBag, TrendingUp, Users } from "lucide-react";
+import { DollarSign, ShoppingBag, Receipt, Users } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
-import MockDataBanner from "../components/ui/MockDataBanner";
 import FreshnessBadge from "../components/ui/FreshnessBadge";
 import KpiCard from "../components/ui/KpiCard";
 import { KpiCardSkeleton, ChartCardSkeleton } from "../components/ui/Skeleton";
@@ -9,44 +8,108 @@ import DonutChart from "../components/charts/DonutChart";
 import LineTrendChart from "../components/charts/LineTrendChart";
 import RecentActivity from "../components/dashboard/RecentActivity";
 import AnalyticsNotice from "../components/ui/AnalyticsNotice";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
-import { formatCompactCurrency } from "../lib/format";
+import { formatCompactCurrency, formatCurrency, formatNumber, formatRelativeTime } from "../lib/format";
 import {
   getSalesSummary,
   getPurchaseSummary,
   getSalesComparison,
   getPurchaseComparison,
   getTopProducts,
+  getSalesTrend,
+  getCustomerCounts,
 } from "../api/analytics";
-import { MOCK_SALES_VS_PURCHASES, MOCK_SALES_TREND, MOCK_RECENT_ACTIVITY } from "../mock/mockData";
+import { getSyncStatus } from "../api/sync";
 
-// Real (Analytics Engine, via REST): Total Sales, Total Purchases, and
-// their growth deltas, plus the Top 5 Products donut. Freshness badge
-// reflects the Sales checkpoint (the same signal the "Run Sales Sync
-// Now" button on Sync & Data acts on).
+// Real (Analytics Engine + sync status, via REST), all anchored to this
+// tenant's own most recent synced voucher date rather than the wall
+// clock (see backend referenceDate.js — a tenant whose Tally sync is
+// months behind the system clock would otherwise show an empty
+// "current month" forever, which is misleading, not honest):
+//   - Total Sales / Total Purchases + growth deltas
+//   - Avg Invoice Value (Sales Summary's own averageOrderValue — no
+//     extra call needed)
+//   - Total Customers: distinct header.partyName across this tenant's
+//     ENTIRE Sale history (Sale.distinct, all-time, unbounded)
+//   - Sales vs Purchases: previous vs current anchored period
+//   - Top 5 Products (Sales), by amount
+//   - Sales Trend: real monthly totals, last 6 months of actual data
+//   - Recent Activity: the 10 most-recently-updated vouchers
 //
-// Still sample: Gross Profit and Total Customers (no such calculation
-// exists in the Analytics Engine — no cost/COGS data is captured, and
-// there's no "distinct customer count" function — see
-// salesAnalytics.js), and the Sales-vs-Purchases / Sales Trend charts
-// and Recent Activity feed (the engine has no monthly-breakdown or
-// activity-log capability, only period summaries and two-period
-// comparisons). Each is labeled inline rather than hidden.
+// Deliberately NOT implemented: Gross Profit. Sale.inventory only
+// stores the SELLING rate/amount — no cost-of-goods field is captured
+// anywhere in the parser/mapper/schema, and approximating "cost" from a
+// Purchase voucher's rate for the same item name would assume FIFO/
+// specific-lot matching that Tally itself isn't telling us — that's a
+// fabricated number wearing a real label, which the product must never
+// show. Avg Invoice Value occupies that KPI slot instead: a real,
+// always-derivable metric from the same data Total Sales already uses.
 async function loadDashboard() {
-  const [salesSummary, purchaseSummary, salesComparison, purchaseComparison, topProducts] =
-    await Promise.all([
-      getSalesSummary(),
-      getPurchaseSummary(),
-      getSalesComparison(),
-      getPurchaseComparison(),
-      getTopProducts({ limit: 5 }),
-    ]);
+  const [
+    salesSummary,
+    purchaseSummary,
+    salesComparison,
+    purchaseComparison,
+    topProducts,
+    salesTrend,
+    customerCounts,
+    syncStatus,
+  ] = await Promise.all([
+    getSalesSummary(),
+    getPurchaseSummary(),
+    getSalesComparison(),
+    getPurchaseComparison(),
+    getTopProducts({ limit: 5 }),
+    getSalesTrend(),
+    getCustomerCounts(),
+    getSyncStatus(),
+  ]);
 
-  return { salesSummary, purchaseSummary, salesComparison, purchaseComparison, topProducts };
+  return {
+    salesSummary,
+    purchaseSummary,
+    salesComparison,
+    purchaseComparison,
+    topProducts,
+    salesTrend,
+    customerCounts,
+    syncStatus,
+  };
+}
+
+function buildRecentActivity(syncStatus) {
+  const sales = (syncStatus.recentSales || []).map((v) => ({
+    text: `Sale to ${v.partyName || "Unknown"} — ${formatCompactCurrency(v.amount)}`,
+    at: v.updatedAt,
+    tone: "brand",
+  }));
+  const purchases = (syncStatus.recentPurchases || []).map((v) => ({
+    text: `Purchase from ${v.partyName || "Unknown"} — ${formatCompactCurrency(v.amount)}`,
+    at: v.updatedAt,
+    tone: "warning",
+  }));
+  return [...sales, ...purchases]
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 6)
+    .map((item) => ({ text: item.text, tone: item.tone, time: formatRelativeTime(item.at) }));
 }
 
 const REAL_STATES = new Set(["valid_data", "stale_data"]);
+
+// A short, honest caption for why a KPI shows "—" instead of a number -
+// never invents a reason, just clarifies the backend's own state. The
+// Dashboard's "current month" is anchored to this tenant's own latest
+// synced voucher (see loadDashboard's comment above), so a zero_result
+// here means there's genuinely no data in that most-recent period, not
+// that the query missed real data - not an error. Other states show the
+// backend's own message unchanged.
+function kpiHint(envelope, seeScreenLabel) {
+  if (envelope.state === "zero_result") {
+    return `No data in the most recent synced period — see ${seeScreenLabel} for your full history.`;
+  }
+  return envelope.message || null;
+}
 
 export default function Dashboard() {
   const { activeCompany } = useCompany();
@@ -55,6 +118,10 @@ export default function Dashboard() {
   const salesReal = data && REAL_STATES.has(data.salesSummary.state);
   const purchaseReal = data && REAL_STATES.has(data.purchaseSummary.state);
   const topProductsReal = data && REAL_STATES.has(data.topProducts.state);
+  const salesTrendReal = data && REAL_STATES.has(data.salesTrend.state);
+  const customerCountsReal = data && REAL_STATES.has(data.customerCounts.state);
+  const comparisonReal =
+    data && REAL_STATES.has(data.salesComparison.state) && REAL_STATES.has(data.purchaseComparison.state);
 
   return (
     <div>
@@ -63,8 +130,6 @@ export default function Dashboard() {
         subtitle="Here's what's happening with your business today."
         action={data && <FreshnessBadge freshness={data.salesSummary.freshness} />}
       />
-
-      <MockDataBanner label="Gross Profit, Total Customers, trend charts and Recent Activity are sample data" />
 
       {error ? (
         <div className="rounded-2xl border border-surface-border bg-white p-10 text-center text-sm text-danger-600">
@@ -79,6 +144,7 @@ export default function Dashboard() {
               label="Total Sales"
               value={salesReal ? formatCompactCurrency(data.salesSummary.data.totalSales) : "—"}
               delta={salesReal ? data.salesComparison.data?.growthPercentage ?? null : null}
+              hint={salesReal ? null : kpiHint(data.salesSummary, "Sales Analytics")}
               icon={DollarSign}
               tone="brand"
             />
@@ -86,24 +152,60 @@ export default function Dashboard() {
               label="Total Purchases"
               value={purchaseReal ? formatCompactCurrency(data.purchaseSummary.data.totalPurchases) : "—"}
               delta={purchaseReal ? data.purchaseComparison.data?.growthPercentage ?? null : null}
+              hint={purchaseReal ? null : kpiHint(data.purchaseSummary, "Purchase Analytics")}
               icon={ShoppingBag}
               tone="violet"
             />
-            <KpiCard label="Gross Profit" value="Not available" delta={null} icon={TrendingUp} tone="success" />
-            <KpiCard label="Total Customers" value="Not available" delta={null} icon={Users} tone="warning" />
+            <KpiCard
+              label="Avg Invoice Value"
+              value={salesReal ? formatCurrency(data.salesSummary.data.averageOrderValue) : "—"}
+              delta={null}
+              hint={salesReal ? null : kpiHint(data.salesSummary, "Sales Analytics")}
+              icon={Receipt}
+              tone="success"
+            />
+            <KpiCard
+              label="Total Customers"
+              value={customerCountsReal ? formatNumber(data.customerCounts.data.totalCustomers) : "—"}
+              delta={null}
+              hint={customerCountsReal ? "All-time distinct customers you've sold to" : kpiHint(data.customerCounts, "Customers Analytics")}
+              icon={Users}
+              tone="warning"
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.4fr_1fr]">
             <div>
-              <ComparisonBarChart
-                title="Sales vs Purchases"
-                subtitle="Sample data — no monthly breakdown endpoint exists yet"
-                data={MOCK_SALES_VS_PURCHASES}
-                series={[
-                  { key: "sales", name: "Sales", color: "#3269ea" },
-                  { key: "purchases", name: "Purchases", color: "#b9d2ff" },
-                ]}
-              />
+              {comparisonReal ? (
+                <ComparisonBarChart
+                  title="Sales vs Purchases"
+                  subtitle="Previous period vs current period"
+                  data={[
+                    {
+                      label: "Previous",
+                      sales: data.salesComparison.data.previous.totalSales,
+                      purchases: data.purchaseComparison.data.previous.totalPurchases,
+                    },
+                    {
+                      label: "Current",
+                      sales: data.salesComparison.data.current.totalSales,
+                      purchases: data.purchaseComparison.data.current.totalPurchases,
+                    },
+                  ]}
+                  series={[
+                    { key: "sales", name: "Sales", color: "#3269ea" },
+                    { key: "purchases", name: "Purchases", color: "#b9d2ff" },
+                  ]}
+                />
+              ) : (
+                <div className="rounded-2xl border border-surface-border bg-white p-4">
+                  <p className="mb-3 text-[15px] font-semibold text-ink-900">Sales vs Purchases</p>
+                  <AnalyticsNotice
+                    state={data.salesComparison.state}
+                    message={data.salesComparison.message || data.purchaseComparison.message}
+                  />
+                </div>
+              )}
             </div>
 
             {topProductsReal && data.topProducts.data.items.length > 0 ? (
@@ -124,13 +226,20 @@ export default function Dashboard() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.4fr_1fr]">
-            <LineTrendChart
-              title="Sales Trend"
-              subtitle="Sample data — no monthly breakdown endpoint exists yet"
-              seriesName="Sales"
-              data={MOCK_SALES_TREND}
-            />
-            <RecentActivity items={MOCK_RECENT_ACTIVITY} />
+            {salesTrendReal && data.salesTrend.data.items.length > 0 ? (
+              <LineTrendChart
+                title="Sales Trend"
+                subtitle="Real monthly totals, most recent months of synced data"
+                data={data.salesTrend.data.items.map((i) => ({ label: i.label, value: i.totalSales }))}
+                seriesName="Sales"
+              />
+            ) : (
+              <div className="rounded-2xl border border-surface-border bg-white p-4">
+                <p className="mb-3 text-[15px] font-semibold text-ink-900">Sales Trend</p>
+                <AnalyticsNotice state={data.salesTrend.state} message={data.salesTrend.message} />
+              </div>
+            )}
+            <RecentActivity items={buildRecentActivity(data.syncStatus)} />
           </div>
         </div>
       )}

@@ -5,12 +5,18 @@ const Company = require("../models/company");
 const UserCompanyAccess = require("../models/userCompanyAccess.model");
 const { detectOpenTallyCompany } = require("../services/auth/tallyCompanyGuard");
 const { ensureCompanyForGuid } = require("../services/auth/companyIdentity");
+const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
+
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_BYTES = 72;
 
 // A session token. `company` scopes it to one company; without it the token
 // only identifies the account (enough to connect a company, nothing else -
 // every data route needs a company context and refuses such a token).
 function signToken(user, company) {
-  const claims = { id: user._id.toString(), role: user.role };
+  // `tv` is the account's session version: raising User.tokenVersion invalidates
+  // every token issued before (audit F-08). Accounts without the field count as 0.
+  const claims = { id: user._id.toString(), role: user.role, tv: user.tokenVersion || 0 };
 
   if (company) {
     claims.companyGuId = company.companyGuid;
@@ -35,12 +41,33 @@ const register = async (req, res) => {
       });
     }
 
+    // Plain text only. Express turns JSON objects, nested form fields and
+    // repeated parameters into objects/arrays, and Mongoose would use those as
+    // query operators instead of values.
+    if (typeof name !== "string" || typeof email !== "string" || typeof password !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "name, email and password must be text",
+      });
+    }
+
+    // Password strength (audit F-05). At least 8 characters; at most 72 BYTES,
+    // because bcrypt only uses the first 72 bytes - a longer password would be
+    // silently truncated, so it is refused instead of being quietly weakened.
+    if (password.length < PASSWORD_MIN_LENGTH || Buffer.byteLength(password, "utf8") > PASSWORD_MAX_BYTES) {
+      return res.status(400).json({
+        success: false,
+        message: `Password must be at least ${PASSWORD_MIN_LENGTH} characters (and at most ${PASSWORD_MAX_BYTES} bytes).`,
+      });
+    }
+
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: "Email already registered",
+        // Deliberately does not say the address is registered (audit F-16).
+        message: "We could not create this account. If you already have one, sign in instead.",
       });
     }
 
@@ -61,7 +88,7 @@ const register = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -75,9 +102,20 @@ const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Same rule as register: a non-text value is an input error, never a
+    // database filter. (Missing values still fall through to the generic 401.)
+    if ((email != null && typeof email !== "string") || (password != null && typeof password !== "string")) {
+      return res.status(400).json({
+        success: false,
+        message: "email and password must be text",
+      });
+    }
+
     const user = email ? await User.findOne({ email }) : null;
 
     if (!user) {
+      console.warn(`[auth] failed login (unknown account) from ${req.ip} request=${req.id || "-"}`);
+
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
@@ -87,6 +125,8 @@ const login = async (req, res) => {
     const matched = await bcrypt.compare(password || "", user.password);
 
     if (!matched) {
+      console.warn(`[auth] failed login (wrong password) from ${req.ip} request=${req.id || "-"}`);
+
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
@@ -109,7 +149,7 @@ const login = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -153,7 +193,8 @@ const addCompany = async (req, res) => {
       Boolean(user.companyGuId) || (await UserCompanyAccess.exists({ userId: user._id })) !== null;
 
     if (hasCompany) {
-      const matched = password ? await bcrypt.compare(password, user.password) : false;
+      const matched =
+        typeof password === "string" && password ? await bcrypt.compare(password, user.password) : false;
 
       if (!matched) {
         return res.status(401).json({
@@ -246,7 +287,7 @@ const addCompany = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -289,7 +330,7 @@ const listCompanies = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -311,6 +352,17 @@ const switchCompany = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "companyGuId is required",
+      });
+    }
+
+    // The identifier is used in two lookups below (access check, then the
+    // company itself). It must be plain text: an object or array from the
+    // request body would be read as a query operator and could make those two
+    // lookups match different records.
+    if (typeof companyGuId !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "companyGuId must be text",
       });
     }
 
@@ -357,7 +409,7 @@ const switchCompany = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -380,7 +432,7 @@ const updateCompanyName = async (req, res) => {
       });
     }
 
-    if (!companyName || !companyName.trim()) {
+    if (typeof companyName !== "string" || !companyName.trim()) {
       return res.status(400).json({
         success: false,
         message: "companyName is required",
@@ -412,7 +464,7 @@ const updateCompanyName = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: err.message,
+      message: GENERIC_SERVER_ERROR,
     });
   }
 };

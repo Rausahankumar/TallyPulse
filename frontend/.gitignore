@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files - never commit real values (added for audit finding F-18)
+.env
+.env.*
+!.env.example

@@ -1,25 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarRange, RotateCcw } from "lucide-react";
-import Select from "./Select";
 import Button from "./Button";
-import { formatRangeLabel, parseDateInputValue, toDateInputValue } from "../../lib/mockDateRange";
+import DateInput from "./DateInput";
+import { formatRangeLabel } from "../../lib/mockDateRange";
 
 // A real, controlled date-range filter. It only has sample data to
 // filter (see MockDataBanner on every page that uses this — no
 // analytics API exists yet), but the control itself is fully
-// functional: changing the dates or the financial year updates state,
-// which the page re-derives its displayed figures from, and Reset
-// restores the default range.
-export default function FilterBar({ fy = "fy2025-26", onFyChange, range, onRangeChange, onReset }) {
+// functional: changing the dates updates state, which the page
+// re-derives its displayed figures from, and Reset restores the
+// default range. (There used to be an FY dropdown here too, but it
+// never actually filtered anything - removed rather than wired up,
+// since the date-range picker already covers that job.)
+export default function FilterBar({ range, onRangeChange, onReset }) {
   const [open, setOpen] = useState(false);
-  const [draftFrom, setDraftFrom] = useState(toDateInputValue(range.from));
-  const [draftTo, setDraftTo] = useState(toDateInputValue(range.to));
+  const [draftFrom, setDraftFrom] = useState(range.from);
+  const [draftTo, setDraftTo] = useState(range.to);
+  // Resets the draft inputs whenever the parent's range changes (e.g.
+  // Reset button, financial-year switch) - adjusted during render rather
+  // than in an effect, so a range change and the draft reset land in the
+  // same commit instead of a stale draft flashing for one extra render.
+  const [prevRange, setPrevRange] = useState(range);
+  if (range !== prevRange) {
+    setPrevRange(range);
+    setDraftFrom(range.from);
+    setDraftTo(range.to);
+  }
   const ref = useRef(null);
-
-  useEffect(() => {
-    setDraftFrom(toDateInputValue(range.from));
-    setDraftTo(toDateInputValue(range.to));
-  }, [range]);
 
   useEffect(() => {
     function onClick(e) {
@@ -30,20 +37,13 @@ export default function FilterBar({ fy = "fy2025-26", onFyChange, range, onRange
   }, []);
 
   function applyRange() {
-    const from = parseDateInputValue(draftFrom);
-    const to = parseDateInputValue(draftTo);
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) return;
-    onRangeChange({ from, to });
+    if (draftFrom > draftTo) return;
+    onRangeChange({ from: draftFrom, to: draftTo });
     setOpen(false);
   }
 
   return (
     <div className="mb-5 flex flex-wrap items-center gap-2.5">
-      <Select value={fy} onChange={(e) => onFyChange?.(e.target.value)} className="!h-9 w-auto min-w-[110px]">
-        <option value="fy2025-26">FY 2025-26</option>
-        <option value="fy2024-25">FY 2024-25</option>
-      </Select>
-
       <div ref={ref} className="relative">
         <button
           onClick={() => setOpen((o) => !o)}
@@ -58,22 +58,13 @@ export default function FilterBar({ fy = "fy2025-26", onFyChange, range, onRange
             <div className="space-y-3">
               <label className="block text-[12px] font-medium text-ink-700">
                 From
-                <input
-                  type="date"
-                  value={draftFrom}
-                  onChange={(e) => setDraftFrom(e.target.value)}
-                  className="mt-1 h-9 w-full rounded-lg border border-surface-border px-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-brand-200"
-                />
+                <DateInput value={draftFrom} onChange={setDraftFrom} className="mt-1" />
               </label>
               <label className="block text-[12px] font-medium text-ink-700">
                 To
-                <input
-                  type="date"
-                  value={draftTo}
-                  onChange={(e) => setDraftTo(e.target.value)}
-                  className="mt-1 h-9 w-full rounded-lg border border-surface-border px-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-brand-200"
-                />
+                <DateInput value={draftTo} onChange={setDraftTo} className="mt-1" />
               </label>
+              <p className="text-[11px] text-ink-400">Type a date like "1-May-2025", or use the calendar icon.</p>
               <Button size="sm" className="w-full" onClick={applyRange}>
                 Apply
               </Button>

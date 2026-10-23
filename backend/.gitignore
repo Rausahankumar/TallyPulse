@@ -2,3 +2,10 @@ node_modules/
 .env
 .env.local
 uploads/
+.env.*
+!.env.example
+
+# Migration recovery exports (real financial data) and ad-hoc test-run
+# output - regenerated on demand, never meant to be committed.
+*-backfill-export.json
+ai-audit-results.json

@@ -1,6 +1,7 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { userError } = require("./errorHandler");
 
 const uploadDir = path.join(__dirname, "../../uploads");
 
@@ -22,7 +23,7 @@ const fileFilter = (req, file, cb) => {
   const isJson = file.mimetype === "application/json" || file.originalname.toLowerCase().endsWith(".json");
 
   if (!isJson) {
-    return cb(new Error("Only JSON files are allowed."));
+    return cb(userError(400, "Only JSON files are allowed."));
   }
 
   cb(null, true);

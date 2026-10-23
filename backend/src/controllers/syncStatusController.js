@@ -106,10 +106,13 @@ const getSyncStatus = async (req, res) => {
       },
     });
   } catch (error) {
-    const status = error.message === "Company not found." || error.message === "Company is inactive." ? 404 : 500;
-    return res.status(status).json({
+    const known = error.message === "Company not found." || error.message === "Company is inactive.";
+
+    if (!known) console.error("SYNC STATUS ERROR:", error);
+
+    return res.status(known ? 404 : 500).json({
       success: false,
-      message: error.message,
+      message: known ? error.message : "Something went wrong on the server. Please try again.",
     });
   }
 };

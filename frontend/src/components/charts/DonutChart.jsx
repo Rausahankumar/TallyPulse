@@ -3,19 +3,31 @@ import Card, { CardHeader } from "../ui/Card";
 
 const COLORS = ["#3269ea", "#22b07d", "#f5a35c", "#8b7bf0", "#ef6a6a", "#2fb6c4"];
 
-function CustomTooltip({ active, payload }) {
+const defaultValueFormatter = (v) => `₹${v.toLocaleString("en-IN")}`;
+
+function CustomTooltip({ active, payload, valueFormatter }) {
   if (!active || !payload?.length) return null;
   const p = payload[0];
   return (
     <div className="rounded-lg border border-surface-border bg-white px-3 py-2 text-xs shadow-card-lg">
       <p className="font-medium text-ink-700">{p.name}</p>
-      <p style={{ color: p.payload.fill }}>₹{p.value.toLocaleString("en-IN")}</p>
+      <p style={{ color: p.payload.fill }}>{valueFormatter(p.value)}</p>
     </div>
   );
 }
 
-// data: [{ name, value }], centerLabel/centerValue shown in the donut hole
-export default function DonutChart({ title, subtitle, data, centerLabel, centerValue, height = 240 }) {
+// data: [{ name, value }], centerLabel/centerValue shown in the donut
+// hole. `value` is a currency amount by default (valueFormatter); pass a
+// plain formatter (e.g. a count) for non-currency data.
+export default function DonutChart({
+  title,
+  subtitle,
+  data,
+  centerLabel,
+  centerValue,
+  height = 240,
+  valueFormatter = defaultValueFormatter,
+}) {
   return (
     <Card>
       <CardHeader title={title} subtitle={subtitle} />
@@ -35,7 +47,7 @@ export default function DonutChart({ title, subtitle, data, centerLabel, centerV
                 <Cell key={i} fill={COLORS[i % COLORS.length]} />
               ))}
             </Pie>
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={<CustomTooltip valueFormatter={valueFormatter} />} />
           </PieChart>
         </ResponsiveContainer>
         {centerValue && (

@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  backend-build:
+    name: Backend - install & syntax check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      # No bundler/build step on the backend (plain CommonJS), so a syntax
+      # check on every source file is the cheapest real signal that
+      # nothing is broken - catches typos/syntax errors without needing
+      # MongoDB, Tally, or any secret.
+      - name: Syntax-check every backend source file
+        run: |
+          set -e
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --check server.js
+
+      # Same check this repo's own security audit already established as
+      # the bar to hold (see TallyPulse-Security-Audit.md) - fails the
+      # build on a new high/critical vulnerability in a direct or
+      # transitive dependency.
+      - name: npm audit (production dependencies only)
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend-build:
+    name: Frontend - install, lint & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  backend-verify-suites:
+    name: Backend - self-contained verification suites
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand(\"ping\").ok' || mongo --quiet --eval 'db.runCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # A throwaway, CI-local database - never the real Atlas cluster.
+      MONGODB_URI: mongodb://127.0.0.1:27017/tallypulse_ci
+      # Not a real secret - only used to sign/verify JWTs created and
+      # checked entirely within this same CI run.
+      JWT_SECRET: ci-only-throwaway-jwt-secret-never-used-outside-this-workflow
+      # Deliberately unreachable: CI has no TallyPrime instance. The
+      # suites below are written to treat "Tally unreachable" as an
+      # expected, gracefully-handled case (see e.g.
+      # verify-reconciliation-history.js), not a crash - this just makes
+      # that path deterministic instead of hanging on a real timeout.
+      TALLY_URL: http://127.0.0.1:1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      # Deliberately NOT the full backend/verify-*.js list. Excluded:
+      #   - verify-ai-data-accuracy.js: makes real, billed Anthropic API
+      #     calls - never run automatically/unattended in CI.
+      #   - verify-company-guid-match.js, verify-voucher-lifecycle.js,
+      #     verify-sync-worker-guard.js, verify-reconciliation.js,
+      #     verify-voucher-type-classification.js: have a "LIVE TALLY
+      #     INTEGRATION" section that needs a specific real company open
+      #     in a real TallyPrime instance - meant for local/manual runs,
+      #     not CI.
+      #   - verify-duplicate-protection.js, verify-import-final.js,
+      #     verify-import-flow.js, verify-real-multi-voucher.js: known
+      #     pre-existing failures, unrelated to CI (missing company GUID
+      #     argument / stale DB name / leftover test data) - see PR #5.
+      # Everything below is self-contained: synthetic data it creates and
+      # cleans up itself, a stub Tally (not a live one) or an explicit,
+      # gracefully-handled "Tally unreachable" path, and (for the one AI
+      # suite here) a mock Claude client rather than a live API call.
+      - name: Run self-contained verify-*.js suites
+        run: |
+          set -e
+          for f in \
+            verify-tally-parser-voucher-total.js \
+            verify-migrate-voucher-total-amount.js \
+            verify-security-audit.js \
+            verify-company-identity.js \
+            verify-company-ownership.js \
+            verify-multi-company.js \
+            verify-self-heal.js \
+            verify-sync-batching.js \
+            verify-voucher-recovery.js \
+            verify-reconciliation-history.js \
+            verify-reconciliation-perf-and-failure.js \
+            verify-analytics-and-ai.js ; do
+            echo "::group::$f"
+            out=$(mktemp)
+            rc=0
+            node "$f" >"$out" 2>&1 || rc=$?
+            cat "$out"
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL $f (exit $rc)"
+              exit 1
+            fi
+            # verify-analytics-and-ai.js runs its data checks on a synthetic fixture and repeats them on the real
+            # WE FOUR tenant when present; CI has no real tenant, so it prints one SKIP per such section and is
+            # reported PARTIAL, not PASS. A SKIP in any other suite fails the job.
+            if grep -qE '^[[:space:]]*SKIP' "$out"; then
+              if [ "$f" = "verify-analytics-and-ai.js" ]; then
+                echo "PARTIAL $f (real-data repeats skipped: $(grep -cE '^[[:space:]]*SKIP' "$out"))"
+              else
+                echo "FAIL $f (a required check was skipped)"
+                exit 1
+              fi
+            else
+              echo "PASS $f"
+            fi
+            rm -f "$out"
+          done

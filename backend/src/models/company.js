@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isSafeTallyUrl } = require("../services/odbc/tallyUrl");
 
 const companySchema = new mongoose.Schema(
   {
@@ -42,6 +43,12 @@ const companySchema = new mongoose.Schema(
         type: String,
         default: null,
         trim: true,
+        // http(s) only, no credentials, no link-local / metadata addresses (audit
+        // F-10). Also enforced again at the moment of use in odbcService.
+        validate: {
+          validator: (value) => value === null || value === undefined || value === "" || isSafeTallyUrl(value),
+          message: "tallyConnection.baseUrl is not an allowed Tally address.",
+        },
       },
     },
   },

@@ -22,6 +22,14 @@ const userSchema = new mongoose.Schema(
       default: "user",
     },
 
+    // Session version (audit F-08). Every login token carries the value it was
+    // issued with; raising this number signs the account out everywhere at once
+    // (a password change or an account lock would do that). Absent = 0.
+    tokenVersion: {
+      type: Number,
+      default: 0,
+    },
+
     // The user's DEFAULT company. Empty until the user connects their first
     // company ("Connect Tally"), which fills it in; every company the user can
     // use (this one included) is also listed in UserCompanyAccess.

@@ -5,14 +5,22 @@ import MiniStatCard from "../components/ui/MiniStatCard";
 import Tabs from "../components/ui/Tabs";
 import Card, { CardHeader } from "../components/ui/Card";
 import Table from "../components/ui/Table";
-import LineTrendChart from "../components/charts/LineTrendChart";
 import AnalyticsNotice, { StaleDataBanner } from "../components/ui/AnalyticsNotice";
-import { useCompany } from "../context/CompanyContext";
+import LineTrendChart from "../components/charts/LineTrendChart";
+import { useCompany } from "../context/useCompany";
 import { useAsync } from "../lib/useAsync";
+import { usePersistedRange } from "../lib/usePersistedRange";
 import { formatCompactCurrency, formatCurrency, formatNumber } from "../lib/format";
 import { DEFAULT_RANGE, toDateInputValue } from "../lib/mockDateRange";
-import { getSalesSummary, getSalesComparison, getTopProducts, getTopCustomers } from "../api/analytics";
-import { MOCK_SALES_TREND, MOCK_RECENT_SALES_INVOICES } from "../mock/mockData";
+import {
+  getSalesSummary,
+  getSalesComparison,
+  getTopProducts,
+  getTopCustomers,
+  getSalesTrend,
+} from "../api/analytics";
+import { listSalesVouchers } from "../api/vouchers";
+import VoucherRegister from "../components/vouchers/VoucherRegister";
 
 const TABS = [
   { key: "trend", label: "Trend" },
@@ -31,28 +39,35 @@ const REAL_STATES = new Set(["valid_data", "stale_data"]);
 // arbitrary-range-vs-arbitrary-range one, so it does not follow the
 // picker above (noted inline).
 //
-// Still sample: the Trend chart (no monthly-breakdown endpoint exists)
-// and the Invoices tab (no "list of vouchers" analytics capability —
-// only aggregated summaries).
+// The Trend tab is real too: monthly totals from GET
+// /analytics/sales/trend, scoped to the exact same picked range as
+// everything else on this page. The Invoices tab is real, server-side
+// paginated and searched (GET /api/vouchers/sales via VoucherRegister)
+// - it does NOT follow the date-range picker above (voucher lists show
+// the full history by design, same as a real Sales Register; only the
+// KPI summary/comparison/top-N/trend tabs are date-scoped).
 async function loadSalesAnalytics(range) {
   const from = toDateInputValue(range.from);
   const to = toDateInputValue(range.to);
 
-  const [summary, comparison, topProducts, topCustomers] = await Promise.all([
+  const [summary, comparison, topProducts, topCustomers, trend] = await Promise.all([
     getSalesSummary({ from, to }),
     getSalesComparison(),
     getTopProducts({ from, to, limit: 10 }),
     getTopCustomers({ from, to, limit: 10 }),
+    getSalesTrend({ from, to }),
   ]);
 
-  return { summary, comparison, topProducts, topCustomers };
+  return { summary, comparison, topProducts, topCustomers, trend };
 }
 
 export default function SalesAnalytics() {
   const { activeCompany } = useCompany();
   const [tab, setTab] = useState("trend");
-  const [fy, setFy] = useState("fy2025-26");
-  const [range, setRange] = useState(DEFAULT_RANGE);
+  // Persisted per page (localStorage) - a browser refresh restores the
+  // last range the user picked here instead of resetting to the
+  // default.
+  const { range, setRange, reset: resetRange } = usePersistedRange("tp:range:sales", DEFAULT_RANGE);
   const { data, loading, error } = useAsync(
     () => loadSalesAnalytics(range),
     [activeCompany?.tenantId, range.from.getTime(), range.to.getTime()]
@@ -64,13 +79,7 @@ export default function SalesAnalytics() {
   return (
     <div>
       <PageHeader title="Sales Analytics" subtitle="Understand your sales performance and trends." />
-      <FilterBar
-        fy={fy}
-        onFyChange={setFy}
-        range={range}
-        onRangeChange={setRange}
-        onReset={() => setRange(DEFAULT_RANGE)}
-      />
+      <FilterBar range={range} onRangeChange={setRange} onReset={resetRange} />
 
       {error ? (
         <div className="rounded-2xl border border-surface-border bg-white p-10 text-center text-sm text-danger-600">
@@ -114,13 +123,19 @@ export default function SalesAnalytics() {
           <Tabs tabs={TABS} active={tab} onChange={setTab} />
 
           {tab === "trend" && (
-            <LineTrendChart
-              title="Sales Trend"
-              subtitle="Sample data — no monthly breakdown endpoint exists yet"
-              seriesName="Sales"
-              data={MOCK_SALES_TREND}
-              height={300}
-            />
+            REAL_STATES.has(data.trend.state) && data.trend.data.items.length > 0 ? (
+              <LineTrendChart
+                title="Sales Trend"
+                subtitle="Real monthly totals, scoped to the date range above"
+                data={data.trend.data.items.map((i) => ({ label: i.label, value: i.totalSales }))}
+                seriesName="Sales"
+              />
+            ) : (
+              <Card>
+                <CardHeader title="Sales Trend" />
+                <AnalyticsNotice state={data.trend.state} message={data.trend.message} />
+              </Card>
+            )
           )}
 
           {tab === "customers" && (
@@ -164,15 +179,11 @@ export default function SalesAnalytics() {
 
           {tab === "invoices" && (
             <Card>
-              <CardHeader title="Recent Sales Invoices" subtitle="Sample data — no per-voucher analytics endpoint exists yet" />
-              <Table
-                rowKey="date"
-                rows={MOCK_RECENT_SALES_INVOICES}
-                columns={[
-                  { key: "date", header: "Date" },
-                  { key: "customer", header: "Customer" },
-                  { key: "amount", header: "Amount", align: "right", render: (r) => formatCurrency(r.amount) },
-                ]}
+              <CardHeader title="Sales Invoices" subtitle="Real data — search across your full sales history" />
+              <VoucherRegister
+                fetcher={listSalesVouchers}
+                partyLabel="Customer"
+                emptyMessage="No sales vouchers have synced for this company yet."
               />
             </Card>
           )}

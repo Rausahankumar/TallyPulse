@@ -1,5 +1,8 @@
+const mongoose = require("mongoose");
+const { GENERIC_SERVER_ERROR } = require("../middleware/errorHandler");
 const Chat = require("../models/chat.model");
 const { handleChatTurn, callClaude } = require("../services/ai/chatOrchestrator");
+const { tryAnswerWithQueryEngine } = require("../services/query/queryChat");
 
 // --------------------------------------------------
 // POST /api/chat/:chatId?/message
@@ -33,6 +36,10 @@ const sendChatMessage = async (req, res) => {
 
     let chat;
     if (req.params.chatId) {
+      if (!mongoose.isValidObjectId(req.params.chatId)) {
+        return res.status(404).json({ success: false, message: "Chat not found." });
+      }
+
       chat = await Chat.findOne({ _id: req.params.chatId, tenantId, userId });
       if (!chat) {
         return res.status(404).json({
@@ -59,12 +66,20 @@ const sendChatMessage = async (req, res) => {
 
     chat.messages.push({ role: "user", text: message });
 
-    const structured = await handleChatTurn({
-      context: { tenantId, companyGuid: req.companyContext.companyGuid },
-      userMessage: message,
-      conversationHistory,
-      claudeClient: callClaude,
-    });
+    const chatContext = { tenantId, companyGuid: req.companyContext.companyGuid };
+
+    // Sales/Purchase questions go router -> planner -> validator -> cache -> engine first. Anything that
+    // path cannot answer (or a disabled/failed engine) falls through to the existing tool chat unchanged.
+    const engine = await tryAnswerWithQueryEngine({ context: chatContext, userMessage: message, conversationHistory });
+
+    const structured = engine.handled
+      ? engine.structured
+      : await handleChatTurn({
+          context: chatContext,
+          userMessage: message,
+          conversationHistory,
+          claudeClient: callClaude,
+        });
 
     chat.messages.push({
       role: "assistant",
@@ -98,11 +113,16 @@ const sendChatMessage = async (req, res) => {
     // always answering 500, without leaking the raw error body.
     const upstreamStatus = typeof error.status === "number" ? error.status : null;
 
+    if (!upstreamStatus) {
+      // Name and message only: never the request, the prompt or a response body.
+      console.error("CHAT ERROR:", error && error.name, error && error.message);
+    }
+
     return res.status(upstreamStatus || 500).json({
       success: false,
       message: upstreamStatus
         ? "The AI service is temporarily unavailable. Please try again shortly."
-        : error.message || "Chat request failed.",
+        : GENERIC_SERVER_ERROR,
     });
   }
 };
@@ -123,6 +143,11 @@ const getChat = async (req, res) => {
   const { tenantId } = req.companyContext;
   const userId = req.user.id;
 
+  // A malformed id can never match a chat: answer "not found", not a database error (F-12).
+  if (!mongoose.isValidObjectId(req.params.chatId)) {
+    return res.status(404).json({ success: false, message: "Chat not found." });
+  }
+
   const chat = await Chat.findOne({ _id: req.params.chatId, tenantId, userId }).lean();
 
   if (!chat) {
@@ -135,6 +160,10 @@ const getChat = async (req, res) => {
 const deleteChat = async (req, res) => {
   const { tenantId } = req.companyContext;
   const userId = req.user.id;
+
+  if (!mongoose.isValidObjectId(req.params.chatId)) {
+    return res.status(404).json({ success: false, message: "Chat not found." });
+  }
 
   const result = await Chat.deleteOne({ _id: req.params.chatId, tenantId, userId });
 

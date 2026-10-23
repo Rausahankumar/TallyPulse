@@ -30,10 +30,12 @@ TallyPulse synchronizes accounting data (Sales and Purchase vouchers) out of a l
 | Validation | `zod` | AI tool argument schemas only |
 | Auth | `jsonwebtoken` + `bcryptjs` | see §4 |
 | Tally integration | `axios` over Tally's HTTP/JSONEx gateway | see §6 |
-| File upload | `multer` | disk storage, `backend/uploads/` |
+| File upload | `multer` | disk storage, `backend/uploads/`; the uploaded file is deleted as soon as it has been processed or refused |
+| HTTP hardening | `helmet` + `cors` | security headers and a CORS allow-list (`CORS_ORIGINS`, default: the local Vite origins) — `src/middleware/httpSecurity.js` |
+| Error responses | `src/middleware/errorHandler.js` | clients only see messages the code chose; library/database error text stays in the server log |
 | Env config | `dotenv` | `backend/.env` |
 
-**Declared but unused dependencies** (present in `package.json`, no active `require()` anywhere in `src/` or the route/server files — verified by repository-wide search): `odbc`, `joi`, `winston`, `bcrypt` (the app uses `bcryptjs`, a different package, for actual hashing). These are leftovers from an earlier design (a real ODBC driver connection to Tally was tried and abandoned — see the commented-out block at the top of `src/services/odbc/odbcService.js` — in favor of the HTTP/JSONEx integration actually in use today).
+**Formerly declared but unused dependencies (removed 2026-09-21, audit F-17):** `odbc`, `joi`, `winston`, `bcrypt` (the app uses `bcryptjs`, a different package, for actual hashing). They were leftovers from an earlier design (a real ODBC driver connection to Tally was tried and abandoned — see the commented-out block at the top of `src/services/odbc/odbcService.js` — in favor of the HTTP/JSONEx integration actually in use today).
 
 ### 1.3 High-level architecture
 
@@ -211,7 +213,7 @@ The unique identity of a voucher master is `{tenantId, tallyGuid}` — **not** `
 
 ### 6.1 Connection / configuration
 
-TallyPrime exposes an HTTP/JSONEx gateway (its "ODBC port," here used for HTTP, not the actual ODBC protocol — see §1.2 on the abandoned `odbc` package). Default: `http://localhost:9000`, overridable via `TALLY_URL`, or per-company via `Company.tallyConnection.baseUrl`. All requests are `axios.post(baseUrl, tdlRequestBody, {headers})` with a 30-second timeout (`src/services/odbc/odbcService.js`).
+TallyPrime exposes an HTTP/JSONEx gateway (its "ODBC port," here used for HTTP, not the actual ODBC protocol — see §1.2 on the abandoned `odbc` package). Default: `http://localhost:9000`, overridable via `TALLY_URL`, or per-company via `Company.tallyConnection.baseUrl`. Whichever address is used must be `http://` or `https://`, without credentials, and not a link-local / cloud-metadata address (`src/services/odbc/tallyUrl.js`, checked when a company is saved and again where each request is built; localhost and LAN addresses are allowed — audit F-10). All requests are `axios.post(baseUrl, tdlRequestBody, {headers})` with a 30-second timeout (`src/services/odbc/odbcService.js`).
 
 ### 6.2 Required Tally-side setup
 
@@ -243,23 +245,27 @@ All routes are mounted in `server.js`. There are exactly **11 routes** in the wh
 | Method | Path | Auth | Controller |
 |---|---|---|---|
 | GET | `/` | none | inline in `server.js` (health check) |
-| POST | `/api/auth/register` | none | `authController.register` |
-| POST | `/api/auth/login` | none | `authController.login` |
+| POST | `/api/auth/register` | none (rate-limited: 20 per hour per client) | `authController.register` |
+| POST | `/api/auth/login` | none (rate-limited: 10 failed attempts per client + e-mail and 100 per client, per 15 minutes) | `authController.login` |
 | POST | `/api/auth/companies` | **JWT required** (no company needed) | `authController.addCompany` ("Connect Tally") |
 | GET | `/api/auth/companies` | **JWT required** | `authController.listCompanies` |
 | POST | `/api/auth/switch-company` | **JWT required** | `authController.switchCompany` |
-| PATCH | `/api/auth/company` | **JWT + a connected company** | `authController.updateCompanyName` |
-| POST | `/api/import/tally-json` | **JWT required** | `importController.importTallyJson` |
-| POST | `/api/import/tally-live` | **JWT required** | `importController.importTallyLive` |
-| GET | `/api/odbc/company` | **none** (see warning below) | `odbcController.testTallyConnection` |
-| GET | `/api/odbc/sales` | **none** (see warning below) | `odbcController.getSales` |
+| PATCH | `/api/auth/company` | **JWT + a connected company** (access re-checked live) | `authController.updateCompanyName` |
+| POST | `/api/import/tally-json` | **JWT + a connected company** (access re-checked live, before the upload is stored) | `importController.importTallyJson` |
+| POST | `/api/import/tally-live` | **JWT + a connected company** (access re-checked live) | `importController.importTallyLive` |
+| GET | `/api/odbc/company` | **JWT required** (no company needed — used during onboarding) | `odbcController.testTallyConnection` |
+| GET | `/api/odbc/sales` | **JWT + a connected company**, and it must be the company Tally has selected | `odbcController.getSales` |
 | GET | `/api/chat/` | **JWT + activeCompanyContext** | `chatController.listChats` |
 | POST | `/api/chat/message` | **JWT + activeCompanyContext** | `chatController.sendChatMessage` |
 | POST | `/api/chat/:chatId/message` | **JWT + activeCompanyContext** | `chatController.sendChatMessage` |
 | GET | `/api/chat/:chatId` | **JWT + activeCompanyContext** | `chatController.getChat` |
 | DELETE | `/api/chat/:chatId` | **JWT + activeCompanyContext** | `chatController.deleteChat` |
 
-> ⚠️ **Security note (verified in code, not a guess):** `src/routes/odbcRoutes.js` mounts `/company` and `/sales` with **no `auth` middleware at all** — the commented-out earlier version of this file did include `auth`, but the active code does not. Both endpoints proxy directly to TallyPrime and require no authentication today. This should be treated as a known gap (see §16), not fixed here per the "don't modify app code unless necessary for documentation accuracy" instruction for this task.
+> **Security note (updated 2026-09-21, audit finding F-03):** `src/routes/odbcRoutes.js` used to mount `/company` and `/sales` with no `auth` middleware. Both now require a signed-in user; `/sales` additionally requires a live, authorized company and answers only when that company is the one Tally has selected (otherwise `403`). Company access for the sync, import and rename routes is also re-checked against the live account on every request (finding F-06). See `TallyPulse-Security-Audit.md`, Section 0.
+
+**Request ids and logs (audit F-19).** Every response carries an `X-Request-Id` header (a client-sent id is reused only if it is short and plain); a server-error body also repeats it as `requestId`, and the matching server-log line starts with `request=<id>`. Failed logins and rate-limit hits are logged with the id and the client address — never the e-mail or password. **Git:** real `.env` files (any `.env.*`) are ignored at the repository root and in `backend/` and `frontend/`; `.env.example` stays committable.
+
+**Sessions and error responses (updated 2026-09-21, audit F-08 / F-12).** Every authenticated request loads the account once: a deleted user, or a token whose session version (`tv` claim) differs from `User.tokenVersion`, gets `401`. Raising `tokenVersion` signs an account out everywhere. Error bodies are always `{ success:false, message }` with a message chosen by the code — malformed JSON is `400 The request body is not valid JSON.`, an oversized body or upload is `413`, and anything unexpected is `500 Something went wrong on the server. Please try again.` (details in the server log only).
 
 ### 7.1 `GET /`
 
@@ -272,7 +278,7 @@ Health check. No auth.
 
 ### 7.2 `POST /api/auth/register`
 
-Creates an account. No auth (this *is* the sign-up path). **No company, GUID or tenant is asked for** — the company is connected afterwards (§7.3b).
+Creates an account. No auth (this *is* the sign-up path). The password must be at least 8 characters and at most 72 bytes (bcrypt only uses the first 72 bytes); `name`, `email` and `password` must be text. **No company, GUID or tenant is asked for** — the company is connected afterwards (§7.3b).
 
 **Body (JSON):**
 ```json
@@ -292,7 +298,7 @@ Creates an account. No auth (this *is* the sign-up path). **No company, GUID or 
 | Status | Condition |
 |---|---|
 | 400 | any of `name/email/password` missing |
-| 400 | `email` already registered |
+| 400 | the address may already have an account — the reply is deliberately the generic "We could not create this account. If you already have one, sign in instead." (audit F-16) |
 | 500 | unexpected server/DB error |
 
 ### 7.3 `POST /api/auth/login`
@@ -383,7 +389,7 @@ Manual file-upload import. **Requires** `Authorization: Bearer <JWT>`. `multipar
 
 Fetches Sales vouchers directly from the live TallyPrime HTTP gateway (date-range based, **not** the AlterID-incremental path) and runs them through the same import pipeline. **Requires JWT.**
 
-**Query params:** `fromDate`, `toDate` — both optional, `YYYY-MM-DD`; default to "today" for both if omitted.
+**Query params:** `fromDate`, `toDate` — both optional, `YYYY-MM-DD`; default to "today" for both if omitted. The range may span **at most 92 days** (a wider query can hang TallyPrime); a longer range, a reversed range (`toDate` before `fromDate`) or a repeated parameter is refused with `400` before Tally is contacted. Import longer periods in several requests.
 
 ```
 POST /api/import/tally-live?fromDate=2026-09-01&toDate=2026-09-17
@@ -392,13 +398,13 @@ Authorization: Bearer <token>
 
 **Response shape:** identical to §7.4.
 
-**Errors:** 503 if `"Tally is unavailable: ..."` (connection failure), 400 for invalid dates / no voucher data in range / bad company context, 401 if JWT lacks `companyGuId`, 500 otherwise.
+**Errors:** 503 if `"Tally is unavailable: ..."` (connection failure), 400 for invalid or too-wide date ranges / no voucher data in range / bad company context, 401 if JWT lacks `companyGuId`, 500 otherwise (with a generic message — the details are in the server log).
 
 > There is **no equivalent live-import endpoint for Purchase vouchers** — Purchase data only enters MongoDB via the automatic incremental sync worker (§8.2), not through any manual HTTP endpoint.
 
 ### 7.6 `GET /api/odbc/company`
 
-Tests connectivity to TallyPrime and returns the company name TDL report. **No auth required** (see the warning in §7.0).
+Tests connectivity to TallyPrime and returns the company name TDL report. **JWT required** (any signed-in account; see the note in §7.0).
 
 **Response 200:**
 ```json
@@ -416,7 +422,7 @@ Tests connectivity to TallyPrime and returns the company name TDL report. **No a
 
 ### 7.7 `GET /api/odbc/sales`
 
-Fetches raw Sales vouchers for "today" (no date-range params are wired to this route) directly from Tally and returns the **raw, unparsed** Tally JSONEx payload — this does **not** write to MongoDB and does **not** go through the parser/mapper pipeline. **No auth required.**
+Fetches raw Sales vouchers for "today" (no date-range params are wired to this route) directly from Tally and returns the **raw, unparsed** Tally JSONEx payload — this does **not** write to MongoDB and does **not** go through the parser/mapper pipeline. **JWT + a connected company required, and the company open (selected) in Tally must be the caller's own — otherwise `403`.**
 
 **Response 200:** `{ "success": true, "data": { /* raw Tally response */ } }`
 **Errors:** 500 on Tally connection failure.
@@ -614,7 +620,7 @@ Both `startTallySyncWorker()` and `startReconciliationWorker()` are started from
 | Chat data model, routes, tool-calling loop | **DONE**, tested against a mock Claude client |
 | Live Claude API call | **NOT IMPLEMENTED** (stub throws; no SDK/key) |
 | AI tool coverage of `getTopPurchasedProducts` | **NOT IMPLEMENTED** as a tool (analytics function exists, unexposed) |
-| `/api/odbc/*` authentication | **NOT IMPLEMENTED** (routes are open — see §16) |
+| `/api/odbc/*` authentication | **DONE** (2026-09-21, audit F-03) |
 | Frontend | **NOT IMPLEMENTED** — no code exists |
 | Automated test framework | **NOT IMPLEMENTED** — ad-hoc `node script.js` only |
 
@@ -624,7 +630,7 @@ Both `startTallySyncWorker()` and `startReconciliationWorker()` are started from
 
 Only issues actually present and observed in this repository/testing are listed.
 
-1. **`/api/odbc/company` and `/api/odbc/sales` require no authentication.** They proxy directly to TallyPrime; anyone able to reach the backend's HTTP port can hit them.
+1. ~~`/api/odbc/company` and `/api/odbc/sales` require no authentication.~~ **Fixed 2026-09-21 (audit F-03):** both need a signed-in user; `/sales` also needs the caller's own company to be the one Tally has selected. Remaining note: `/company` returns Tally's list of open company names to any signed-in account.
 2. **Sensitive data is logged to the console.** `authController.js`'s `register`/`login` handlers log full company/user objects and JWT payloads via `console.log`. Pre-existing, flagged in prior sessions, not fixed (kept out of scope for this documentation task per instructions not to modify app code beyond what's necessary).
 3. **Reconciliation's empty-result guard cannot distinguish "bad Tally response" from "this tenant genuinely has zero vouchers."** Both currently abort as `aborted_unsafe`. Safe by design, but would present as a permanently-stuck reconciliation state for a legitimately empty new tenant — untested against that specific scenario.
 4. **Reconciliation is untested at real production scale** (thousands to tens of thousands of vouchers) — only verified synthetically to 8,000.
@@ -635,7 +641,7 @@ Only issues actually present and observed in this repository/testing are listed.
 9. **Category-level analytics is unsupported by design** — the current schema does not capture stock-item category/group.
 10. **On-prem/LAN Tally connectivity assumption** — see §14.2. Any future cloud deployment of the backend needs a connectivity story to reach TallyPrime that does not exist in this codebase today.
 11. **No automated test framework or CI** — correctness relies entirely on the ad-hoc verification scripts described in §13, run manually.
-12. **Several `package.json` dependencies are declared but unused** (`odbc`, `joi`, `winston`, `bcrypt`) — dead weight, not a functional risk, but worth pruning eventually.
+12. ~~Several `package.json` dependencies are declared but unused (`odbc`, `joi`, `winston`, `bcrypt`)~~ — **removed 2026-09-21 (audit F-17).**
 
 ---
 
@@ -700,7 +706,7 @@ D:\TallyPulse\
 │   │       └── sync/                 # tallySyncWorker.js, reconciliationWorker.js,
 │   │                                 # reconciliation.js, voucherPersistence.js
 │   ├── sample-data/                  # tally-sales.json, tally-multi-vouchers.json
-│   ├── uploads/                      # multer disk storage target
+│   ├── uploads/                      # multer disk storage target (files are deleted after processing)
 │   └── verify-*.js, list-indexes.js, etc.  # ad-hoc verification scripts (see §13)
 ├── docs/                             # this file
 ├── postman/                          # scaffold only — no populated collections/environments yet
@@ -821,11 +827,11 @@ curl -X POST "http://localhost:5000/api/import/tally-live?fromDate=2026-09-01&to
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### 19.5 Test raw Tally connectivity (currently unauthenticated)
+### 19.5 Test raw Tally connectivity (needs a signed-in user)
 
 ```bash
-curl http://localhost:5000/api/odbc/company
-curl http://localhost:5000/api/odbc/sales
+curl -H "Authorization: Bearer <token>" http://localhost:5000/api/odbc/company
+curl -H "Authorization: Bearer <company-scoped-token>" http://localhost:5000/api/odbc/sales
 ```
 
 ### 19.6 Chat — list, send, fetch, delete

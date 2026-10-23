@@ -12,9 +12,9 @@ import { TableSkeleton } from "../components/ui/Skeleton";
 import { importTallyLive } from "../api/imports";
 import { getSyncStatus } from "../api/sync";
 import { ApiError } from "../api/client";
-import { useAsync } from "../lib/useAsync";
+import { usePolling } from "../lib/usePolling";
 import { useTallyConnectionTest } from "../lib/useTallyConnectionTest";
-import { useCompany } from "../context/CompanyContext";
+import { useCompany } from "../context/useCompany";
 import { formatCurrency } from "../lib/format";
 import { toDateInputValue, parseDateInputValue, formatRangeLabel } from "../lib/mockDateRange";
 
@@ -96,10 +96,17 @@ export default function SyncData() {
     run: handleTestConnection,
   } = useTallyConnectionTest(activeCompany?.companyName);
 
-  const { data: syncStatus, loading: statusLoading, error: statusError, reload: reloadStatus } = useAsync(
-    getSyncStatus,
-    [activeCompany?.tenantId]
-  );
+  // Polls GET /api/sync/status every 15s so this page reflects the
+  // background incremental worker (runs every ~60s) and reconciliation
+  // worker (every ~20min) without a manual refresh - see
+  // lib/usePolling.js for the cleanup/backoff/no-flicker behavior.
+  const {
+    data: syncStatus,
+    loading: statusLoading,
+    error: statusError,
+    pollError: statusPollError,
+    reload: reloadStatus,
+  } = usePolling(getSyncStatus, { deps: [activeCompany?.tenantId], intervalMs: 15000 });
 
   const [fromDate, setFromDate] = useState(() => toDateInputValue(todayLocal()));
   const [toDate, setToDate] = useState(() => toDateInputValue(todayLocal()));
@@ -159,6 +166,15 @@ export default function SyncData() {
   return (
     <div>
       <PageHeader title="Sync & Data" subtitle="Monitor your data synchronization and system health." />
+
+      {!statusError && (
+        <p className="mb-4 flex items-center gap-1.5 text-[12px] text-ink-400">
+          <RefreshCw className="h-3 w-3" />
+          {statusPollError
+            ? "Couldn't refresh just now — showing the last known state, retrying automatically."
+            : "Auto-refreshing every 15 seconds"}
+        </p>
+      )}
 
       <Card className="mb-5">
         <CardHeader

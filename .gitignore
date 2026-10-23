@@ -1,0 +1,15 @@
+# Secrets: never commit real environment files. Use .env.example for a template.
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+
+# Logs
+*.log
+
+# Customer files uploaded through the manual import (deleted after processing, but never commit any)
+backend/uploads/

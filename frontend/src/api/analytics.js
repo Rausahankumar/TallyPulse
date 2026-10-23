@@ -47,10 +47,29 @@ export function getTopCustomers({ from, to, period, limit } = {}) {
   return get("/analytics/sales/top-customers", { ...buildPeriodParams({ period, from, to }), limit });
 }
 
+// Monthly totals over a range - the default (no from/to) is the
+// backend's own last-6-months-of-real-data window, not a wall-clock
+// assumption made here.
+export function getSalesTrend({ from, to } = {}) {
+  return get("/analytics/sales/trend", from && to ? { from, to } : {});
+}
+
+export function getCustomerCounts({ from, to, period } = {}) {
+  return get("/analytics/sales/customer-counts", buildPeriodParams({ period, from, to }));
+}
+
 export function getPurchaseSummary({ from, to, period } = {}) {
   return get("/analytics/purchases/summary", buildPeriodParams({ period, from, to }));
 }
 
 export function getPurchaseComparison({ comparisonType } = {}) {
   return get("/analytics/purchases/comparison", { comparisonType });
+}
+
+export function getTopSuppliers({ from, to, period, limit } = {}) {
+  return get("/analytics/purchases/top-suppliers", { ...buildPeriodParams({ period, from, to }), limit });
+}
+
+export function getPurchaseTrend({ from, to } = {}) {
+  return get("/analytics/purchases/trend", from && to ? { from, to } : {});
 }

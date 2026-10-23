@@ -2,7 +2,7 @@ import { useState } from "react";
 import { X, KeyRound } from "lucide-react";
 import Input from "../ui/Input";
 import Button from "../ui/Button";
-import { useCompany } from "../../context/CompanyContext";
+import { useCompany } from "../../context/useCompany";
 import { ApiError } from "../../api/client";
 
 // "Connect another company": the SAME logged-in account, re-authorized with
