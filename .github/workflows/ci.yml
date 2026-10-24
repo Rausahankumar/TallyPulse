@@ -182,6 +182,7 @@ jobs:
             verify-customer-count.js \
             verify-analysis-plan.js \
             verify-analysis-planner.js \
+            verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \
