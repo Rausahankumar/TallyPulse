@@ -2,11 +2,12 @@
  * The five basic business questions a reviewer asked Ask AI (2026-10-24), through the real chat turn
  * (queryChat.tryAnswerWithQueryEngine): the query planner, ASK_AI_ANALYSIS modes, the analysis planner, the executor, the
  * insight tools, freshness and the answer text. Questions 1, 2, 3 and 5 were refused ("needs several separate analyses")
- * because ASK_AI_ANALYSIS was off; question 4 answered with a failed-Purchase-sync warning.
+ * because ASK_AI_ANALYSIS was off; question 4 answered with a failed-Purchase-sync warning. ASK_AI_ANALYSIS unset now
+ * means on; basic and off are still checked.
  *
- *   1. "discount percentage of aug 2025"                     -> one discount_summary step (basic)
+ *   1. "discount percentage of aug 2025"                     -> one discount_summary step
  *   2. "jo hamari sale hui hai wo purchase se compare karo and profit batao of aug 2025"
- *                                                            -> sales total next to purchase total + "not profit" (basic);
+ *                                                            -> sales total next to purchase total + "not profit";
  *                                                               a product_margin step for it stays the profit refusal
  *   3. "total margin of aug 2025"                            -> one product_margin step: INDICATIVE margin, never profit
  *   4. "purchase value of aug 2025"                          -> single query; failed Purchase sync is warned
@@ -30,7 +31,7 @@ require("dotenv").config();
   require("axios").post = () => { throw new Error("NETWORK BLOCKED"); };
 }
 process.env.AI_USAGE_PERSIST = "off";
-delete process.env.ASK_AI_ANALYSIS; // the default (basic) is part of what is tested
+delete process.env.ASK_AI_ANALYSIS; // the default (unset = on) is part of what is tested
 
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
@@ -42,7 +43,7 @@ const ap = require("./src/services/query/analysisPlanner");
 const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { CATALOG } = require("./src/services/query/semanticCatalog");
 const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
-const { analysisMode, basicShape } = require("./src/services/query/basicAnalysis");
+const { analysisMode, analysisModeUnrecognised, basicShape, salesVsPurchaseMismatch } = require("./src/services/query/basicAnalysis");
 const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
 
 let pass = 0;
@@ -120,7 +121,9 @@ const PURCHASE_SYNC_FAILED = /The last Purchase sync attempt failed. Any data sh
 
 async function main() {
   console.log("=== 0. Mode (ASK_AI_ANALYSIS) and the basic shapes ===");
-  check("mode-default", "unset -> basic; on/off/basic as written; anything else -> basic; deps override", [analysisMode(null, {}), analysisMode(null, { ASK_AI_ANALYSIS: "on" }), analysisMode(null, { ASK_AI_ANALYSIS: "OFF" }), analysisMode(null, { ASK_AI_ANALYSIS: "yes" }), analysisMode({ analysisEnabled: true }, {}), analysisMode({ analysisMode: "off" }, { ASK_AI_ANALYSIS: "on" })], ["basic", "on", "off", "basic", "on", "off"]);
+  check("mode-default", "unset or blank -> on; on/basic/off as written (any case); an unrecognised value fails closed to off; deps override the environment", [analysisMode(null, {}), analysisMode(null, { ASK_AI_ANALYSIS: "  " }), analysisMode(null, { ASK_AI_ANALYSIS: "on" }), analysisMode(null, { ASK_AI_ANALYSIS: "Basic" }), analysisMode(null, { ASK_AI_ANALYSIS: "OFF" }), analysisMode(null, { ASK_AI_ANALYSIS: "of" }), analysisMode({ analysisEnabled: true }, { ASK_AI_ANALYSIS: "off" }), analysisMode({ analysisMode: "off" }, {})], ["on", "on", "on", "basic", "off", "off", "on", "off"]);
+  check("mode-unrecognised", "the server's start-up warning fires only for a value that is not on/basic/off", [analysisModeUnrecognised({}), analysisModeUnrecognised({ ASK_AI_ANALYSIS: "off" }), analysisModeUnrecognised({ ASK_AI_ANALYSIS: "of" })], [false, false, true]);
+  check("mode-process-env", "with ASK_AI_ANALYSIS removed from this process, the chat turn's mode is on", analysisMode(null), "on");
   const shape = (steps) => { const s = basicShape({ v: 1, steps }); return s && s.kind; };
   const SEP = { kind: "custom", from: "2025-09-01", to: "2025-09-30" };
   check("shape-basic", "basic: one discount step, one margin step, one sales total next to one purchase total (same period, same basis)", [
@@ -170,7 +173,7 @@ async function main() {
     let out = await ask(Q1, model);
     let text = out.structured.answer;
     show("Q1", out);
-    check("q1-answered", "default (basic): answered by the discount tool, two model calls", [metaOf(out).route, metaOf(out).status, metaOf(out).claudeCalls], ["analysis", "answered", 2]);
+    check("q1-answered", "default (ASK_AI_ANALYSIS unset = on): answered by the discount tool, two model calls", [metaOf(out).route, metaOf(out).status, metaOf(out).claudeCalls], ["analysis", "answered", 2]);
     check("q1-figures", "verified discount only: 100 on a list value of 1,500 = 6.67%, billed 1,400 (Jul 31 / Sep 1 lines outside August are not counted)", [/Total: discount 100 on a list value of 1,500 \(6\.67%\), billed 1,400/.test(text), /2025-08-01 to 2025-08-31/.test(text)], [true, true]);
     check("q1-basis", "the answer states the discount basis (Tally's verified line discount, before tax)", /Discount = list value − billed amount \(before tax\)/.test(text), true);
     model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [{ id: "d", kind: "insight", tool: "discount_summary", args: { period: AUG } }] } }] });
@@ -183,7 +186,7 @@ async function main() {
     out = await ask(Q2, model);
     text = out.structured.answer;
     show("Q2", out);
-    check("q2-answered", "basic: sales total next to purchase total, both measured", [metaOf(out).route, metaOf(out).status, metaOf(out).steps], ["analysis", "answered", ["ok", "ok"]]);
+    check("q2-answered", "default (on): sales total next to purchase total, both measured", [metaOf(out).route, metaOf(out).status, metaOf(out).steps], ["analysis", "answered", ["ok", "ok"]]);
     check("q2-values", "August 2025 only: sales 1,770.00, purchases 1,534.00, difference 236.00 (sales higher)", [/- Sales: ₹1,770\.00/.test(text), /- Purchases: ₹1,534\.00/.test(text), /Difference \(sales − purchases\): ₹236\.00 \(sales higher\)/.test(text)], [true, true, true]);
     check("q2-not-profit", "the difference is never called profit, and profit is explicitly not calculated (catalog reason)", [/This difference is not profit/.test(text), text.includes(`Profit is not calculated. ${CATALOG.unsupported.find((u) => u.id === "profit_margin").reason}`), /\bprofit (is|of|was) ₹/i.test(text)], [true, true, false]);
     check("q2-tenant", "the other tenant's 50,000 / 70,000 never appear", /50,000|70,000/.test(text), false);
@@ -198,7 +201,7 @@ async function main() {
     out = await ask(Q3, model);
     text = out.structured.answer;
     show("Q3", out);
-    check("q3-answered", "basic: answered by the indicative-margin tool", [metaOf(out).route, metaOf(out).status], ["analysis", "answered"]);
+    check("q3-answered", "default (on): answered by the indicative-margin tool", [metaOf(out).route, metaOf(out).status], ["analysis", "answered"]);
     check("q3-figures", "indicative profit 700 at 50% on the 2 products with a cost (hand-derived)", /All 2 products sold: indicative profit 700 at an indicative margin of 50% on the 2 products with a cost\./.test(text), true);
     check("q3-labelled", "headed as indicative, not accounting profit", /Indicative margin per product \(not accounting profit\)/.test(text), true);
 
@@ -234,8 +237,31 @@ async function main() {
     out = await ask(Q5, model);
     check("q5-year-guard", "no year in the question: a plan dated 2025 is never run - the existing year guard asks instead (no invented year)", [metaOf(out).status, metaOf(out).code, /- Sales:/.test(out.structured.answer)], ["needs_clarification", "year_missing", false]);
     model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal({ kind: "custom", from: "2025-09-01", to: "2025-09-30" })] } }] });
+    out = await ask(Q5AUG, model, { analysisMode: "basic" });
+    check("q5-mismatched-periods-basic", "ASK_AI_ANALYSIS=basic: a pair with DIFFERENT periods is outside basic analysis: the fixed refusal, nothing run", [metaOf(out).status, metaOf(out).code, out.structured.answer.startsWith("This question needs several separate analyses")], ["unsupported", "planner_needs_analysis", true]);
+
+    console.log("\n=== 5b. Comparability (default on): a pair is compared only on the same period and the same basis ===");
+    const SEP = { kind: "custom", from: "2025-09-01", to: "2025-09-30" };
+    check("pair-mismatch-detect", "detected: different periods; different bases (incl. tax vs before tax); both; a comparable pair and other plans are not mismatches", [
+      JSON.stringify(salesVsPurchaseMismatch({ v: 1, steps: [salesTotal(), purchaseTotal(SEP)] })),
+      JSON.stringify(salesVsPurchaseMismatch({ v: 1, steps: [salesTotal(), purchaseTotal(AUG, "lineAmount")] })),
+      (salesVsPurchaseMismatch({ v: 1, steps: [salesTotal(), purchaseTotal(SEP, "lineAmount")] }) || { reasons: [] }).reasons.length,
+      salesVsPurchaseMismatch({ v: 1, steps: [salesTotal(), purchaseTotal()] }),
+      salesVsPurchaseMismatch({ v: 1, steps: [{ id: "d", kind: "insight", tool: "discount_summary", args: {} }] }),
+    ], [
+      JSON.stringify({ reasons: ["the two totals cover different periods"] }),
+      JSON.stringify({ reasons: ["they use different amount bases (sales: invoice totals including tax; purchases: item values before tax)"] }),
+      2, null, null,
+    ]);
+    model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal(SEP)] } }] });
     out = await ask(Q5AUG, model);
-    check("q5-mismatched-periods", "a pair with DIFFERENT periods is outside basic analysis: the fixed refusal, nothing run", [metaOf(out).status, metaOf(out).code, out.structured.answer.startsWith("This question needs several separate analyses")], ["unsupported", "planner_needs_analysis", true]);
+    text = out.structured.answer;
+    show("Q5 mismatched periods (default on)", out);
+    check("pair-periods-on", "default (on): Aug sales next to Sep purchases are both shown, but NOT compared: the reason is stated, no difference, never profit", [metaOf(out).status, /Sales vs purchases: not compared\*\* - the two totals cover different periods, so no difference is shown/.test(text), /Difference \(sales − purchases\)/.test(text), /Neither total, nor any difference between them, is profit\./.test(text), /\bprofit (is|of|was) ₹/i.test(text)], ["answered", true, false, true, false]);
+    model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal(AUG, "lineAmount")] } }] });
+    out = await ask(Q2, model);
+    text = out.structured.answer;
+    check("pair-basis-on", "default (on): tax-inclusive sales next to pre-tax purchases are NOT compared (different amount bases stated); profit asked -> profit is not calculated", [metaOf(out).status, /not compared\*\* - they use different amount bases \(sales: invoice totals including tax; purchases: item values before tax\)/.test(text), /Difference \(sales − purchases\)/.test(text), text.includes(`Profit is not calculated. ${CATALOG.unsupported.find((u) => u.id === "profit_margin").reason}`)], ["answered", true, false, true]);
     model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal()] } }] });
     out = await ask(Q5AUG, model, { analysisMode: "on" });
     check("q5-on", "ASK_AI_ANALYSIS=on runs the same pair with the same side-by-side block and 'not profit' disclosure (the mode never changes an answer)", [metaOf(out).status, /- Sales: ₹1,770\.00/.test(out.structured.answer), /This difference is not profit/.test(out.structured.answer)], ["answered", true, true]);

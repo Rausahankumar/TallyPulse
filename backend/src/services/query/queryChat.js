@@ -170,10 +170,10 @@ function plannerFailureMessage(planned) {
 
 // ---------------------------------------------------------------- analysis plans (several existing analyses for one question)
 
-// ASK_AI_ANALYSIS: on = every analysis plan; basic (the default) = only the bounded shapes of basicAnalysis.js (one discount
-// or indicative-margin step, or one sales total next to one purchase total); off = none. A test passes deps.analysisMode or
-// deps.analysisEnabled (true = on, false = off).
-const { analysisMode, basicShape, salesVsPurchaseText } = require("./basicAnalysis");
+// ASK_AI_ANALYSIS: on (the default when unset) = every analysis plan; basic = only the bounded shapes of basicAnalysis.js (one
+// discount or indicative-margin step, or one sales total next to one purchase total); off = none; an unrecognised value = off.
+// A test passes deps.analysisMode or deps.analysisEnabled (true = on, false = off).
+const { analysisMode, basicShape, salesVsPurchaseText, salesVsPurchaseMismatch, salesVsPurchaseMismatchText } = require("./basicAnalysis");
 // profit or margin asked next to a sales/purchase comparison: the answer says profit is not calculated
 const ASKS_PROFIT = (q) => require("./planner").mentionsAccountingProfit(q) || /\b(?:margins?|munafa|munafe|fayda)\b/i.test(q);
 
@@ -226,6 +226,10 @@ async function answerAnalysis(a, tm) {
   if (shape && shape.kind === "sales_vs_purchase") {
     const side = salesVsPurchaseText(execution, shape, { asksProfit: ASKS_PROFIT(a.userMessage) });
     if (side) formatted.text = `${formatted.text}\n\n${side}`;
+  } else {
+    // a sales total next to a purchase total that is NOT comparable (different periods or amount bases): say so, no difference
+    const mismatch = salesVsPurchaseMismatch(ap.analysis);
+    if (mismatch) formatted.text = `${formatted.text}\n\n${salesVsPurchaseMismatchText(mismatch, { asksProfit: ASKS_PROFIT(a.userMessage) })}`;
   }
   const ran = execution.steps.filter((s) => s.status === "ok");
   const dataState = ran.some((s) => s.dataState === "sync_failed") ? "sync_failed" : ran.some((s) => s.dataState === "stale") ? "stale" : null;

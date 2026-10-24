@@ -1,14 +1,15 @@
 "use strict";
 
 // --------------------------------------------------
-// Basic analysis (ASK_AI_ANALYSIS unset or "basic", the default): the bounded part of analysis plans that basic business
-// questions need, without the unrestricted multi-step mode. An analysis plan is run only when it has one of these shapes:
+// ASK_AI_ANALYSIS modes: "on" (the default when unset) runs every analysis plan; "basic" runs only the bounded part of analysis
+// plans that basic business questions need; "off" runs none (the fixed "several separate analyses" answer). An unrecognised
+// value fails closed to "off". In basic mode an analysis plan is run only when it has one of these shapes:
 //   - ONE insight step: discount_summary (discount %) or product_margin (indicative margin, never accounting profit);
 //   - TWO plain query steps: one sales total and one purchase total, same period, same amount basis (tax-inclusive invoice
 //     totals, or pre-tax item values on both sides), no grouping, filters, comparison or bindings.
-// Anything else keeps the fixed "several separate analyses" answer. "on" runs every analysis plan; "off" none (the
-// previous default). The numbers are the engine's and the insight tools' own; this module only adds the difference of
-// the two totals, labelled as such and never as profit.
+// Anything else keeps the fixed "several separate analyses" answer. The numbers are the engine's and the insight tools' own;
+// this module only adds, in every mode, the difference of a comparable sales/purchase pair (labelled as such, never as
+// profit), or, for a pair that is not comparable (different periods or amount bases), why no difference is shown.
 // --------------------------------------------------
 
 const { CATALOG } = require("./semanticCatalog");
@@ -22,12 +23,23 @@ const PAIRS = [
   ["lineAmount", "lineAmount", "item values before tax"],
 ];
 
-/** The analysis mode of this turn: a test's deps.analysisMode / deps.analysisEnabled, else ASK_AI_ANALYSIS (default basic). */
+const DEFAULT_MODE = "on";
+const FAIL_CLOSED_MODE = "off";
+
+/** The analysis mode of this turn: a test's deps.analysisMode / deps.analysisEnabled, else ASK_AI_ANALYSIS (unset: on). */
 function analysisMode(deps, env = process.env) {
   if (deps && typeof deps.analysisMode === "string" && MODES.has(deps.analysisMode)) return deps.analysisMode;
   if (deps && typeof deps.analysisEnabled === "boolean") return deps.analysisEnabled ? "on" : "off";
-  const v = String(env.ASK_AI_ANALYSIS || "").trim().toLowerCase();
-  return MODES.has(v) ? v : "basic";
+  const raw = env.ASK_AI_ANALYSIS;
+  if (raw === undefined || String(raw).trim() === "") return DEFAULT_MODE;
+  const v = String(raw).trim().toLowerCase();
+  return MODES.has(v) ? v : FAIL_CLOSED_MODE; // a typo never switches analysis on
+}
+
+/** True when ASK_AI_ANALYSIS holds a value that is not on/basic/off (the server warns at start). */
+function analysisModeUnrecognised(env = process.env) {
+  const raw = env.ASK_AI_ANALYSIS;
+  return raw !== undefined && String(raw).trim() !== "" && !MODES.has(String(raw).trim().toLowerCase());
 }
 
 const empty = (v) => v === undefined || v === null || (Array.isArray(v) && v.length === 0);
@@ -48,6 +60,37 @@ function basicShape(analysis) {
   const pair = PAIRS.find(([s, p]) => sales.plan.metrics[0] === s && purchase.plan.metrics[0] === p);
   if (!pair) return null;
   return { kind: "sales_vs_purchase", salesStep: sales.id, purchaseStep: purchase.id, salesMetric: pair[0], purchaseMetric: pair[1], basis: pair[2] };
+}
+
+const AMOUNT_BASIS_LABEL = (metric) => {
+  const m = CATALOG.metrics[metric];
+  return m && m.amountBasis === "voucher_total_incl_tax" ? "invoice totals including tax" : m && m.amountBasis === "line_item_pre_tax" ? "item values before tax" : "not an amount";
+};
+
+/**
+ * A plan of exactly one plain sales total and one plain purchase total that is NOT a comparable pair: why (different
+ * periods, different amount bases). Null for a comparable pair and for any other plan.
+ */
+function salesVsPurchaseMismatch(analysis) {
+  const steps = (analysis && analysis.steps) || [];
+  if (steps.length !== 2 || steps.some((s) => s.kind !== "query" || !empty(s.inputs) || !plainTotal(s.plan))) return null;
+  const sales = steps.find((s) => s.plan.entity === "sales");
+  const purchase = steps.find((s) => s.plan.entity === "purchase");
+  if (!sales || !purchase || basicShape(analysis)) return null;
+  const reasons = [];
+  if (JSON.stringify(sales.plan.period) !== JSON.stringify(purchase.plan.period)) reasons.push("the two totals cover different periods");
+  if (!PAIRS.some(([s, p]) => sales.plan.metrics[0] === s && purchase.plan.metrics[0] === p)) {
+    reasons.push(`they use different amount bases (sales: ${AMOUNT_BASIS_LABEL(sales.plan.metrics[0])}; purchases: ${AMOUNT_BASIS_LABEL(purchase.plan.metrics[0])})`);
+  }
+  return reasons.length ? { reasons } : null;
+}
+
+/** The note for a non-comparable sales/purchase pair: no difference, and never profit. */
+function salesVsPurchaseMismatchText(mismatch, { asksProfit = false } = {}) {
+  const lines = [`**Sales vs purchases: not compared** - ${mismatch.reasons.join(", and ")}, so no difference is shown. Ask for both over the same period on the same basis to compare them.`];
+  lines.push("Neither total, nor any difference between them, is profit.");
+  if (asksProfit) lines.push(`Profit is not calculated. ${profitReason()}`);
+  return lines.join("\n");
 }
 
 const totalOf = (step, metric) => {
@@ -77,4 +120,4 @@ function salesVsPurchaseText(execution, shape, { asksProfit = false } = {}) {
   return lines.join("\n");
 }
 
-module.exports = { analysisMode, basicShape, salesVsPurchaseText, BASIC_INSIGHT_TOOLS };
+module.exports = { analysisMode, analysisModeUnrecognised, basicShape, salesVsPurchaseText, salesVsPurchaseMismatch, salesVsPurchaseMismatchText, BASIC_INSIGHT_TOOLS, DEFAULT_MODE };
