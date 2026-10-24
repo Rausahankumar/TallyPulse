@@ -170,8 +170,12 @@ function plannerFailureMessage(planned) {
 
 // ---------------------------------------------------------------- analysis plans (several existing analyses for one question)
 
-// Off unless ASK_AI_ANALYSIS=on (or a test passes deps.analysisEnabled): the single-query path is unchanged by default.
-const analysisEnabled = (deps) => (deps && typeof deps.analysisEnabled === "boolean" ? deps.analysisEnabled : process.env.ASK_AI_ANALYSIS === "on");
+// ASK_AI_ANALYSIS: on = every analysis plan; basic (the default) = only the bounded shapes of basicAnalysis.js (one discount
+// or indicative-margin step, or one sales total next to one purchase total); off = none. A test passes deps.analysisMode or
+// deps.analysisEnabled (true = on, false = off).
+const { analysisMode, basicShape, salesVsPurchaseText } = require("./basicAnalysis");
+// profit or margin asked next to a sales/purchase comparison: the answer says profit is not calculated
+const ASKS_PROFIT = (q) => require("./planner").mentionsAccountingProfit(q) || /\b(?:margins?|munafa|munafe|fayda)\b/i.test(q);
 
 async function answerAnalysis(a, tm) {
   const { planAnalysis } = require("./analysisPlanner");
@@ -197,6 +201,10 @@ async function answerAnalysis(a, tm) {
   }
   if (ap.status !== "supported") return { handled: true, structured: baseResponse(plannerFailureMessage(ap), { meta: { ...meta, status: "planner_failed", code: ap.code } }) };
   if (a.signal && a.signal.aborted) return { handled: false, reason: "client_aborted" };
+  // basic mode: a plan outside the bounded shapes is not run; the answer is the one the query planner's result already had.
+  // The shape also decides, in every mode, whether a sales total next to a purchase total gets its side-by-side block.
+  const shape = basicShape(ap.analysis);
+  if (a.basicOnly && !shape) return a.outsideBasic(meta);
 
   const exec = a.deps.execute || ((p, c, timing) => getSharedExecutor().execute(p, c, timing));
   const execution = await executeAnalysisPlan(ap.analysis, {
@@ -215,6 +223,10 @@ async function answerAnalysis(a, tm) {
   if (a.signal && a.signal.aborted) return { handled: false, reason: "client_aborted" };
   if (!execution.ok) return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { meta: { ...meta, status: "execution_failed", code: execution.error.code } }) };
   const formatted = formatAnalysisAnswer(execution, { assumptions: ap.assumptions });
+  if (shape && shape.kind === "sales_vs_purchase") {
+    const side = salesVsPurchaseText(execution, shape, { asksProfit: ASKS_PROFIT(a.userMessage) });
+    if (side) formatted.text = `${formatted.text}\n\n${side}`;
+  }
   const ran = execution.steps.filter((s) => s.status === "ok");
   const dataState = ran.some((s) => s.dataState === "sync_failed") ? "sync_failed" : ran.some((s) => s.dataState === "stale") ? "stale" : null;
   return {
@@ -366,13 +378,18 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     // this"): with analysis plans on it goes to the analysis planner too, which composes steps or declines. Accounting-profit
     // questions never get here as a failure (planQuestion already turned them into the profit refusal).
     const needsSteps = planned.code === "planner_needs_analysis" || (planned.status === "planner_failed" && planned.code === "planner_invalid_plan");
-    if (needsSteps && analysisEnabled(deps)) {
-      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage }, tm);
+    // Analysis plans off, or a basic-mode plan outside the bounded shapes: one fixed, honest answer instead of the model's own
+    // wording (which varied from question to question); an invalid plan keeps the planner-failure answer.
+    const declined = (meta) => {
+      if (planned.code === "planner_needs_analysis") return { handled: true, structured: baseResponse(`${NEEDS_ANALYSIS_OFF_MESSAGE}\n\n${SCOPE_HINT}`, { meta: { ...meta, route: "planner", status: "unsupported", code: planned.code } }) };
+      return { handled: true, structured: baseResponse(plannerFailureMessage(planned), { meta: { ...meta, route: "planner", status: "planner_failed", code: planned.code } }) };
+    };
+    // basic takes only the planner's own needs_analysis decline; an invalid plan keeps its one call and fixed message
+    const mode = needsSteps ? analysisMode(deps) : "off";
+    if (needsSteps && (mode === "on" || (mode === "basic" && planned.code === "planner_needs_analysis"))) {
+      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, basicOnly: mode === "basic", outsideBasic: (meta) => declined({ claudeCalls: meta.claudeCalls, usage: meta.usage }) }, tm);
     }
-    // Analysis plans off: one fixed, honest answer instead of the model's own wording (which varied from question to question).
-    if (planned.code === "planner_needs_analysis") {
-      return { handled: true, structured: baseResponse(`${NEEDS_ANALYSIS_OFF_MESSAGE}\n\n${SCOPE_HINT}`, { meta: { route: "planner", status: "unsupported", code: planned.code, claudeCalls: plannerUsage.calls, usage: plannerUsage } }) };
-    }
+    if (planned.code === "planner_needs_analysis") return declined({ claudeCalls: plannerUsage.calls, usage: plannerUsage });
     if (planned.status === "needs_clarification" || planned.status === "unsupported") {
       const answer = planned.status === "unsupported" ? `${planned.reason}\n\n${SCOPE_HINT}` : formatNonAnswer(planned);
       return { handled: true, structured: baseResponse(answer, { meta: { route: "planner", status: planned.status, code: planned.code, claudeCalls: plannerUsage.calls, usage: plannerUsage } }) };

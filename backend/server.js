@@ -73,6 +73,6 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  // Whether Ask AI may run multi-step analysis plans in this process (off unless ASK_AI_ANALYSIS=on): visible at a glance.
-  console.log(`Ask AI analysis plans: ${process.env.ASK_AI_ANALYSIS === "on" ? "ON" : "off"}`);
+  // Which Ask AI analysis plans this process runs (ASK_AI_ANALYSIS: on | basic | off, default basic): visible at a glance.
+  console.log(`Ask AI analysis plans: ${require("./src/services/query/basicAnalysis").analysisMode()}`);
 });
