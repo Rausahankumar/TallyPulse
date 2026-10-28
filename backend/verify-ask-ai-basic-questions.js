@@ -239,6 +239,10 @@ async function main() {
     model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal({ kind: "custom", from: "2025-09-01", to: "2025-09-30" })] } }] });
     out = await ask(Q5AUG, model, { analysisMode: "basic" });
     check("q5-mismatched-periods-basic", "ASK_AI_ANALYSIS=basic: a pair with DIFFERENT periods is outside basic analysis: the fixed refusal, nothing run", [metaOf(out).status, metaOf(out).code, out.structured.answer.startsWith("This question needs several separate analyses")], ["unsupported", "planner_needs_analysis", true]);
+    // asked what to do in basic mode: the bounded pair runs, and the investigation never asks the model for more steps
+    model = fakeModel({ query: [DECLINE], analysis: [{ analysis: { v: 1, steps: [salesTotal(), purchaseTotal()] }, actions: true }, { analysis: { v: 1, steps: [salesTotal({ kind: "custom", from: "2025-07-01", to: "2025-07-31" })] } }] });
+    out = await ask(`${Q5AUG}, and what should I do?`, model, { analysisMode: "basic" });
+    check("q5-basic-no-model-follow-up", "ASK_AI_ANALYSIS=basic, asked what to do: the bounded pair is answered with 2 model calls only (no investigation call, no extra step)", [metaOf(out).status, metaOf(out).claudeCalls, model.requests.length, metaOf(out).steps], ["answered", 2, 2, ["ok", "ok"]]);
 
     console.log("\n=== 5b. Comparability (default on): a pair is compared only on the same period and the same basis ===");
     const SEP = { kind: "custom", from: "2025-09-01", to: "2025-09-30" };
