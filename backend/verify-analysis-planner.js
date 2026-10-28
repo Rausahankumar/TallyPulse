@@ -25,7 +25,7 @@ require("dotenv").config();
   require("axios").post = () => { throw new Error("NETWORK BLOCKED"); };
 }
 process.env.AI_USAGE_PERSIST = "off";
-delete process.env.ASK_AI_ANALYSIS; // the default (off) is part of what is tested
+delete process.env.ASK_AI_ANALYSIS; // the default (unset = on) is part of what is tested
 
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
@@ -252,9 +252,14 @@ async function main() {
     check("chat-usage-path", "the persisted usage record tells an analysis turn apart (path analysis, 2 Claude calls)", [out.telemetry.path, usageRecordOf(out).path, usageRecordOf(out).claudeCalls], ["analysis", "analysis", 2]);
 
     model = fakeModel({ query: [NEEDS], analysis: [{ analysis: PLANS.decline }] });
-    out = await ask(TA, Q, model); // flag not set: the default
+    out = await ask(TA, Q, model, { analysisMode: "off" }); // ASK_AI_ANALYSIS=off: exactly the previous default
     meta = out.structured.details.queryEngine;
-    check("chat-flag-off", "flag off (default): a refusal with ONE fixed message (never the model's varying wording), one call, no analysis call", [meta.route, meta.status, meta.code, meta.claudeCalls, model.requests.length, out.structured.answer.startsWith("This question needs several separate analyses"), out.structured.answer.includes("Multi-step analysis is not switched on"), out.structured.answer.includes("This needs several analyses."), out.structured.answer.endsWith(SCOPE_HINT)], ["planner", "unsupported", "planner_needs_analysis", 1, 1, true, true, false, true]);
+    check("chat-flag-off", "flag off: a refusal with ONE fixed message (never the model's varying wording), one call, no analysis call", [meta.route, meta.status, meta.code, meta.claudeCalls, model.requests.length, out.structured.answer.startsWith("This question needs several separate analyses"), out.structured.answer.includes("Multi-step analysis is not switched on"), out.structured.answer.includes("This needs several analyses."), out.structured.answer.endsWith(SCOPE_HINT)], ["planner", "unsupported", "planner_needs_analysis", 1, 1, true, true, false, true]);
+    let ran = 0;
+    model = fakeModel({ query: [NEEDS], analysis: [{ analysis: PLANS.decline }] });
+    out = await ask(TA, Q, model, { execute: async () => { ran += 1; return { result: { ok: false } }; }, analysisMode: "basic" }); // ASK_AI_ANALYSIS=basic
+    meta = out.structured.details.queryEngine;
+    check("chat-flag-basic", "ASK_AI_ANALYSIS=basic: a three-step plan is outside basic analysis - the same fixed refusal, after the analysis call, and nothing is run", [meta.route, meta.status, meta.code, meta.claudeCalls, model.requests.length, ran, out.structured.answer.startsWith("This question needs several separate analyses"), out.structured.answer.endsWith(SCOPE_HINT)], ["planner", "unsupported", "planner_needs_analysis", 2, 2, 0, true, true]);
 
     model = fakeModel({ query: [{ plan: q({}) }] });
     out = await ask(TA, "total sales in October 2025", model, { analysisEnabled: true });
@@ -364,8 +369,20 @@ async function main() {
     out = await ask(TA, "How much discount did we give customers in October 2025?", model, { analysisEnabled: true });
     check("route-invalid-plan", "a plan one query cannot express (invalid) goes to the analysis planner: the discount tool answers (hand-derived: list 100+300+800+600 = 1,800; discount 100 on Beta Stores' 800)", [out.structured.details.queryEngine.route, out.structured.details.queryEngine.claudeCalls, /Discount = list value − billed amount \(before tax\)/.test(out.structured.answer), /Total: discount 100 on a list value of 1,800 \(5\.56%\), billed 1,700/.test(out.structured.answer), /Beta Stores/.test(out.structured.answer)], ["analysis", 2, true, true, true]);
     model = fakeModel({ query: [badQuery], analysis: [{ analysis: discountPlan }] });
-    out = await ask(TA, "How much discount did we give customers in October 2025?", model);
+    out = await ask(TA, "How much discount did we give customers in October 2025?", model, { analysisMode: "off" });
     check("route-invalid-plan-off", "flag off: the same failure keeps its honest fixed message, one call, no analysis call", [out.structured.details.queryEngine.status, out.structured.details.queryEngine.code, model.requests.length, /couldn't turn this question into a query/.test(out.structured.answer)], ["planner_failed", "planner_invalid_plan", 1, true]);
+    model = fakeModel({ query: [badQuery], analysis: [{ analysis: discountPlan }] });
+    out = await ask(TA, "How much discount did we give customers in October 2025?", model, { analysisMode: "basic" }); // ASK_AI_ANALYSIS=basic
+    check("route-invalid-plan-basic", "ASK_AI_ANALYSIS=basic: basic takes only the needs_analysis decline - an invalid plan keeps its one call and honest fixed message", [out.structured.details.queryEngine.status, out.structured.details.queryEngine.code, model.requests.length, /couldn't turn this question into a query/.test(out.structured.answer)], ["planner_failed", "planner_invalid_plan", 1, true]);
+    model = fakeModel({ query: [NEEDS], analysis: [{ analysis: discountPlan }] });
+    out = await ask(TA, "How much discount did we give customers in October 2025?", model, { analysisMode: "basic" }); // ASK_AI_ANALYSIS=basic
+    check("route-needs-analysis-basic", "ASK_AI_ANALYSIS=basic: the needs_analysis decline with a single discount step is answered with the same discount figures", [out.structured.details.queryEngine.route, out.structured.details.queryEngine.claudeCalls, /Total: discount 100 on a list value of 1,800 \(5\.56%\), billed 1,700/.test(out.structured.answer)], ["analysis", 2, true]);
+    model = fakeModel({ query: [badQuery], analysis: [{ analysis: discountPlan }] });
+    out = await ask(TA, "How much discount did we give customers in October 2025?", model); // ASK_AI_ANALYSIS not set: on
+    check("route-invalid-plan-default-on", "ASK_AI_ANALYSIS not set (= on): the invalid plan goes to the analysis planner exactly as with the flag on (same discount figures)", [out.structured.details.queryEngine.route, out.structured.details.queryEngine.claudeCalls, /Total: discount 100 on a list value of 1,800 \(5\.56%\), billed 1,700/.test(out.structured.answer)], ["analysis", 2, true]);
+    model = fakeModel({ query: [NEEDS], analysis: [{ analysis: PLANS.decline }] });
+    out = await ask(TA, Q, model); // ASK_AI_ANALYSIS not set: on
+    check("chat-flag-default-on", "ASK_AI_ANALYSIS not set (= on): the three-step plan that basic refuses is run, like the flag on", [out.structured.details.queryEngine.route, out.structured.details.queryEngine.status, out.structured.details.queryEngine.steps], ["analysis", "answered", ["ok", "ok", "ok"]]);
     model = fakeModel({ query: [{ plan: q({ metrics: ["grossProfit"] }) }], analysis: [{ analysis: marginPlan }] });
     out = await ask(TC, "What was our gross profit in October 2025?", model, { analysisEnabled: true });
     check("route-gross-profit", "gross profit stays refused with the catalog reason (no cost data), never routed to the indicative margin", [out.structured.details.queryEngine.code, model.requests.length, /No cost\/COGS data is available/.test(out.structured.answer), /Indicative margin/.test(out.structured.answer)], ["profit_margin_unsupported", 1, true, false]);
