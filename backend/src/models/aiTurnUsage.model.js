@@ -22,6 +22,18 @@ const aiTurnUsageSchema = new mongoose.Schema(
     plannerOutputTokens: { type: Number, default: 0 },
     plannerCacheReadTokens: { type: Number, default: 0 },
     plannerCacheWriteTokens: { type: Number, default: 0 },
+    // Cache counters: null on records written before they existed (not measured); every newer record sets a number.
+    // planner response cache (a hit avoided a model call; it is not counted in claudeCalls / plannerCalls)
+    plannerCacheHits: { type: Number, default: null },
+    plannerCacheMisses: { type: Number, default: null },
+    plannerCacheBypasses: { type: Number, default: null },
+    // engine executions of the turn by answer-cache status, and insight tool runs (counts only)
+    queryExecutions: { type: Number, default: null },
+    answerCacheHits: { type: Number, default: null },
+    answerCacheMisses: { type: Number, default: null },
+    answerCacheCoalesced: { type: Number, default: null },
+    answerCacheBypasses: { type: Number, default: null },
+    insightRuns: { type: Number, default: null },
     plannerLatencyMs: { type: Number, default: null },
     totalLatencyMs: { type: Number, default: null },
     ok: { type: Boolean, default: null },

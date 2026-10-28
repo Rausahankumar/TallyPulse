@@ -31,6 +31,7 @@ const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
 const { readScope, scopeMessage } = require("./followUp");
+const { isCachedResponse } = require("./plannerResponseCache");
 
 // ---------------------------------------------------------------- safety gate + product definitions (shared policy)
 
@@ -276,6 +277,8 @@ const PLANNER_MAX_RETRIES = 1;
 const PLANNER_DEADLINE_MS = 30000;
 const DEFAULT_PLANNER_MODEL = "claude-sonnet-4-5-20250929";
 const MAX_REPAIRS_CAP = 1;
+/** The request settings the real client adds to every model request (also part of the response cache's key). */
+const plannerRequestSettings = () => ({ model: process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || DEFAULT_PLANNER_MODEL, temperature: 0 });
 const VALIDATION_FALLBACK_REF = new Date(2025, 0, 15, 12, 0, 0);
 
 // needs_analysis: the question needs several analyses (or an explanation). It is still a decline of THIS planner (status
@@ -608,6 +611,7 @@ async function planQuestionCore(question, options = {}) {
         },
         { signal: options.signal || null }
       );
+      if (isCachedResponse(response)) usage.calls -= 1; // a remembered reply (plannerResponseCache.js) is not a model call
     } catch (error) {
       const timedOut = !!error && (error.code === "PLANNER_DEADLINE_EXCEEDED" || /timeout|timed out|abort/i.test(`${error.name} ${error.message}`));
       return timedOut
@@ -812,7 +816,7 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
     try {
       return await Promise.race([
         client.messages.create(
-          { model: process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || DEFAULT_PLANNER_MODEL, temperature: 0, ...request },
+          { ...plannerRequestSettings(), ...request },
           { timeout: attemptTimeoutMs, maxRetries, signal: controller.signal }
         ),
         deadline,
@@ -828,6 +832,7 @@ module.exports = {
   planQuestion,
   uncalculableTermRefusal,
   createAnthropicPlannerClient,
+  plannerRequestSettings,
   getPlannerPrompt,
   buildCatalogDigest,
   PLANNER_TOOL_NAME,

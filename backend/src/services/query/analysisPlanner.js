@@ -31,6 +31,7 @@ const EVIDENCE_LEAD = "Evidence already gathered for this question (do not repea
 // A follow-up (followUp.scopeOf): the previous turn's validated scope, only the parts it carried (the entity too, unless its steps
 // measured sales AND purchases), framed by followUp.scopeMessage - shared with the query planner. Never rows, tenant or chat text.
 const { readScope: readPreviousScope, scopeMessage } = require("./followUp");
+const { isCachedResponse } = require("./plannerResponseCache");
 // Insight tools offered to the model (an explicit allowlist over the registry). product_margin is an INDICATIVE margin only:
 // a question about accounting profit, COGS or gross/net margin is refused even when the plan asks for it (checkAnalysis).
 const ANALYSIS_TOOL_IDS = ["discount_summary", "product_rates", "product_margin", "product_trend", "supplier_rates"];
@@ -221,6 +222,7 @@ async function planAnalysis(question, options = {}) {
     usage.calls += 1;
     try {
       response = await claudeClient({ system: prompt.system, messages, tools: [prompt.tool], tool_choice: { type: "tool", name: ANALYSIS_TOOL_NAME }, max_tokens: ANALYSIS_MAX_TOKENS }, { signal: options.signal || null });
+      if (isCachedResponse(response)) usage.calls -= 1; // a remembered reply (plannerResponseCache.js) is not a model call
     } catch (error) {
       const timedOut = !!error && (error.code === "PLANNER_DEADLINE_EXCEEDED" || /timeout|timed out|abort/i.test(`${error.name} ${error.message}`));
       return timedOut ? failed("planner_timeout", "The planning service did not respond in time.", usage, { retryable: true }) : failed("planner_call_failed", "The planning service is unavailable right now.", usage, { retryable: true });
@@ -276,4 +278,4 @@ async function planAnalysis(question, options = {}) {
   return failed("analysis_invalid_plan", "The planner produced an analysis plan that cannot be run.", usage);
 }
 
-module.exports = { planAnalysis, getAnalysisPrompt, checkAnalysis, ANALYSIS_TOOL_NAME, ANALYSIS_TOOL_IDS, ANALYSIS_MAX_TOKENS };
+module.exports = { planAnalysis, getAnalysisPrompt, checkAnalysis, ANALYSIS_TOOL_NAME, ANALYSIS_TOOL_IDS, ANALYSIS_MAX_TOKENS, EVIDENCE_LEAD };

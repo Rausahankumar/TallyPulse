@@ -24,7 +24,8 @@ const { validateQueryPlan } = require("./validator");
 const { assessCoverage, rangeText, fmtDay } = require("../analytics/coverage");
 const followUp = require("./followUp");
 const { CATALOG } = require("./semanticCatalog");
-const { planQuestion, createAnthropicPlannerClient, REVENUE_ASSUMPTION } = require("./planner");
+const { planQuestion, createAnthropicPlannerClient, plannerRequestSettings, REVENUE_ASSUMPTION } = require("./planner");
+const { getSharedPlannerResponseCache } = require("./plannerResponseCache");
 const { createEntityResolver } = require("./entityResolver");
 const { formatQueryAnswer, formatNonAnswer, SCOPE_HINT } = require("./answerFormatter");
 const { buildPresentation, displayIntent } = require("./presentation");
@@ -50,6 +51,19 @@ let plannerClient = null;
 function getPlannerClient() {
   if (!plannerClient) plannerClient = createAnthropicPlannerClient();
   return plannerClient;
+}
+
+/**
+ * The model client for one turn of one tenant: every planner call of the turn (query planner, analysis planner and its
+ * repair, the investigation's follow-up) goes through it. The production client is fronted by the planner response cache
+ * (plannerResponseCache.js); an injected client (tests) is not, unless the test injects a cache too (deps.plannerResponseCache).
+ */
+function turnPlannerClient(deps, tenantId, tm) {
+  const base = deps.plannerClient || getPlannerClient();
+  const cache = deps.plannerResponseCache !== undefined ? deps.plannerResponseCache : deps.plannerClient ? null : getSharedPlannerResponseCache();
+  if (!cache) return base;
+  tm.plannerResponseCache = { hit: 0, miss: 0, bypass: 0 };
+  return cache.wrap(base, { tenantId, settings: plannerRequestSettings, counters: tm.plannerResponseCache });
 }
 
 // Per-tenant entity resolver. Its name lists are dropped whenever that tenant's data version moves
@@ -187,7 +201,7 @@ async function answerAnalysis(a, tm) {
   const { buildAnalysisPresentation } = require("./analysisPresentation");
   const ta = now();
   // a follow-up gets the previous turn's validated scope (never rows, tenant or chat text)
-  const ap = await planAnalysis(a.userMessage, { claudeClient: a.deps.plannerClient || getPlannerClient(), referenceDate: a.referenceDate, signal: a.signal, previousScope: a.previousScope || null });
+  const ap = await planAnalysis(a.userMessage, { claudeClient: a.claudeClient, referenceDate: a.referenceDate, signal: a.signal, previousScope: a.previousScope || null });
   tm.plannerLatencyMs = (tm.plannerLatencyMs || 0) + (now() - ta);
   const usage = { ...a.plannerUsage };
   for (const k of ["calls", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) usage[k] = (Number(usage[k]) || 0) + (Number(ap.usage && ap.usage[k]) || 0);
@@ -213,10 +227,11 @@ async function answerAnalysis(a, tm) {
   const investigated = await investigate(ap.analysis, {
     tenantId: a.tenantId,
     dateContext: a.dc,
-    execute: exec,
+    execute: countingExecute(exec, tm),
     resolveEntity: a.resolveEntity,
     getFreshness: a.getFreshness,
-    runInsightTool: a.deps.runInsightTool,
+    // the same tool as before (the injected one, else analysisPlan's own default), only counted
+    runInsightTool: countingInsight(a.deps.runInsightTool || require("../analytics/insightTools").runInsightTool, tm),
     signal: a.signal,
     // each query step carries the notes the single-query answer would carry for the same plan
     definitionNotes: ap.definitionNotes,
@@ -229,7 +244,7 @@ async function answerAnalysis(a, tm) {
     actions: ap.actions === true,
     // asked at most once, only for an open need no deterministic follow-up settles: the same analysis planner (tool schema,
     // checkAnalysis on the question) with the evidence summary, and no repair round (one call)
-    proposeWithModel: (evidence) => planAnalysis(a.userMessage, { claudeClient: a.deps.plannerClient || getPlannerClient(), referenceDate: a.referenceDate, signal: a.signal, maxRepairs: 0, evidence, previousScope: a.previousScope || null }),
+    proposeWithModel: (evidence) => planAnalysis(a.userMessage, { claudeClient: a.claudeClient, referenceDate: a.referenceDate, signal: a.signal, maxRepairs: 0, evidence, previousScope: a.previousScope || null }),
   });
   // the follow-up call counts like every planner call (claudeCalls, usage, telemetry)
   for (const k of ["calls", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) usage[k] = (Number(usage[k]) || 0) + (Number(investigated.investigation.usage && investigated.investigation.usage[k]) || 0);
@@ -266,6 +281,25 @@ async function answerAnalysis(a, tm) {
 }
 
 // Telemetry only. Engine timing is known when the executor reports it (production wiring); otherwise null.
+// Measurement only (numbers, no behaviour): how every engine execution of the turn was served - the answer cache's own
+// status (hit / miss / coalesced / bypass) - and how many insight tools ran (they have no result cache). A result is
+// never changed here.
+const ANSWER_CACHE_COUNTER = { hit: "answerCacheHits", miss: "answerCacheMisses", coalesced: "answerCacheCoalesced", bypass: "answerCacheBypasses" };
+function countExecution(tm, cache) {
+  const key = ANSWER_CACHE_COUNTER[cache && cache.status];
+  if (key) tm[key] = (tm[key] || 0) + 1;
+}
+const countingExecute = (exec, tm) => async (plan, ctx, timing) => {
+  tm.queryExecutions = (tm.queryExecutions || 0) + 1;
+  const out = await exec(plan, ctx, timing);
+  countExecution(tm, out && out.cache);
+  return out;
+};
+const countingInsight = (run, tm) => async (...args) => {
+  tm.insightRuns = (tm.insightRuns || 0) + 1;
+  return run(...args);
+};
+
 function recordExecution(tm, { te, done, timing, cache, result }) {
   const status = cache && cache.status;
   const engineRan = Number.isFinite(timing.engineMs);
@@ -327,6 +361,10 @@ async function tryAnswerWithQueryEngine(args) {
 // Classifies the finished turn from what the turn itself reported (meta) - no re-derivation of routing.
 function finishTurnMetrics(tm, out) {
   tm.claudeCalls = tm.plannerAttempts || 0;
+  // remembered replies are not model calls (claudeCalls above already excludes them); counted apart, as numbers only
+  const rc = tm.plannerResponseCache;
+  delete tm.plannerResponseCache;
+  if (rc && rc.hit + rc.miss + rc.bypass > 0) Object.assign(tm, { plannerCacheHits: rc.hit, plannerCacheMisses: rc.miss, plannerCacheBypasses: rc.bypass });
   tm.claudeReason = tm.claudeCalls > 0 ? "planner" : null;
   if (!out.handled) {
     tm.path = "client_aborted";
@@ -352,6 +390,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     if (!context || typeof context.tenantId !== "string" || !context.tenantId) throw new Error("an authorized tenant context is required");
     if (typeof userMessage !== "string") throw new Error("the question must be a string");
     const tenantId = context.tenantId;
+    const claudeClient = turnPlannerClient(deps, tenantId, tm);
 
     const tenantResolver = deps.resolveEntity || getTenantResolver(tenantId);
     const resolveEntity = timeResolver(tenantResolver, tm);
@@ -403,7 +442,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     const tp = now();
     // Validated against the SAME tenant reference date (the date is never sent to Claude). A follow-up of an analysis turn gets that
     // turn's carried scope (e.g. its period), never a partial plan as if it were a complete previous plan.
-    if (!planned) planned = await planQuestion(question, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, previousPlan: prevPlan || undefined, previousScope: prevState && prevState.source === "analysis" ? followUp.scopeOf(prevState) : undefined, referenceDate, signal });
+    if (!planned) planned = await planQuestion(question, { claudeClient, resolveEntity, previousPlan: prevPlan || undefined, previousScope: prevState && prevState.source === "analysis" ? followUp.scopeOf(prevState) : undefined, referenceDate, signal });
     tm.plannerLatencyMs = now() - tp;
     const plannerUsage = planned.usage;
     tm.plannerStatus = planned.status;
@@ -426,7 +465,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     const ROUTED_FAILURES = ["planner_invalid_plan", "planner_protocol_violation"];
     const needsSteps = planned.code === "planner_needs_analysis" || (planned.status === "planner_failed" && ROUTED_FAILURES.includes(planned.code));
     if (needsSteps && analysisEnabled(deps)) {
-      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, previousScope: followUp.scopeOf(prevState) }, tm);
+      return answerAnalysis({ tenantId, claudeClient, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, previousScope: followUp.scopeOf(prevState) }, tm);
     }
     // Analysis plans off: one fixed, honest answer instead of the model's own wording (which varied from question to question).
     if (planned.code === "planner_needs_analysis") {
@@ -499,7 +538,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     if (ahead) contextNotes.push(ahead);
 
     // ---- cache + engine (tenant-scoped executor; tenantId comes from the middleware context only)
-    const exec = deps.execute || ((p, c, timing) => getSharedExecutor().execute(p, c, timing));
+    const exec = countingExecute(deps.execute || ((p, c, timing) => getSharedExecutor().execute(p, c, timing)), tm);
     const timing = {}; // filled by the production cached executor: when the engine started and how long it ran
     const te = now();
     const { result, cache } = await exec(execPlan, { tenantId, referenceDate }, timing);
