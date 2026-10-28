@@ -676,13 +676,23 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       ["protocol violation (prose)", () => ({ content: [{ type: "text", text: "Sales were big" }] }), "planner_protocol_violation", /couldn.t turn this question into a query/i],
       ["unknown name", () => toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Ltd" }] }) }), "planner_entity_not_resolved", /did not match a known customer/i],
     ];
+    // ASK_AI_ANALYSIS=off: the planner-failure path itself (with analysis plans on - the default - an invalid plan is handed
+    // to the analysis planner instead; that route is checked just below and in verify-analysis-planner.js)
     for (const [label, reply, code, msg] of failureCases) {
       events.length = 0;
       const p = tracingPlanner(reply);
       const e = tracingEngine();
-      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr(), analysisMode: "off" });
       check(`${label}: exactly ONE planner call, handled with an honest message (${code}), no engine`, r.handled === true && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.code === code && r.structured.details.queryEngine.status === "planner_failed" && r.structured.details.queryEngine.claudeCalls === 1 && msg.test(r.structured.answer), `${JSON.stringify(r.structured && r.structured.details.queryEngine)} :: ${r.structured && r.structured.answer}`);
       check(`  -> the answer does not pretend to contain figures`, !/₹|Invoice amount:/.test(r.structured.answer) && r.structured.details.toolCalls.length === 0 && r.structured.freshness === null);
+    }
+    {
+      // the default (ASK_AI_ANALYSIS unset = on): an invalid plan goes to the analysis planner, which (here) cannot plan it either
+      const p = tracingPlanner(() => toolReply({ plan: planOf({ groupBy: [{ dim: "product" }] }) }));
+      const e = tracingEngine();
+      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      const m = r.structured.details.queryEngine;
+      check("default (analysis on): an invalid plan reaches the analysis planner, which fails honestly - no engine, no figures", [r.handled, m.route, m.status, p.calls >= 2, e.calls, /₹|Invoice amount:/.test(r.structured.answer)].join() === [true, "analysis", "planner_failed", true, 0, false].join(), JSON.stringify({ route: m.route, status: m.status, calls: p.calls, engine: e.calls }));
     }
     {
       const r = await run("show sales last month", { plannerClient: tracingPlanner(() => new Error("sk-ant-secret-key internal stack")), execute: tracingEngine(), getFreshness: fr() });

@@ -194,6 +194,7 @@ jobs:
             verify-plain-query-answer.js \
             verify-calculation.js \
             verify-unavailable-concepts.js \
+            verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \
