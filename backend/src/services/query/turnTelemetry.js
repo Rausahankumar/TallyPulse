@@ -28,6 +28,9 @@ const FIELDS = {
   path: code, route: code, outcome: code, answerSource: code,
   claudeCalls: int, claudeReason: code,
   plannerStatus: code, plannerCode: code, plannerLatencyMs: ms, plannerAttempts: int,
+  plannerCacheHits: int, plannerCacheMisses: int, plannerCacheBypasses: int, // planner response cache (a hit is no model call)
+  // every engine execution of the turn (single query and analysis steps) by answer-cache status, and insight tool runs
+  queryExecutions: int, answerCacheHits: int, answerCacheMisses: int, answerCacheCoalesced: int, answerCacheBypasses: int, insightRuns: int,
   plannerInputTokens: int, plannerOutputTokens: int, plannerCacheReadTokens: int, plannerCacheCreationTokens: int,
   answerCache: code, answerCacheHit: bool, answerCacheLookupMs: ms, answerCacheStored: bool,
   executeMs: ms, engineRan: bool, engineLatencyMs: ms, engineStatus: code, engineErrorCode: code,

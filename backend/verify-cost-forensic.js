@@ -136,6 +136,13 @@ function mockRes() {
     plannerRequests.length = 0;
     const unrelatedChat = new Chat({ _id: "000000000000000000000000", tenantId: TENANT, userId: "AUDIT-USER", title: "x", messages: [{ role: "user", text: "top 5 customers this month" }, { role: "assistant", text: "some unrelated prior answer" }] });
     Chat.findOne = async (filter) => (String(filter._id) === "000000000000000000000000" ? unrelatedChat : realFindOne(filter));
+    // The same request as turn 1 (same question, no previous plan): the planner response cache answers it - no model call.
+    const remembered = mockRes();
+    await sendChatMessage(mockReq({ message: Q, chatId: "000000000000000000000000" }), remembered);
+    check("unrelated prior history, same request as turn 1: remembered reply, zero planner calls, answered", remembered.body.data.details.queryEngine.claudeCalls === 0 && remembered.body.data.details.queryEngine.status === "answered" && plannerRequests.length === 0);
+    // ...and with the cache cleared, the request itself: one call, no previous plan, no chat text
+    require("./src/services/query/plannerResponseCache").getSharedPlannerResponseCache().invalidateAll();
+    unrelatedChat.messages.splice(2);
     const res3 = mockRes();
     await sendChatMessage(mockReq({ message: Q, chatId: "000000000000000000000000" }), res3);
     check("unrelated prior history: one planner call, no previous plan sent (none stored)", res3.body.data.details.queryEngine.claudeCalls === 1 && res3.body.data.details.queryEngine.route === "planner" && plannerRequests.length === 1 && !/Previous query plan/.test(plannerRequests[0].messages[0].content) && !JSON.stringify(plannerRequests[0]).includes("unrelated prior answer"));

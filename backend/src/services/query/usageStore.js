@@ -45,6 +45,17 @@ function buildUsageRecord(event) {
     plannerOutputTokens: n(event.plannerOutputTokens),
     plannerCacheReadTokens: n(event.plannerCacheReadTokens),
     plannerCacheWriteTokens: n(event.plannerCacheCreationTokens),
+    // planner response cache: a hit avoided a model call and is NOT in claudeCalls/plannerCalls above
+    plannerCacheHits: n(event.plannerCacheHits),
+    plannerCacheMisses: n(event.plannerCacheMisses),
+    plannerCacheBypasses: n(event.plannerCacheBypasses),
+    // engine executions of the turn by answer-cache status, and insight tool runs (counts only)
+    queryExecutions: n(event.queryExecutions),
+    answerCacheHits: n(event.answerCacheHits),
+    answerCacheMisses: n(event.answerCacheMisses),
+    answerCacheCoalesced: n(event.answerCacheCoalesced),
+    answerCacheBypasses: n(event.answerCacheBypasses),
+    insightRuns: n(event.insightRuns),
     plannerLatencyMs: event.plannerLatencyMs,
     totalLatencyMs: event.totalLatencyMs,
     ok: event.ok,

@@ -193,6 +193,8 @@ jobs:
             verify-plain-answer.js \
             verify-plain-query-answer.js \
             verify-calculation.js \
+            verify-planner-response-cache.js \
+            verify-cache-telemetry.js \
             verify-unavailable-concepts.js \
             verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
