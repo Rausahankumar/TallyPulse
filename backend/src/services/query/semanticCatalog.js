@@ -78,6 +78,9 @@ const ENTITIES = {
 // ---------- dimensions ----------
 // grains: which record level the dimension exists at. "voucher" = one row
 // per invoice; "line" = one row per inventory line (after $unwind).
+// nameDimension: its values are stored business NAMES a user types (a party, an item, a stock group) - the dimensions the
+// entity resolver matches typed text against and an analysis step can pass on to the next. voucherType is not one: it is a
+// raw, unverified Tally type name, never resolved from what the user typed.
 
 const DIMENSIONS = {
   date: {
@@ -99,9 +102,10 @@ const DIMENSIONS = {
     grains: ["voucher", "line"],
     source: { path: "header.partyName" },
     cardinality: "high",
+    nameDimension: true,
     filterOps: ["eq_ci", "in_ci", "contains_ci", "new_in_period"],
     notes:
-      "Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). new_in_period (value \"period\") keeps only parties whose Tally ledger was CREATED inside the query period (LedgerMaster.createdDate, exact name match); it cannot be combined with compare. Spelling variants (case, punctuation, spacing) of one party are separate groups; a name filter matches case-insensitively.",
+      "The party NAME only: no address, city, state or region is stored, so a place (\"customers in Delhi\") is party_location, never a name filter, and a store or branch is business_location. Grouping uses the raw stored party name (same as getTopCustomers); filtering is case-insensitive and anchored (same as getCustomerSales). new_in_period (value \"period\") keeps only parties whose Tally ledger was CREATED inside the query period (LedgerMaster.createdDate, exact name match); it cannot be combined with compare. Spelling variants (case, punctuation, spacing) of one party are separate groups; a name filter matches case-insensitively.",
   },
   supplier: {
     id: "supplier",
@@ -110,6 +114,7 @@ const DIMENSIONS = {
     grains: ["voucher", "line"],
     source: { path: "header.partyName" },
     cardinality: "high",
+    nameDimension: true,
     filterOps: ["eq_ci", "in_ci", "contains_ci", "new_in_period"],
     notes: "Same party-name semantics as customer, on the Purchase collection (same as getTopSuppliers), including new_in_period.",
   },
@@ -120,6 +125,7 @@ const DIMENSIONS = {
     grains: ["line"],
     source: { path: "inventory.itemName" },
     cardinality: "high",
+    nameDimension: true,
     filterOps: ["eq_ci", "in_ci", "contains_ci"],
     notes: "Stock item name as stored on the voucher line - the same raw-name identity already used for sales/purchase (no StockItemMaster merge; a differently-cased or misspelled name is a different product, exactly as elsewhere). A name filter is verified against the synced Stock Item master first, so a product that exists only on vouchers can be grouped but not filtered by name.",
   },
@@ -138,6 +144,7 @@ const DIMENSIONS = {
       unmapped: "exclude_and_report",
     },
     cardinality: "medium",
+    nameDimension: true,
     filterOps: ["eq_ci", "in_ci", "contains_ci"],
     notes:
       "Classification is CURRENT Tally state (not a historical snapshot). Lines whose item has no master record (or whose name differs from the master's exactly) are excluded from group results and totals, and reported in a mapping diagnostic and a warning. The group is the item's immediate Stock Group; it is not rolled up to a top-level group.",
@@ -575,7 +582,14 @@ const UNSUPPORTED_CAPABILITIES = [
   // (Discounts are no longer listed: analytics/insights discountSummary computes them for all history from the stored rate,
   // quantity and amount, and analysis plans offer it as the discount_summary tool. A single query still has no discount metric.)
   { id: "cancelled_invoices", reason: "Cancelled vouchers are not reliably stored, so their counts would be wrong.", unlocks: "sync change (later phase)" },
-  { id: "sales_by_region_or_salesperson", reason: "State, region, customer group and salesperson are not stored in this phase.", unlocks: "party master (later phase)" },
+  // Location and people: four DIFFERENT concepts, none queryable. `partial`: a question may ask for one of them alongside
+  // something measurable - the analysis planner then answers the rest company-wide and declares the id (`unavailable`), and
+  // the answer states the reason; never mapped onto another dimension (a store is not a customer, a city is not a party
+  // name). `digestLabel`: how the query planner (which can only decline whole questions) lists them, as one item.
+  { id: "business_location", label: "store, branch or godown", digestLabel: "place, salesperson or party group", partial: true, meaning: "the business's own store, branch, outlet, godown or warehouse", reason: "Sales and purchases are not recorded by store, branch, outlet or godown, so no figure can be given for one place of the business.", unlocks: "godown/branch-wise vouchers (later phase)" },
+  { id: "party_location", label: "customer or supplier location", digestLabel: "place, salesperson or party group", partial: true, meaning: "a customer's or supplier's city, state, region or address", reason: "Customer and supplier cities, states, regions and addresses are not stored, so sales cannot be compared by place.", unlocks: "party address sync (later phase)" },
+  { id: "salesperson", label: "salesperson or territory", digestLabel: "place, salesperson or party group", partial: true, meaning: "the salesperson, agent or territory of a sale", reason: "Salesperson, agent and sales territory are not recorded on vouchers.", unlocks: "salesperson field sync (later phase)" },
+  { id: "party_group", label: "customer or supplier group", digestLabel: "place, salesperson or party group", partial: true, meaning: "a customer or supplier group, category or channel", reason: "Customer and supplier groups cannot be used to break down sales or purchases yet.", unlocks: "party group dimension (later phase)" },
   // multiStep: ONE query cannot answer it, but separate steps of an analysis plan can (each entity measured on its own, never
   // combined). The query planner sends it to the analysis path (needs_analysis); the analysis planner does not list it.
   { id: "cross_entity_comparison", label: "sales next to purchases", multiStep: true, reason: "A single query covers sales OR purchases; ask them as two questions.", unlocks: "multi-entity plans (not planned)" },
@@ -665,6 +679,12 @@ function metricsForEntity(entityId) {
 function dimensionsForEntity(entityId) {
   return Object.values(DIMENSIONS).filter((d) => d.entities.includes(entityId));
 }
+/** Ids of the name dimensions (see DIMENSIONS), in catalog order: all of them, or only those that exist for `entityId`. */
+function nameDimensionIds(entityId) {
+  return Object.values(DIMENSIONS)
+    .filter((d) => d.nameDimension && (!entityId || d.entities.includes(entityId)))
+    .map((d) => d.id);
+}
 /** How an unsupported capability is named in the planner prompts: its label, else its id in plain words. */
 const unsupportedLabel = (u) => u.label || u.id.replace(/_/g, " ");
 
@@ -732,6 +752,7 @@ module.exports = {
   computeFingerprint,
   metricsForEntity,
   dimensionsForEntity,
+  nameDimensionIds,
   metricRefs,
   unsupportedLabel,
   buildCompatibilityMatrix,

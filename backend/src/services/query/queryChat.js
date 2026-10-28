@@ -27,8 +27,11 @@ const { CATALOG } = require("./semanticCatalog");
 const { planQuestion, createAnthropicPlannerClient, REVENUE_ASSUMPTION } = require("./planner");
 const { createEntityResolver } = require("./entityResolver");
 const { formatQueryAnswer, formatNonAnswer, SCOPE_HINT } = require("./answerFormatter");
-const { buildPresentation } = require("./presentation");
+const { buildPresentation, displayIntent } = require("./presentation");
+const { plainQuerySummary } = require("./plainAnswer");
+const { buildCalculation } = require("./calculation");
 const turnTelemetry = require("./turnTelemetry");
+const groupComparison = require("./groupComparison");
 
 const { now, newTurnMetrics, timeResolver } = turnTelemetry;
 
@@ -113,7 +116,11 @@ const COMPUTE_FAILED_MESSAGE = "I couldn't compute that answer right now. Please
 // Clarifications that ask for MISSING information (which year, financial or calendar, which measure): the user's reply completes
 // the same question, so it is kept as pending. A term clarification ("orders are not invoices") explains a definition instead;
 // its words would trigger the same guard again, so the reply is planned as a new question.
-const ASKS_FOR_MISSING_INFO = new Set(["planner_needs_clarification", "year_missing", "analysis_needs_clarification"]);
+const ASKS_FOR_MISSING_INFO = new Set(["planner_needs_clarification", "year_missing", "analysis_needs_clarification", "group_comparison_needs_ranking"]);
+
+// "Compare with others" with no ranking to cut a top group from (or a different grouping than the one shown): asked, never guessed.
+const GROUP_NEEDS_RANKING_MESSAGE = 'Which ranking should the top group come from, and for which period? For example: "top 3 suppliers by purchase value in August 2025". I will then compare that top group with all the others.';
+const NO_PLANNER_USAGE = () => ({ calls: 0, input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
 
 // The query planner said one query cannot answer this (several analyses), and analysis plans are switched off (ASK_AI_ANALYSIS).
 const NEEDS_ANALYSIS_OFF_MESSAGE = "This question needs several separate analyses (for example a comparison and then its customers or products, or sales next to purchases). Multi-step analysis is not switched on, so please ask one part at a time.";
@@ -175,10 +182,12 @@ const analysisEnabled = (deps) => (deps && typeof deps.analysisEnabled === "bool
 
 async function answerAnalysis(a, tm) {
   const { planAnalysis } = require("./analysisPlanner");
-  const { executeAnalysisPlan } = require("./analysisPlan");
+  const { investigate } = require("./investigation");
   const { formatAnalysisAnswer } = require("./analysisAnswer");
+  const { buildAnalysisPresentation } = require("./analysisPresentation");
   const ta = now();
-  const ap = await planAnalysis(a.userMessage, { claudeClient: a.deps.plannerClient || getPlannerClient(), referenceDate: a.referenceDate, signal: a.signal });
+  // a follow-up gets the previous turn's validated scope (never rows, tenant or chat text)
+  const ap = await planAnalysis(a.userMessage, { claudeClient: a.deps.plannerClient || getPlannerClient(), referenceDate: a.referenceDate, signal: a.signal, previousScope: a.previousScope || null });
   tm.plannerLatencyMs = (tm.plannerLatencyMs || 0) + (now() - ta);
   const usage = { ...a.plannerUsage };
   for (const k of ["calls", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) usage[k] = (Number(usage[k]) || 0) + (Number(ap.usage && ap.usage[k]) || 0);
@@ -199,7 +208,9 @@ async function answerAnalysis(a, tm) {
   if (a.signal && a.signal.aborted) return { handled: false, reason: "client_aborted" };
 
   const exec = a.deps.execute || ((p, c, timing) => getSharedExecutor().execute(p, c, timing));
-  const execution = await executeAnalysisPlan(ap.analysis, {
+  // bounded investigation: the plan, then at most one validated follow-up round chosen from its evidence (no model call)
+  const dataThrough = a.dc && a.dc.latestVoucher ? a.dc.latestVoucher : null;
+  const investigated = await investigate(ap.analysis, {
     tenantId: a.tenantId,
     dateContext: a.dc,
     execute: exec,
@@ -210,19 +221,46 @@ async function answerAnalysis(a, tm) {
     // each query step carries the notes the single-query answer would carry for the same plan
     definitionNotes: ap.definitionNotes,
     periodNotes: (plan, n) => [completePeriodNote(plan, n, a.referenceDate), futureVouchersNote(plan, a.dc)].filter(Boolean),
-    dataThrough: a.dc && a.dc.latestVoucher ? a.dc.latestVoucher : null,
+    dataThrough,
+  }, {
+    referenceDate: a.referenceDate,
+    dataThrough,
+    // asked what to do: the investigation may measure what would change the decision (its `decide` open point)
+    actions: ap.actions === true,
+    // asked at most once, only for an open need no deterministic follow-up settles: the same analysis planner (tool schema,
+    // checkAnalysis on the question) with the evidence summary, and no repair round (one call)
+    proposeWithModel: (evidence) => planAnalysis(a.userMessage, { claudeClient: a.deps.plannerClient || getPlannerClient(), referenceDate: a.referenceDate, signal: a.signal, maxRepairs: 0, evidence, previousScope: a.previousScope || null }),
   });
+  // the follow-up call counts like every planner call (claudeCalls, usage, telemetry)
+  for (const k of ["calls", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) usage[k] = (Number(usage[k]) || 0) + (Number(investigated.investigation.usage && investigated.investigation.usage[k]) || 0);
+  meta.claudeCalls = usage.calls;
+  tm.plannerAttempts = usage.calls;
+  tm.plannerInputTokens = usage.input_tokens;
+  tm.plannerOutputTokens = usage.output_tokens;
+  tm.plannerCacheReadTokens = usage.cache_read_input_tokens;
+  tm.plannerCacheCreationTokens = usage.cache_creation_input_tokens;
   if (a.signal && a.signal.aborted) return { handled: false, reason: "client_aborted" };
-  if (!execution.ok) return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { meta: { ...meta, status: "execution_failed", code: execution.error.code } }) };
-  const formatted = formatAnalysisAnswer(execution, { assumptions: ap.assumptions });
+  if (!investigated.ok) return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { meta: { ...meta, status: "execution_failed", code: investigated.error.code } }) };
+  const execution = investigated.execution;
+  // suggested next actions only when the question asked what to do (the planner's structured `actions`)
+  const language = questionLanguage(ap.language, a.userMessage);
+  const formatted = formatAnalysisAnswer(execution, { language, assumptions: ap.assumptions, referenceDate: a.referenceDate, dataThrough, limitations: investigated.investigation.notes, unavailable: ap.unavailable, actions: ap.actions === true });
   const ran = execution.steps.filter((s) => s.status === "ok");
   const dataState = ran.some((s) => s.dataState === "sync_failed") ? "sync_failed" : ran.some((s) => s.dataState === "stale") ? "stale" : null;
+  // follow-up state: the scope every executed query step shares (followUp.buildAnalysisState), kept only if it re-reads strictly
+  const revenue = Object.values(ap.definitionNotes || {}).some((notes) => (notes || []).some((n) => n && n.code === REVENUE_ASSUMPTION.code));
+  // the turn's scope is what its PLAN asked; follow-ups the investigation added to gather evidence (origin) are not part of it
+  const state = formatted.answered ? followUp.buildAnalysisState(execution.steps.filter((s) => !s.origin), { revenue }) : null;
+  const queryContext = state && followUp.readQueryState(JSON.parse(JSON.stringify(state))) ? state : undefined;
   return {
     handled: true,
+    ...(queryContext ? { queryContext } : {}),
     structured: baseResponse(formatted.text, {
       toolCalls: [{ toolName: "analysis_plan", state: !formatted.answered ? "no_usable_data" : dataState ? FRESH_TO_STATE[dataState] : "valid_data" }],
       warnings: formatted.warnings,
-      meta: { ...meta, status: formatted.answered ? "answered" : "execution_failed", steps: execution.steps.map((s) => s.status) },
+      // Presentation only (headline, KPI cards, charts, tables, labelled findings): built from these same steps and evidence.
+      visualization: buildAnalysisPresentation({ execution, formatted, assumptions: ap.assumptions, unavailable: ap.unavailable, display: displayIntent(a.userMessage), actions: ap.actions === true }),
+      meta: { ...meta, status: formatted.answered ? "answered" : "execution_failed", steps: execution.steps.map((s) => s.status), unavailable: ap.unavailable || [], actions: ap.actions === true, language, investigation: { rounds: investigated.investigation.rounds, followUps: investigated.investigation.followUps, modelCalls: investigated.investigation.modelCalls, stopReason: investigated.investigation.stopReason, decision: investigated.investigation.decision } },
     }),
   };
 }
@@ -346,9 +384,26 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       return { handled: true, structured: baseResponse(msg, { toolCalls: [{ toolName: "query_engine", state: "no_usable_data" }], warnings: [msg], freshness: salesFreshness, meta: { route: "planner", status: "no_usable_data", claudeCalls: 0 } }) };
     }
 
+    // ---- top N versus the others (groupComparison.js). A request that adds nothing to the previous ranking reuses that ranking
+    // as it is (no planner call); without an established ranking it asks for one instead of guessing which "top" was meant.
+    const groupAsk = groupComparison.intentOf(question);
+    const prevPlan = prevState && prevState.plan && prevState.source !== "analysis" ? prevState.plan : null;
+    const prevRanking = groupComparison.rankingOf(prevPlan);
+    let group = null;
+    let planned;
+    if (groupAsk && groupAsk.pure) {
+      const n = groupAsk.n || (prevState && prevState.group ? prevState.group.top : prevRanking && prevRanking.n);
+      if (!prevRanking || (groupAsk.dim && groupAsk.dim !== prevRanking.dim) || !(n <= groupComparison.MAX_TOP)) {
+        return { handled: true, structured: baseResponse(GROUP_NEEDS_RANKING_MESSAGE, { meta: { route: "planner", status: "needs_clarification", code: "group_comparison_needs_ranking", claudeCalls: 0 } }) };
+      }
+      planned = { status: "supported", plan: prevPlan, usage: NO_PLANNER_USAGE(), plannerAssumptions: [], definitionNotes: prevState.basis === "revenue" ? [REVENUE_ASSUMPTION] : [] };
+      group = { n, ranking: prevRanking, previous: prevState.group || null, previousPeriod: prevPlan.period };
+    }
+
     const tp = now();
-    // Validated against the SAME tenant reference date (the date is never sent to Claude).
-    const planned = await planQuestion(question, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, previousPlan: prevState && prevState.plan ? prevState.plan : undefined, referenceDate, signal });
+    // Validated against the SAME tenant reference date (the date is never sent to Claude). A follow-up of an analysis turn gets that
+    // turn's carried scope (e.g. its period), never a partial plan as if it were a complete previous plan.
+    if (!planned) planned = await planQuestion(question, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, previousPlan: prevPlan || undefined, previousScope: prevState && prevState.source === "analysis" ? followUp.scopeOf(prevState) : undefined, referenceDate, signal });
     tm.plannerLatencyMs = now() - tp;
     const plannerUsage = planned.usage;
     tm.plannerStatus = planned.status;
@@ -363,11 +418,15 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     // The query planner said the question needs several analyses: with analysis plans enabled, the analysis planner composes
     // them (one more model call, at most one repair). Disabled (the default), it stays the planner's decline, exactly as before.
     // A plan the validator could not accept even after the planner's own repairs is the same signal ("one query cannot express
-    // this"): with analysis plans on it goes to the analysis planner too, which composes steps or declines. Accounting-profit
-    // questions never get here as a failure (planQuestion already turned them into the profit refusal).
-    const needsSteps = planned.code === "planner_needs_analysis" || (planned.status === "planner_failed" && planned.code === "planner_invalid_plan");
+    // this"): with analysis plans on it goes to the analysis planner too, which composes steps or declines. So does a reply that
+    // broke the planner's output contract (planner_protocol_violation: no single structured plan or decline came back). It
+    // is what a question one query cannot express often produces (several analyses at once), and the analysis planner applies
+    // the same strict validation and honest refusals. Accounting-profit questions never get here as a failure (planQuestion
+    // already turned them into the profit refusal). Timeouts, call failures and unresolved names keep their own answers.
+    const ROUTED_FAILURES = ["planner_invalid_plan", "planner_protocol_violation"];
+    const needsSteps = planned.code === "planner_needs_analysis" || (planned.status === "planner_failed" && ROUTED_FAILURES.includes(planned.code));
     if (needsSteps && analysisEnabled(deps)) {
-      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage }, tm);
+      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, previousScope: followUp.scopeOf(prevState) }, tm);
     }
     // Analysis plans off: one fixed, honest answer instead of the model's own wording (which varied from question to question).
     if (planned.code === "planner_needs_analysis") {
@@ -385,8 +444,21 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     const plannerAssumptions = planned.plannerAssumptions || [];
     const definitionNotes = planned.definitionNotes || []; // fixed server-side definitions (e.g. the revenue basis)
     const revenueBasis = definitionNotes.some((a) => a.code === REVENUE_ASSUMPTION.code);
+    // A planned ranking becomes a top-versus-others comparison when the question asked for one, or when the previous turn was
+    // one and this plan keeps its ranking rule (same grouping and measure: "Aug 2025" changes only the period). The top N is
+    // the previous one unless the question states a new one.
+    if (!group) {
+      const ranking = groupComparison.rankingOf(plan);
+      const n = groupComparison.topNOf(question);
+      if (ranking && groupAsk && (!groupAsk.dim || groupAsk.dim === ranking.dim)) group = { n: n || ranking.n, ranking, previous: (prevState && prevState.group) || null, previousPeriod: prevPlan && prevPlan.period };
+      else if (ranking && prevState && prevState.group && prevPlan.entity === plan.entity && groupComparison.sameRanking(ranking, prevRanking)) group = { n: n || prevState.group.top, ranking, previous: prevState.group, previousPeriod: prevPlan.period };
+      if (group && !(group.n <= groupComparison.MAX_TOP)) group = null;
+    }
     // The structured context a follow-up needs (stored on the assistant message by the controller; never sent to Claude as chat).
-    const queryContext = followUp.buildQueryState(plan, { revenue: revenueBasis });
+    const planState = followUp.buildQueryState(group ? groupComparison.rankingPlan(plan, group.ranking, group.n) : plan, { revenue: revenueBasis });
+    let queryContext = group ? groupComparison.groupState(planState, [], group.n) : planState;
+    // what runs: the ranking itself, or the same ranking with every group the engine returns plus its overall total
+    const execPlan = group ? groupComparison.comparisonPlan(plan, group.ranking) : plan;
 
     // ---- freshness gate: never present numbers for a company that never synced
     // sales_return/purchase_return freshness tracks the Credit/Debit Note sync checkpoints
@@ -430,7 +502,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     const exec = deps.execute || ((p, c, timing) => getSharedExecutor().execute(p, c, timing));
     const timing = {}; // filled by the production cached executor: when the engine started and how long it ran
     const te = now();
-    const { result, cache } = await exec(plan, { tenantId, referenceDate }, timing);
+    const { result, cache } = await exec(execPlan, { tenantId, referenceDate }, timing);
     recordExecution(tm, { te, done: now(), timing, cache, result });
     if (!result || result.ok !== true) {
       const code = result && result.errors && result.errors[0] && result.errors[0].code;
@@ -446,21 +518,48 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { warnings: [], freshness, meta: { ...meta, status: "execution_failed", code: code || "failed", cache: cache && cache.status } }) };
     }
 
-    const formatted = formatQueryAnswer({ plan, result, definitionNotes, plannerAssumptions, contextNotes, dataThrough: dc && dc.latestVoucher ? dc.latestVoucher : null });
+    const dataThrough = dc && dc.latestVoucher ? dc.latestVoucher : null;
+    if (group) {
+      const answer = groupComparison.formatGroupAnswer({ plan, execPlan, result, ranking: group.ranking, n: group.n, contextNotes, definitionNotes, plannerAssumptions, dataThrough, previous: group.previous, previousPeriod: group.previousPeriod, display: displayIntent(userMessage) });
+      queryContext = groupComparison.groupState(planState, answer.members, group.n);
+      const groupWarnings = [...contextNotes.filter((n) => n.warn).map((n) => n.message), ...answer.warnings];
+      if (freshness.state !== "fresh") groupWarnings.push(freshness.message);
+      return {
+        handled: true,
+        queryContext,
+        structured: baseResponse(answer.text, {
+          toolCalls: [{ toolName: "query_engine", state: freshness.state !== "fresh" ? FRESH_TO_STATE[freshness.state] : answer.zero ? "zero_result" : "valid_data" }],
+          warnings: groupWarnings,
+          freshness,
+          dataAsOf: freshness.dataAsOf ? new Date(freshness.dataAsOf) : null,
+          meta: { ...meta, cache: cache && cache.status, comparison: "top_vs_others" },
+          visualization: answer.visualization,
+        }),
+      };
+    }
+    const formatted = formatQueryAnswer({ plan, result, definitionNotes, plannerAssumptions, contextNotes, dataThrough });
+    // the plain-language opening (the question's language) comes first; the exact figures, basis and notes follow unchanged
+    const language = questionLanguage(planned.language, userMessage);
+    const plain = plainQuerySummary({ plan, result, zero: formatted.zero, language, dataThrough });
+    const text = plain.lines.length ? `${plain.lines.join("\n")}\n\n${formatted.text}` : formatted.text;
     const warnings = [...contextNotes.filter((n) => n.warn).map((n) => n.message), ...formatted.warnings];
     if (freshness.state !== "fresh") warnings.push(freshness.message);
     const state = freshness.state !== "fresh" ? FRESH_TO_STATE[freshness.state] : formatted.zero ? "zero_result" : "valid_data";
     return {
       handled: true,
       queryContext,
-      structured: baseResponse(formatted.text, {
+      structured: baseResponse(text, {
         toolCalls: [{ toolName: "query_engine", state }],
         warnings,
         freshness,
         dataAsOf: freshness.dataAsOf ? new Date(freshness.dataAsOf) : null,
-        meta: { ...meta, cache: cache && cache.status },
+        meta: { ...meta, cache: cache && cache.status, language },
         // Presentation only (tables/charts for the frontend): built from this same result, never changes the text.
-        visualization: buildPresentation({ plan, result, notes: formatted.notes, zero: formatted.zero }),
+        visualization: withCalculation(
+          withPlain(buildPresentation({ plan, result, notes: formatted.notes, zero: formatted.zero, display: displayIntent(userMessage) }), plain),
+          // what executed, for "View calculation": the plan, the engine's own values and the notes above (no new figure)
+          buildCalculation({ plan, result, zero: formatted.zero, previousScope: followUp.scopeOf(prevState), definitionNotes, plannerAssumptions, contextNotes, freshness, dataThrough })
+        ),
       }),
     };
   } catch (error) {
@@ -469,6 +568,14 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     return { handled: true, structured: baseResponse(COMPUTE_FAILED_MESSAGE, { meta: { route: "planner", status: "execution_failed", code: "exception", claudeCalls: tm.plannerAttempts || 0 } }) };
   }
 }
+
+/** The question's language: the planner's structured field; without it, Devanagari script means Hindi, otherwise English. */
+function questionLanguage(planned, text) {
+  return planned || (/[ऀ-ॿ]/.test(text || "") ? "hi" : "en");
+}
+// the view opens with the same plain sentences as the text (an analysis step's view never gets them)
+const withPlain = (view, plain) => (view && plain.lines.length ? { ...view, plain } : view);
+const withCalculation = (view, calculation) => (view ? { ...view, calculation } : view);
 
 // The controller's per-turn telemetry hooks, re-exported so queryChat stays its single entry point into services/query.
 const chatTelemetry = { now, emitChatTurn: turnTelemetry.emitChatTurn };

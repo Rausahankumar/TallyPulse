@@ -12,6 +12,8 @@
 // one relaxation is a typed name that is the leading whole word(s) of exactly ONE stored name (see resolveEntity).
 // --------------------------------------------------
 
+const catalog = require("./semanticCatalog");
+
 /** Lower-case, punctuation-free, single-spaced form used to compare entity names. */
 function normalizeText(raw) {
   return String(raw)
@@ -29,6 +31,10 @@ const SUGGEST_MAX = 3; // "did you mean" shows at most this many names
 const SUGGEST_MIN_SCORE = 0.7; // average best-word similarity (0..1) a stored name needs to be offered
 const ENTITY_RESOLVER_UNAVAILABLE = "ENTITY_RESOLVER_UNAVAILABLE";
 const PREFIX_MIN_FIRST_WORD = 4; // a shorter first word ("a", "mr", "new") is too generic to stand for a stored name
+
+// The catalog's name dimensions a typed name is matched against: those of the entity for sales or purchase, all of them
+// otherwise (no entity, or a return entity).
+const searchedDims = (entity) => catalog.nameDimensionIds(entity === "sales" || entity === "purchase" ? entity : undefined);
 
 // `models` is injectable for tests ({Sale, Purchase, StockItemMaster}); production loads the real ones.
 function defaultSources(tenantId, models) {
@@ -121,7 +127,7 @@ function createEntityResolver({ tenantId, sources } = {}) {
   async function resolveEntity({ entity, hintDim, text }) {
     const key = normalizeText(text || "");
     if (!key) return { matches: [] };
-    let dims = entity === "sales" ? ["customer", "product", "productGroup"] : entity === "purchase" ? ["supplier", "product", "productGroup"] : ["customer", "supplier", "product", "productGroup"];
+    let dims = searchedDims(entity);
     if (hintDim) dims = dims.filter((d) => d === hintDim);
     const matches = [];
     for (const dim of dims) {
@@ -153,7 +159,7 @@ function createEntityResolver({ tenantId, sources } = {}) {
   async function suggest({ entity, hintDim, text }) {
     const typed = normalizeText(text || "").split(" ").filter(Boolean);
     if (!typed.length) return [];
-    let dims = entity === "sales" ? ["customer", "product", "productGroup"] : entity === "purchase" ? ["supplier", "product", "productGroup"] : ["customer", "supplier", "product", "productGroup"];
+    let dims = searchedDims(entity);
     if (hintDim) dims = dims.filter((d) => d === hintDim);
     const scored = [];
     for (const dim of dims) {
