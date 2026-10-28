@@ -1,8 +1,11 @@
-import { HelpCircle, SearchX, Sparkles } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { Calculator, HelpCircle, SearchX, Sparkles } from "lucide-react";
 import FreshnessBadge from "../ui/FreshnessBadge";
 import MarkdownMessage from "./MarkdownMessage";
 import PresentationView from "./present/PresentationView";
-import { isPresentation } from "./present/isPresentation";
+import AnalysisView from "./present/AnalysisView";
+import { isPresentation, hasCalculation } from "./present/isPresentation";
+import CalculationPanel from "./present/CalculationPanel";
 import { cn } from "../../lib/cn";
 
 // Renders one persisted message exactly as chat.model.js stores it on
@@ -42,6 +45,11 @@ export default function ChatBubble({ message }) {
   // presentation model; everything else (clarifications, refusals, failures) stays Markdown text.
   const presentation = !isUser && isPresentation(message.visualization) ? message.visualization : null;
   const Label = presentation ? null : variant.label;
+  // "View calculation": only when the backend saved a calculation record with this answer (read-only)
+  const calculation = presentation && hasCalculation(presentation) ? presentation.calculation : null;
+  const [calcOpen, setCalcOpen] = useState(false);
+  const calcButton = useRef(null);
+  const closeCalc = useCallback(() => setCalcOpen(false), []);
 
   return (
     <div className={cn("flex gap-2.5", isUser && "justify-end")}>
@@ -64,8 +72,29 @@ export default function ChatBubble({ message }) {
                 {Label.text}
               </p>
             )}
-            {presentation ? <PresentationView presentation={presentation} /> : <MarkdownMessage text={message.text} />}
+            {presentation ? (
+              presentation.kind === "analysis" ? <AnalysisView presentation={presentation} /> : <PresentationView presentation={presentation} />
+            ) : (
+              <MarkdownMessage text={message.text} />
+            )}
           </div>
+        )}
+
+        {calculation && (
+          <>
+            <button
+              ref={calcButton}
+              type="button"
+              onClick={() => setCalcOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={calcOpen}
+              className="inline-flex items-center gap-1.5 rounded-md text-[12.5px] font-medium text-brand-600 hover:text-brand-700 hover:underline"
+            >
+              <Calculator className="h-3.5 w-3.5" />
+              View calculation
+            </button>
+            <CalculationPanel calculation={calculation} open={calcOpen} onClose={closeCalc} returnFocusRef={calcButton} />
+          </>
         )}
 
         {!isUser && message.toolCalls?.length > 0 && (
