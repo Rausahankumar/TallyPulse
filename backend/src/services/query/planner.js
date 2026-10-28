@@ -30,6 +30,7 @@
 const catalog = require("./semanticCatalog");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
+const { readScope, scopeMessage } = require("./followUp");
 
 // ---------------------------------------------------------------- safety gate + product definitions (shared policy)
 
@@ -280,7 +281,10 @@ const VALIDATION_FALLBACK_REF = new Date(2025, 0, 15, 12, 0, 0);
 // needs_analysis: the question needs several analyses (or an explanation). It is still a decline of THIS planner (status
 // "unsupported"), so every existing consumer treats it as before; queryChat may hand it to the analysis planner instead.
 const DECLINE_CODES = ["unsupported_domain", "needs_clarification", "not_a_data_query", "needs_analysis"];
-const NAME_DIMENSIONS = new Set(["customer", "supplier", "product", "productGroup"]);
+// The question's language, for the answer's plain-language opening only (never affects the plan). Sent as a tool-schema enum
+// with no prompt sentence: the system prompt has no room left in its budget (verify-planner-digest.js).
+const LANGUAGES = ["en", "hi", "hinglish"];
+const NAME_DIMENSIONS = new Set(catalog.nameDimensionIds());
 
 
 // ---------------------------------------------------------------- prompt + tool (built once from the catalog)
@@ -321,7 +325,8 @@ function buildCatalogDigest(cat = CATALOG) {
     return rule.description;
   });
   // multi-step entries are not "cannot answer": separate analysis steps answer them, so they are named in the needs_analysis rule
-  const unsupported = cat.unsupported.filter((u) => !u.multiStep).map((u) => `${catalog.unsupportedLabel(u)}${u.examples ? ` (${u.examples.join(", ")})` : ""}`).join("; ");
+  // entries sharing a digestLabel are listed once (this planner only declines whole questions, so one name covers them)
+  const unsupported = [...new Set(cat.unsupported.filter((u) => !u.multiStep).map((u) => (u.digestLabel ? u.digestLabel : `${catalog.unsupportedLabel(u)}${u.examples ? ` (${u.examples.join(", ")})` : ""}`)))].join("; ");
   const multiStep = cat.unsupported.filter((u) => u.multiStep).map((u) => catalog.unsupportedLabel(u)).join(", ");
   return [
     "You translate ONE Sales/Purchase question into ONE query plan by calling submit_query_plan. Never answer in prose. Never state figures.",
@@ -363,6 +368,7 @@ function getPlannerPrompt() {
               required: ["code"],
             },
             assumptions: { type: "array", maxItems: 3, items: { type: "string", maxLength: 160 } },
+            language: { enum: LANGUAGES, description: "the question's" },
           },
         },
         cache_control: { type: "ephemeral" },
@@ -485,14 +491,16 @@ const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed",
  * The question-level checks a model-written query plan must pass, as planQuestion applies them after the model answers: the
  * decided terms (D1-D3, counts), the revenue basis, years the user never wrote, and new-party comparisons. Exported so the
  * analysis planner applies the SAME checks to each query step; it composes the existing functions and changes none of them.
+ * @param {object|null} [previousPlan] the previous turn's validated plan or carried scope (follow-ups), read exactly as
+ *        planQuestion reads its previous plan: its measure for the tax-off term, its own dates' years as already stated
  * @returns {null | {status, code, reason, source}} null when the plan may run
  */
-function checkPlannedQuery(question, plan) {
+function checkPlannedQuery(question, plan, previousPlan = null) {
   const text = String(question || "").replace(/\s+/g, " ").trim();
-  const term = uncalculableTermRefusal(text, plan, null);
+  const term = uncalculableTermRefusal(text, plan, previousPlan);
   if (term) return term;
   if (mentionsRevenue(text) && !isRevenuePlan(plan)) return { status: "unsupported", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL };
-  if (!datesStated(plan, text, null)) return { status: "needs_clarification", source: "date_guard", code: "year_missing", reason: "Which year do you mean?" };
+  if (!datesStated(plan, text, previousPlan)) return { status: "needs_clarification", source: "date_guard", code: "year_missing", reason: "Which year do you mean?" };
   if (isNewPartyPlan(plan)) return { status: "unsupported", source: "new_party_guard", code: "unsupported_new_party", reason: NEW_PARTY_REASON };
   return null;
 }
@@ -551,6 +559,8 @@ function applyPlanRules(question, inputPlan, { referenceDate, previousPlan = nul
  * @param {number} [options.maxRepairs=0] 0 or 1: one extra call that returns only validator error codes
  * @param {object} [options.previousPlan] the previous query plan of the conversation (structured plan only, optional). When it passes
  *        the plan schema it is added to the user message as JSON for follow-ups; when invalid it is ignored.
+ * @param {object} [options.previousScope] without a previous plan: the previous ANALYSIS turn's carried scope (followUp.scopeOf),
+ *        framed like the analysis planner's (followUp.scopeMessage) and read by the guards like a previous plan.
  */
 async function planQuestion(question, options = {}) {
   const out = await planQuestionCore(question, options);
@@ -565,6 +575,9 @@ async function planQuestion(question, options = {}) {
 async function planQuestionCore(question, options = {}) {
   const { claudeClient, resolveEntity, referenceDate } = options;
   const previous = readPreviousPlan(options.previousPlan);
+  // without a previous plan, an analysis turn's carried scope (followUp.scopeOf): the same framing the analysis planner gets
+  const scope = previous ? null : readScope(options.previousScope);
+  const context = previous ? previous.plan : scope; // read by the guards and plan rules as a previous plan (its stated years, measure)
   if (typeof claudeClient !== "function") throw new Error("planQuestion requires a claudeClient function.");
   const maxRepairs = Math.min(MAX_REPAIRS_CAP, Math.max(0, Number.isInteger(options.maxRepairs) ? options.maxRepairs : 0));
   const usage = newUsage();
@@ -576,7 +589,7 @@ async function planQuestionCore(question, options = {}) {
   if (text.length > PLANNER_MAX_QUESTION_CHARS) return { status: "needs_clarification", route: "honest_response", source: "planner_gate", code: "question_too_long", reason: "Please shorten the question.", usage };
 
   const prompt = getPlannerPrompt();
-  let messages = [{ role: "user", content: previous ? previousPlanMessage(previous.json, text) : text }];
+  let messages = [{ role: "user", content: previous ? previousPlanMessage(previous.json, text) : scope ? scopeMessage(scope, text) : text }];
   let lastFailure = null;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
@@ -610,7 +623,7 @@ async function planQuestionCore(question, options = {}) {
       return failed("planner_protocol_violation", "The planner did not return exactly one structured plan.", usage);
     }
     const input = toolUses[0].input;
-    const extraKeys = Object.keys(input).filter((k) => !["plan", "decline", "assumptions"].includes(k));
+    const extraKeys = Object.keys(input).filter((k) => !["plan", "decline", "assumptions", "language"].includes(k));
     const hasPlan = Object.prototype.hasOwnProperty.call(input, "plan");
     const hasDecline = Object.prototype.hasOwnProperty.call(input, "decline");
     if (extraKeys.length || hasPlan === hasDecline) {
@@ -675,7 +688,7 @@ async function planQuestionCore(question, options = {}) {
     }
 
     // ---- D1-D3: net sales / turnover / invoice sales (before tax) / orders are refused, never answered with a nearby figure
-    const termRefusal = uncalculableTermRefusal(text, parsed.plan, previous && previous.plan);
+    const termRefusal = uncalculableTermRefusal(text, parsed.plan, context);
     if (termRefusal) return { ...termRefusal, usage };
 
     // ---- revenue basis: enforced here, not trusted to the prompt. A revenue question may only become the
@@ -688,7 +701,7 @@ async function planQuestionCore(question, options = {}) {
 
     // ---- dates (P-SF): the planner is never given a date, so a literal year in its plan that the user did not
     // write would be invented. Custom ranges and specific FYs must use years stated in the question.
-    if (!datesStated(parsed.plan, text, previous && previous.plan)) {
+    if (!datesStated(parsed.plan, text, context)) {
       return { status: "needs_clarification", route: "honest_response", source: "date_guard", code: "year_missing", reason: "Which year do you mean?", usage };
     }
 
@@ -735,7 +748,7 @@ async function planQuestionCore(question, options = {}) {
     const definitionNotes = revenue ? [REVENUE_ASSUMPTION] : [];
     if (defaultSortNote) definitionNotes.push(defaultSortNote);
     if (productValueNote) definitionNotes.push(productValueNote);
-    const ruled = applyPlanRules(text, plan, { referenceDate, previousPlan: previous && previous.plan, validation });
+    const ruled = applyPlanRules(text, plan, { referenceDate, previousPlan: context, validation });
     if (ruled.error) return failed("planner_invalid_plan", ruled.error, usage);
     plan = ruled.plan;
     validation = ruled.validation;
@@ -748,6 +761,8 @@ async function planQuestionCore(question, options = {}) {
       source: "claude_planner",
       plan,
       plannerAssumptions,
+      // presentation only: an unknown value is dropped (the caller falls back to the script), never a failed turn
+      language: LANGUAGES.includes(input.language) ? input.language : null,
       definitionNotes,
       assumptions: validation.assumptions,
       warnings: validation.warnings,

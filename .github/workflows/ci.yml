@@ -182,6 +182,19 @@ jobs:
             verify-customer-count.js \
             verify-analysis-plan.js \
             verify-analysis-planner.js \
+            verify-investigation-eval.js \
+            verify-evidence.js \
+            verify-investigation-loop.js \
+            verify-analysis-followup.js \
+            verify-group-comparison.js \
+            verify-followup-context.js \
+            verify-decline-investigation.js \
+            verify-overall-direction.js \
+            verify-plain-answer.js \
+            verify-plain-query-answer.js \
+            verify-calculation.js \
+            verify-unavailable-concepts.js \
+            verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \

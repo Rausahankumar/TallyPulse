@@ -267,13 +267,44 @@ function entity(plan) {
   return plan.entity === "purchase" || plan.entity === "purchase_return" ? "Supplier" : "Customer";
 }
 
+// The one-line reading of a chart the user asked for, from the chart's own points and formatted values (no new figure).
+function captionOf(p) {
+  const c = p.chart;
+  if (!c || !c.points || c.points.length < 2) return null;
+  const pts = c.points;
+  if (p.kind === "ranking") {
+    const last = pts[pts.length - 1];
+    return `${pts[0].label} is highest (${pts[0].display}); ${last.label} is lowest of the ${pts.length} shown (${last.display}).`;
+  }
+  if (p.kind === "trend") {
+    const max = pts.reduce((a, b) => (b.value > a.value ? b : a));
+    return `${c.metric}: ${pts[0].display} in ${pts[0].label}, ${pts[pts.length - 1].display} in ${pts[pts.length - 1].label}; highest in ${max.label} (${max.display}).`;
+  }
+  if (p.kind === "comparison") return `${c.metric}: ${pts[1].display} in ${pts[1].label} against ${pts[0].display} in ${pts[0].label}.`;
+  return null;
+}
+
 /** @returns {object|null} never throws */
-function buildPresentation(input) {
+function buildPresentation({ display = null, ...input }) {
   try {
-    return build(input);
+    const p = build(input);
+    if (!display) return p;
+    const caption = display === "chart" ? captionOf(p) : null;
+    return { ...p, display, ...(caption ? { caption } : {}) };
   } catch (error) {
     return null;
   }
 }
 
-module.exports = { buildPresentation, PRESENTATION_VERSION };
+// What the user asked to SEE, read from their own words (presentation only: it never changes the plan, the query or a figure).
+// "chart" puts the chart first and folds the table; "table" puts the exact figures first and folds the chart; null shows both.
+const CHART_WORDS = /\b(?:charts?|graphs?|plots?|visuali[sz](?:e|ation)|diagrams?)\b/i;
+const TABLE_WORDS = /\b(?:tables?|tabular|spreadsheet)\b/i;
+function displayIntent(text) {
+  if (typeof text !== "string") return null;
+  const chart = CHART_WORDS.test(text);
+  const table = TABLE_WORDS.test(text);
+  return chart === table ? null : chart ? "chart" : "table";
+}
+
+module.exports = { buildPresentation, displayIntent, primaryOf, shortLabel, compareLabel, col, PRESENTATION_VERSION };

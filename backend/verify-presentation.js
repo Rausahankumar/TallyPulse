@@ -21,6 +21,7 @@ https.request = () => { netCalls += 1; throw new Error("network blocked in test"
 
 const { buildPresentation, PRESENTATION_VERSION } = require("./src/services/query/presentation");
 const { formatQueryAnswer, fmtMoney, fmtNumber } = require("./src/services/query/answerFormatter");
+const { plainQuerySummary } = require("./src/services/query/plainAnswer");
 const { tryAnswerWithQueryEngine: realTryAnswer } = require("./src/services/query/queryChat");
 const { PLANNER_TOOL_NAME } = require("./src/services/query/planner");
 const { createEntityResolver } = require("./src/services/query/entityResolver");
@@ -196,7 +197,10 @@ const P = (p, r, extra = {}) => {
     const r = await ask("total sales last month", async () => ({ result, cache: { status: "miss" } }));
     const expectText = formatQueryAnswer({ plan: { v: 1, entity: "sales", mode: "aggregate", period: { kind: "previous_month" }, metrics: ["invoiceAmount", "invoiceCount"], filters: [] }, result }).text;
     check("the chat response carries the presentation in the existing visualization slot", r.handled && r.structured.visualization && r.structured.visualization.kind === "kpi" && r.structured.visualization.headline.display === fmtMoney(1234567.5));
-    check("the text answer is exactly the formatter's output (unchanged)", r.structured.answer === expectText);
+    // the answer opens with the plain-language sentences; below them the formatter's output is unchanged, figures included
+    const plainLines = plainQuerySummary({ plan: lastMonth, result, language: "en" }).lines;
+    check("the text answer is the plain opening, a blank line, then exactly the formatter's output (unchanged)", plainLines.length > 0 && r.structured.answer === `${plainLines.join("\n")}\n\n${expectText}`, r.structured.answer.split("\n")[0]);
+    check("the view carries the same plain opening (language en for an English question without a planner language)", r.structured.visualization.plain && r.structured.visualization.plain.language === "en" && JSON.stringify(r.structured.visualization.plain.lines) === JSON.stringify(plainLines) && r.structured.details.queryEngine.language === "en");
     const z = await ask("total sales last month", async () => ({ result: base({ totals: { values: { invoiceAmount: 0, invoiceCount: 0 } } }), cache: { status: "miss" } }));
     check("zero result -> empty state presentation (no chart)", z.structured.visualization.kind === "empty" && !z.structured.visualization.chart);
     // a year the user never wrote: the planner's deterministic year guard asks, the engine never runs
