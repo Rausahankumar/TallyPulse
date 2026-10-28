@@ -252,7 +252,8 @@ async function answerAnalysis(a, tm) {
     actions: ap.actions === true,
     // asked at most once, only for an open need no deterministic follow-up settles: the same analysis planner (tool schema,
     // checkAnalysis on the question) with the evidence summary, and no repair round (one call)
-    proposeWithModel: (evidence) => planAnalysis(a.userMessage, { claudeClient: a.claudeClient, referenceDate: a.referenceDate, signal: a.signal, maxRepairs: 0, evidence, previousScope: a.previousScope || null }),
+    // basic mode runs only its bounded shapes: no model-chosen follow-up steps there
+    proposeWithModel: a.basicOnly ? null : (evidence) => planAnalysis(a.userMessage, { claudeClient: a.claudeClient, referenceDate: a.referenceDate, signal: a.signal, maxRepairs: 0, evidence, previousScope: a.previousScope || null }),
   });
   // the follow-up call counts like every planner call (claudeCalls, usage, telemetry)
   for (const k of ["calls", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) usage[k] = (Number(usage[k]) || 0) + (Number(investigated.investigation.usage && investigated.investigation.usage[k]) || 0);
