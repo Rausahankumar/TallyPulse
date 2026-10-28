@@ -196,6 +196,7 @@ jobs:
             verify-planner-response-cache.js \
             verify-cache-telemetry.js \
             verify-unavailable-concepts.js \
+            verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
             verify-query-parity.js \
             verify-query-parity-synthetic.js \
