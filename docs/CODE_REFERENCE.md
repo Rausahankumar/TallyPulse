@@ -6,7 +6,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 > Comments code se uthaye gaye hain, isliye English me hain. Simple Hindi/Hinglish samjhane wala hissa alag file `CODE_WALKTHROUGH_HINGLISH.md` me hai (wo haath se likha hai, is file se purana ho sakta hai).
 
-**Is snapshot me:** backend 105 source files (766 functions), frontend 86 files (222 functions/components), backend scripts 100 files.
+**Is snapshot me:** backend 108 source files (784 functions), frontend 86 files (222 functions/components), backend scripts 110 files.
 
 ## Index
 
@@ -53,7 +53,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 **5. Models (MongoDB tables)**
 
 - `src/models/adjustmentNote.model.js` (100 lines, 0 functions)
-- `src/models/aiTurnUsage.model.js` (38 lines, 0 functions)
+- `src/models/aiTurnUsage.model.js` (57 lines, 0 functions)
 - `src/models/chat.model.js` (111 lines, 0 functions)
 - `src/models/company.js` (63 lines, 0 functions)
 - `src/models/gstSchemas.js` (162 lines, 0 functions)
@@ -134,9 +134,10 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **14. AI query engine**
 
+- `src/services/query/aiPricing.js` (45 lines, 4 functions)
 - `src/services/query/analysisAnswer.js` (151 lines, 8 functions)
 - `src/services/query/analysisPlan.js` (281 lines, 12 functions)
-- `src/services/query/analysisPlanner.js` (328 lines, 11 functions)
+- `src/services/query/analysisPlanner.js` (330 lines, 11 functions)
 - `src/services/query/analysisPresentation.js` (250 lines, 9 functions)
 - `src/services/query/answerCache.js` (204 lines, 4 functions)
 - `src/services/query/answerFormatter.js` (216 lines, 20 functions)
@@ -151,13 +152,15 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/query/groupComparison.js` (246 lines, 17 functions)
 - `src/services/query/investigation.js` (324 lines, 13 functions)
 - `src/services/query/plainAnswer.js` (400 lines, 19 functions)
-- `src/services/query/planner.js` (861 lines, 36 functions)
+- `src/services/query/planner.js` (869 lines, 37 functions)
+- `src/services/query/plannerResponseCache.js` (226 lines, 7 functions)
 - `src/services/query/presentation.js` (314 lines, 19 functions)
-- `src/services/query/queryChat.js` (608 lines, 20 functions)
+- `src/services/query/providerAttempts.js` (48 lines, 2 functions)
+- `src/services/query/queryChat.js` (661 lines, 24 functions)
 - `src/services/query/queryPlan.schema.js` (307 lines, 8 functions)
 - `src/services/query/semanticCatalog.js` (760 lines, 10 functions)
-- `src/services/query/turnTelemetry.js` (151 lines, 13 functions)
-- `src/services/query/usageStore.js` (100 lines, 9 functions)
+- `src/services/query/turnTelemetry.js` (155 lines, 13 functions)
+- `src/services/query/usageStore.js` (123 lines, 9 functions)
 - `src/services/query/validator.js` (410 lines, 15 functions)
 
 **15. Frontend: pages**
@@ -267,22 +270,6 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 **16. Backend scripts (operator tools, evaluations, verification suites)**
 
 - see section 16 below (one line per script)
-
-**17. Work in another worktree (not in this branch)**
-
-- `src/services/query/aiPricing.js` (45 lines, 4 functions)
-- `src/services/query/plannerResponseCache.js` (226 lines, 7 functions)
-- `src/services/query/providerAttempts.js` (48 lines, 2 functions)
-- `eval-ai-cost-live.js` (132 lines, 4 functions)
-- `eval-ai-cost-report.js` (70 lines, 1 functions)
-- `eval-cache-baseline.js` (179 lines, 7 functions)
-- `eval/cost/harness.js` (132 lines, 6 functions)
-- `eval/cost/scenarios.js` (125 lines, 6 functions)
-- `eval/cost/stub-server.js` (22 lines, 1 functions)
-- `eval/cost/run-baseline.js` (16 lines, 0 functions)
-- `verify-ai-cost-path.js` (189 lines, 2 functions)
-- `verify-cache-telemetry.js` (66 lines, 1 functions)
-- `verify-planner-response-cache.js` (286 lines, 4 functions)
 
 
 # 0. Entry point
@@ -638,7 +625,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/controllers/chatController.js`
 **Used by:** `src/routes/chatRoutes.js`
 
-**Tested by:** `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-chat-management.js`, `verify-cost-forensic.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-semantic-foundation.js`
+**Tested by:** `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-chat-management.js`, `verify-cost-forensic.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-semantic-foundation.js` (+1 more)
 
 **Imports:** `src/middleware/errorHandler.js`, `src/models/chat.model.js`, `src/services/query/queryChat.js`
 
@@ -798,7 +785,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/aiTurnUsage.model.js`
 **Used by:** `src/services/query/usageStore.js`
 
-**Tested by:** `verify-ai-usage-persist.js`
+**Tested by:** `verify-ai-usage-persist.js`, `verify-cache-telemetry.js`
 
 **Imports:** (none)
 
@@ -810,7 +797,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/chat.model.js`
 **Used by:** `src/controllers/chatController.js`
 
-**Tested by:** `verify-analysis-followup.js`, `verify-chat-management.js`, `verify-cost-forensic.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-security-audit.js`, `verify-semantic-foundation.js`
+**Tested by:** `verify-analysis-followup.js`, `verify-chat-management.js`, `verify-cost-forensic.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-security-audit.js`, `verify-semantic-foundation.js` (+1 more)
 
 **Imports:** (none)
 
@@ -1893,7 +1880,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/models/syncCheckpoint.model.js → findOne()`
 
 ## `src/services/analytics/insightTools.js`
-**Used by:** `src/services/query/analysisPlan.js`, `src/services/query/analysisPlanner.js`
+**Used by:** `src/services/query/analysisPlan.js`, `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`
 
 **Tested by:** `verify-analysis-plan.js`, `verify-insight-tools.js`, `verify-insights.js`
 
@@ -2229,6 +2216,25 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 # 14. AI query engine
 
+## `src/services/query/aiPricing.js`
+**Used by:** `src/services/query/usageStore.js`
+
+**Tested by:** `eval-ai-cost-live.js`, `eval-ai-cost-report.js`, `verify-ai-cost-path.js`
+
+**Imports:** (none)
+
+**Exports:** `estimateCost`, `familyOf`, `PRICES`, `PRICING_VERSION`
+
+- **`familyOf()`** — line 20
+  - Purpose: "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5" (a dated snapshot id has the price of its family).
+- **`n()`** — line 22
+  - Purpose: (no comment in code — see name and calls below)
+- **`usd()`** — line 23
+  - Purpose: (no comment in code — see name and calls below)
+- **`estimateCost()`** — line 32
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `familyOf()`, `n()`, `usd()`
+
 ## `src/services/query/analysisAnswer.js`
 **Used by:** `src/services/query/analysisPresentation.js`, `src/services/query/queryChat.js`
 
@@ -2306,42 +2312,42 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/analysisPlanner.js`
 **Used by:** `src/services/query/queryChat.js`
 
-**Tested by:** `eval-investigations.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js`, `verify-revenue-analysis-guard.js`, `verify-unavailable-concepts.js`
+**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js` (+3 more)
 
-**Imports:** `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/planner.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js`, `src/services/query/semanticCatalog.js`, `src/services/query/followUp.js`
+**Imports:** `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/planner.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js`, `src/services/query/semanticCatalog.js`, `src/services/query/followUp.js`, `src/services/query/plannerResponseCache.js`
 
-**Exports:** `planAnalysis`, `getAnalysisPrompt`, `checkAnalysis`, `ANALYSIS_TOOL_NAME`, `ANALYSIS_TOOL_IDS`, `ANALYSIS_MAX_TOKENS`
+**Exports:** `planAnalysis`, `getAnalysisPrompt`, `checkAnalysis`, `ANALYSIS_TOOL_NAME`, `ANALYSIS_TOOL_IDS`, `ANALYSIS_MAX_TOKENS`, `EVIDENCE_LEAD`
 
-- **`isPlainObject()`** — line 46
+- **`isPlainObject()`** — line 47
   - Purpose: (no comment in code — see name and calls below)
-- **`cleanText()`** — line 47
+- **`cleanText()`** — line 48
   - Purpose: (no comment in code — see name and calls below)
-- **`newUsage()`** — line 48
+- **`newUsage()`** — line 49
   - Purpose: (no comment in code — see name and calls below)
-- **`addUsage()`** — line 49
+- **`addUsage()`** — line 50
   - Purpose: (no comment in code — see name and calls below)
-- **`failed()`** — line 53
+- **`failed()`** — line 54
   - Purpose: (no comment in code — see name and calls below)
-- **`buildAnalysisPrompt()`** — line 59
+- **`buildAnalysisPrompt()`** — line 60
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/query/planner.js → buildCatalogDigest()`, `src/services/analytics/insightTools.js → listInsightTools()`, `src/services/query/semanticCatalog.js → unsupportedLabel()`
-- **`buildAnalysisTool()`** — line 78
+- **`buildAnalysisTool()`** — line 79
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/analytics/insightTools.js → insightToolArgsJsonSchemas()`, `src/services/query/queryPlan.schema.js → queryPlanJsonSchema()`, `src/services/query/semanticCatalog.js → nameDimensionIds()`
-- **`getAnalysisPrompt()`** — line 139
+- **`getAnalysisPrompt()`** — line 140
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `buildAnalysisPrompt()`, `buildAnalysisTool()`
-- **`revenueGuard()`** — line 158
+- **`revenueGuard()`** — line 159
   - Purpose: The revenue basis for an ANALYSIS (the question says "revenue"). "Revenue" has one meaning: sales + lineAmount (planner.isRevenuePlan). An analysis is several steps, and only its headline is the revenue figure, so the steps are judged together, not each as revenue: - at least one step is a revenue step (sales + only line-grain metrics incl. lineAmount) - unless `requirePrimary` is false (a later investigation roun...
   - Calls other files: `src/services/query/planner.js → mentionsRevenue()`, `src/services/analytics/insightTools.js → insightToolVoucherTypes()`, `src/services/query/queryPlan.schema.js → parseQueryPlan()`, `src/services/query/planner.js → isRevenuePlan()`
-- **`checkAnalysis()`** — line 180
+- **`checkAnalysis()`** — line 181
   - Purpose: Everything that can be checked before execution. Returns { errors } (repairable: our own codes), { refusal } (a decided rule: final, never repaired) or { plan, notes } (the plan after the decided rewrites; definition notes by step id). options.requirePrimary: false for the supporting steps of a later investigation round (see revenueGuard).
   - Calls in this file: `revenueGuard()`
   - Calls other files: `src/services/query/analysisPlan.js → parseAnalysisPlan()`, `src/services/query/planner.js → mentionsAccountingProfit()`, `src/services/analytics/insightTools.js → validateInsightArgs()`, `src/services/query/planner.js → checkPlannedQuery()`, `src/services/query/queryPlan.schema.js → parseQueryPlan()`, `src/services/query/validator.js → validateQueryPlan()`, `src/services/query/planner.js → mentionsRevenue()`, `src/services/query/planner.js → applyPlanRules()`, `src/services/query/planner.js → isRevenuePlan()`
-- **`planAnalysis()`** _(async)_ — line 239
+- **`planAnalysis()`** _(async)_ — line 240
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `newUsage()`, `getAnalysisPrompt()`, `failed()`, `addUsage()`, `isPlainObject()`, `cleanText()`, `checkAnalysis()`
-  - Calls other files: `src/services/query/followUp.js → readScope()`, `src/services/query/followUp.js → scopeMessage()`
+  - Calls other files: `src/services/query/followUp.js → readScope()`, `src/services/query/followUp.js → scopeMessage()`, `src/services/query/plannerResponseCache.js → isCachedResponse()`
 
 ## `src/services/query/analysisPresentation.js`
 **Used by:** `src/services/query/queryChat.js`
@@ -2381,9 +2387,9 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/services/query/answerFormatter.js → plainMetricNames()`, `src/services/query/analysisAnswer.js → unavailableText()`, `src/services/query/analysisAnswer.js → noActionText()`
 
 ## `src/services/query/answerCache.js`
-**Used by:** `src/services/query/analysisPlan.js`, `src/services/query/queryChat.js`
+**Used by:** `src/services/query/analysisPlan.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `verify-ai-telemetry.js`, `verify-analysis-plan.js`, `verify-cost-forensic.js`, `verify-planner-live-eval.js`, `verify-product-return-analytics.js`, `verify-query-cache.js`, `verify-query-planner.js`, `verify-return-analytics.js` (+1 more)
+**Tested by:** `eval-cache-baseline.js`, `verify-ai-telemetry.js`, `verify-analysis-plan.js`, `verify-cost-forensic.js`, `verify-planner-live-eval.js`, `verify-planner-response-cache.js`, `verify-product-return-analytics.js`, `verify-query-cache.js` (+3 more)
 
 **Imports:** `src/services/query/queryPlan.schema.js`, `src/services/query/semanticCatalog.js`, `src/services/query/dataVersion.js`, `src/services/query/execute.js`, `src/services/query/turnTelemetry.js`
 
@@ -3103,99 +3109,132 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/planner.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-investigations.js`, `eval-nlu-models.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js`, `verify-calculation.js` (+19 more)
+**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `eval-nlu-models.js`, `verify-ai-cost-path.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js` (+23 more)
 
-**Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/followUp.js`
+**Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/providerAttempts.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/followUp.js`, `src/services/query/plannerResponseCache.js`
 
-**Exports:** `planQuestion`, `uncalculableTermRefusal`, `createAnthropicPlannerClient`, `getPlannerPrompt`, `buildCatalogDigest`, `PLANNER_TOOL_NAME`, `PLANNER_MAX_TOKENS`, `PLANNER_MAX_QUESTION_CHARS`, `PLANNER_ATTEMPT_TIMEOUT_MS`, `PLANNER_MAX_RETRIES`, `PLANNER_DEADLINE_MS`, `DECLINE_CODES`, `REVENUE_ASSUMPTION`, `PRODUCT_UNIT_WORDS`, `checkPlannedQuery`, `applyPlanRules`, `mentionsRevenue`, `isRevenuePlan`, `REVENUE_BASIS_REFUSAL`, `mentionsAccountingProfit`
+**Exports:** `planQuestion`, `uncalculableTermRefusal`, `createAnthropicPlannerClient`, `plannerRequestSettings`, `getPlannerPrompt`, `buildCatalogDigest`, `PLANNER_TOOL_NAME`, `PLANNER_MAX_TOKENS`, `PLANNER_MAX_QUESTION_CHARS`, `PLANNER_ATTEMPT_TIMEOUT_MS`, `PLANNER_MAX_RETRIES`, `PLANNER_DEADLINE_MS`, `DECLINE_CODES`, `REVENUE_ASSUMPTION`, `PRODUCT_UNIT_WORDS`, `checkPlannedQuery`, `applyPlanRules`, `mentionsRevenue`, `isRevenuePlan`, `REVENUE_BASIS_REFUSAL`, `mentionsAccountingProfit`
 
-- **`isUnsafeQuestion()`** — line 53
+- **`isUnsafeQuestion()`** — line 55
   - Purpose: The safety gate applied before any Claude call.
-- **`unsafeReason()`** — line 61
+- **`unsafeReason()`** — line 63
   - Purpose: (no comment in code — see name and calls below)
-- **`mentionsRevenue()`** — line 74
+- **`mentionsRevenue()`** — line 76
   - Purpose: (no comment in code — see name and calls below)
-- **`normalizeTerms()`** — line 84
+- **`normalizeTerms()`** — line 86
   - Purpose: Product decisions D1-D3 (final). Net sales / turnover = invoice sales AFTER returns and BEFORE tax; invoice sales = BEFORE tax and BEFORE returns. The engine has no invoice-level total before tax and cannot combine sales with returns in one figure, so these terms are REFUSED with the catalog's own reason - never answered with a nearby number (the sales total includes tax; revenue is the item lines only). An "order...
-- **`carriesVoucherTotal()`** — line 124
+- **`carriesVoucherTotal()`** — line 126
   - Purpose: The amounts that are invoice TOTALS including tax (catalog amountBasis): a list shows them as its amount column.
-- **`mentionsOrders()`** — line 134
+- **`mentionsOrders()`** — line 136
   - Purpose: (no comment in code — see name and calls below)
-- **`catalogReason()`** — line 153
+- **`catalogReason()`** — line 155
   - Purpose: (no comment in code — see name and calls below)
-- **`uncalculableTermRefusal()`** — line 163
+- **`uncalculableTermRefusal()`** — line 165
   - Purpose: A refusal when the question uses a term the engine cannot calculate (D1-D3, or a supplier / different-product count) and the model nevertheless produced a plan; else null.
   - Calls in this file: `normalizeTerms()`, `catalogReason()`, `mentionsRevenue()`, `isRevenuePlan()`, `carriesVoucherTotal()`, `mentionsOrders()`
-- **`withDefaultSort()`** — line 187
+- **`withDefaultSort()`** — line 189
   - Purpose: (no comment in code — see name and calls below)
-- **`catalogAmountMetric()`** — line 200
+- **`catalogAmountMetric()`** — line 202
   - Purpose: (no comment in code — see name and calls below)
-- **`withProductValueMetric()`** — line 203
+- **`withProductValueMetric()`** — line 205
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `catalogAmountMetric()`
-- **`needsLastYearNote()`** — line 225
+- **`needsLastYearNote()`** — line 227
   - Purpose: (no comment in code — see name and calls below)
-- **`isProductPlan()`** — line 240
+- **`isProductPlan()`** — line 242
   - Purpose: (no comment in code — see name and calls below)
-- **`withProductValueDefault()`** — line 241
+- **`withProductValueDefault()`** — line 243
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `isProductPlan()`, `normalizeTerms()`
-- **`withProductValueSort()`** — line 257
+- **`withProductValueSort()`** — line 259
   - Purpose: (no comment in code — see name and calls below)
-- **`needsMeaning()`** — line 305
+- **`plannerRequestSettings()`** — line 282
+  - Purpose: The request settings the real client adds to every model request (also part of the response cache's key).
+- **`needsMeaning()`** — line 309
   - Purpose: A metric carries its catalog description when it is a summed amount or quantity (the basis - tax-inclusive invoice total vs pre-tax item value - matters) or a distinct count (what is counted and how it cannot be grouped). Plain counts and ratios are self-explanatory.
-- **`buildCatalogDigest()`** — line 307
+- **`buildCatalogDigest()`** — line 311
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `needsMeaning()`
   - Calls other files: `src/services/query/semanticCatalog.js → unsupportedLabel()`
-- **`getPlannerPrompt()`** — line 349
+- **`getPlannerPrompt()`** — line 353
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `buildCatalogDigest()`
   - Calls other files: `src/services/query/queryPlan.schema.js → queryPlanJsonSchema()`
-- **`cleanText()`** — line 385
+- **`cleanText()`** — line 389
   - Purpose: Anything Claude wrote is untrusted display text: no control chars, bounded, never fed to the engine.
-- **`isPlainObject()`** — line 389
+- **`isPlainObject()`** — line 393
   - Purpose: (no comment in code — see name and calls below)
-- **`addUsage()`** — line 393
+- **`addUsage()`** — line 397
   - Purpose: (no comment in code — see name and calls below)
-- **`newUsage()`** — line 400
+- **`newUsage()`** — line 404
   - Purpose: (no comment in code — see name and calls below)
-- **`isRevenuePlan()`** — line 406
+- **`isRevenuePlan()`** — line 410
   - Purpose: (no comment in code — see name and calls below)
-- **`statedYears()`** — line 412
+- **`statedYears()`** — line 416
   - Purpose: Years the user actually wrote: 2025, '25, 2025-26, 24-25 (both years of an FY label).
-- **`readPreviousPlan()`** — line 426
+- **`readPreviousPlan()`** — line 430
   - Purpose: The previous STRUCTURED plan of the conversation (follow-ups). It is untrusted input: it must pass the same strict schema as any plan, otherwise it is ignored (the question is then planned exactly as without one). Only the plan - never chat text, answers, tool results or figures - and it is shown to Claude without its default fields.
   - Calls other files: `src/services/query/queryPlan.schema.js → parseQueryPlan()`
-- **`readDataWindow()`** — line 441
+- **`readDataWindow()`** — line 445
   - Purpose: (no comment in code — see name and calls below)
-- **`previousPlanMessage()`** — line 446
+- **`previousPlanMessage()`** — line 450
   - Purpose: (no comment in code — see name and calls below)
-- **`plannedYears()`** — line 458
+- **`plannedYears()`** — line 462
   - Purpose: Years in the previous plan's own dates were stated by the user in an earlier turn (and validated then), so a follow-up that keeps that period is not "inventing" a year.
-- **`datesStated()`** — line 476
+- **`datesStated()`** — line 480
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `statedYears()`, `plannedYears()`
-- **`isNewPartyPlan()`** — line 493
+- **`isNewPartyPlan()`** — line 497
   - Purpose: (no comment in code — see name and calls below)
-- **`failed()`** — line 497
+- **`failed()`** — line 501
   - Purpose: (no comment in code — see name and calls below)
-- **`checkPlannedQuery()`** — line 507
+- **`checkPlannedQuery()`** — line 511
   - Purpose: The question-level checks a model-written query plan must pass, as planQuestion applies them after the model answers: the decided terms (D1-D3, counts), the revenue basis, years the user never wrote, and new-party comparisons. Exported so the analysis planner applies the SAME checks to each query step; it composes the existing functions and changes none of them.
   - Calls in this file: `uncalculableTermRefusal()`, `mentionsRevenue()`, `isRevenuePlan()`, `datesStated()`, `isNewPartyPlan()`
-- **`applyPlanRules()`** — line 524
+- **`applyPlanRules()`** — line 528
   - Purpose: The decided rules that rewrite or annotate a valid, name-verified query plan, as planQuestion applies them: the complete previous month (decision 2), the product value default and value sort, and the "last year" note. Exported so the analysis planner applies the SAME rules to each query step (one implementation; the same numbers and notes for the same plan).
   - Calls in this file: `withProductValueDefault()`, `withProductValueSort()`, `needsLastYearNote()`
   - Calls other files: `src/services/query/validator.js → validateQueryPlan()`, `src/services/query/queryPlan.schema.js → parseQueryPlan()`
-- **`planQuestion()`** _(async)_ — line 575
+- **`planQuestion()`** _(async)_ — line 579
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `planQuestionCore()`, `normalizeTerms()`, `catalogReason()`
-- **`planQuestionCore()`** _(async)_ — line 585
+- **`planQuestionCore()`** _(async)_ — line 589
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `readPreviousPlan()`, `readDataWindow()`, `newUsage()`, `isUnsafeQuestion()`, `unsafeReason()`, `getPlannerPrompt()`, `previousPlanMessage()`, `failed()`, `addUsage()`, `isPlainObject()`, `cleanText()`, `withDefaultSort()`, `withProductValueMetric()`, `uncalculableTermRefusal()`, `mentionsRevenue()`, `isRevenuePlan()`, `datesStated()`, `isNewPartyPlan()`, `applyPlanRules()`
-  - Calls other files: `src/services/query/followUp.js → readScope()`, `src/services/query/followUp.js → scopeMessage()`, `src/services/query/queryPlan.schema.js → parseQueryPlan()`, `src/services/query/validator.js → validateQueryPlan()`
-- **`createAnthropicPlannerClient()`** — line 794
+  - Calls other files: `src/services/query/followUp.js → readScope()`, `src/services/query/followUp.js → scopeMessage()`, `src/services/query/plannerResponseCache.js → isCachedResponse()`, `src/services/query/queryPlan.schema.js → parseQueryPlan()`, `src/services/query/validator.js → validateQueryPlan()`
+- **`createAnthropicPlannerClient()`** — line 799
   - Purpose: Production planner client: same request shape the fake client receives. Lazily reads the key. Bounded: explicit maxRetries (never the SDK default), a per-attempt timeout, and an overall deadline that aborts the in-flight request and rejects with code PLANNER_DEADLINE_EXCEEDED. `sdkOptions` exists only so tests can point a real SDK client at a local stub (never api.anthropic.com).
+  - Calls in this file: `plannerRequestSettings()`
+  - Calls other files: `src/services/query/providerAttempts.js → countingFetch()`, `src/services/query/providerAttempts.js → countedCall()`
+
+## `src/services/query/plannerResponseCache.js`
+**Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
+
+**Tested by:** `eval-cache-baseline.js`, `verify-ai-cost-path.js`, `verify-cost-forensic.js`, `verify-planner-response-cache.js`, `harness.js`
+
+**Imports:** `src/services/query/answerCache.js`
+
+**Exports:** `createPlannerResponseCache`, `getSharedPlannerResponseCache`, `isCachedResponse`, `isCacheableResponse`, `CACHED_RESPONSE`, `DEFAULTS`
+
+- **`isCachedResponse()`** — line 33
+  - Purpose: True for a reply served from this cache (it was not a model call).
+- **`isPlainObject()`** — line 35
+  - Purpose: (no comment in code — see name and calls below)
+- **`isCacheableResponse()`** — line 38
+  - Purpose: A reply worth remembering: exactly one call of the forced tool with an object input, not cut off.
+  - Calls in this file: `isPlainObject()`
+- **`untilAborted()`** — line 47
+  - Purpose: Resolves/rejects like `promise`, but rejects at once when `signal` aborts (a waiting request that was cancelled stops waiting).
+  - Calls in this file: `abortError()`
+- **`abortError()`** — line 60
+  - Purpose: (no comment in code — see name and calls below)
+- **`createPlannerResponseCache()`** — line 70
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `abortError()`, `isPlainObject()`, `untilAborted()`, `isCacheableResponse()`
+  - Calls other files: `src/services/query/answerCache.js → stableStringify()`
+- **`getSharedPlannerResponseCache()`** — line 219
+  - Purpose: The process-wide cache used by the production planner client (PLANNER_RESPONSE_CACHE=off disables it).
+  - Calls in this file: `createPlannerResponseCache()`
 
 ## `src/services/query/presentation.js`
 **Used by:** `src/services/query/analysisPresentation.js`, `src/services/query/groupComparison.js`, `src/services/query/queryChat.js`
@@ -3257,68 +3296,91 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`displayIntent()`** — line 306
   - Purpose: (no comment in code — see name and calls below)
 
+## `src/services/query/providerAttempts.js`
+**Used by:** `src/services/query/planner.js`
+
+**Imports:** (none)
+
+**Exports:** `countingFetch`, `countedCall`
+
+- **`countingFetch()`** — line 16
+  - Purpose: A fetch that counts each request it sends into the current counted call (a plain fetch outside one).
+- **`countedCall()`** — line 25
+  - Purpose: Runs `fn` as one counted call and marks its result (or the error it throws) with `providerAttempts`.
+
 ## `src/services/query/queryChat.js`
 **Used by:** `src/controllers/chatController.js`
 
-**Tested by:** `eval-investigations.js`, `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-calculation.js`, `verify-decline-investigation.js` (+11 more)
+**Tested by:** `eval-cache-baseline.js`, `eval-investigations.js`, `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-calculation.js` (+14 more)
 
-**Imports:** `src/services/query/validator.js`, `src/services/analytics/coverage.js`, `src/services/query/followUp.js`, `src/services/query/semanticCatalog.js`, `src/services/query/planner.js`, `src/services/query/entityResolver.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/calculation.js`, `src/services/query/turnTelemetry.js`, `src/services/query/groupComparison.js`, `src/services/query/answerCache.js`, `src/services/query/dataVersion.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/periodEngine.js`, `src/services/query/basicAnalysis.js`, `src/services/query/analysisPlanner.js`, `src/services/query/investigation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/analytics/freshness.js`
+**Imports:** `src/services/query/validator.js`, `src/services/analytics/coverage.js`, `src/services/query/followUp.js`, `src/services/query/semanticCatalog.js`, `src/services/query/planner.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/entityResolver.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/calculation.js`, `src/services/query/turnTelemetry.js`, `src/services/query/groupComparison.js`, `src/services/query/answerCache.js`, `src/services/query/dataVersion.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/periodEngine.js`, `src/services/query/basicAnalysis.js`, `src/services/query/analysisPlanner.js`, `src/services/query/investigation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/analytics/insightTools.js`, `src/services/analytics/freshness.js`
 
 **Exports:** `tryAnswerWithQueryEngine`, `getTenantResolver`, `createTurnDates`, `chatTelemetry`
 
-- **`getSharedExecutor()`** — line 44
+- **`getSharedExecutor()`** — line 45
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/query/answerCache.js → createDefaultCachedExecutor()`
-- **`getPlannerClient()`** — line 50
+- **`getPlannerClient()`** — line 51
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/query/planner.js → createAnthropicPlannerClient()`
-- **`getTenantResolver()`** — line 59
+- **`turnPlannerClient()`** — line 61
+  - Purpose: The model client for one turn of one tenant: every planner call of the turn (query planner, analysis planner and its repair, the investigation's follow-up) goes through it. The production client is fronted by the planner response cache (plannerResponseCache.js); an injected client (tests) is not, unless the test injects a cache too (deps.plannerResponseCache).
+  - Calls in this file: `getPlannerClient()`
+  - Calls other files: `src/services/query/plannerResponseCache.js → getSharedPlannerResponseCache()`
+- **`getTenantResolver()`** — line 87
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/query/dataVersion.js → onBump()`, `src/services/query/entityResolver.js → createEntityResolver()`
-- **`createTurnDates()`** — line 79
+- **`createTurnDates()`** — line 107
   - Purpose: ONE tenant date context per chat turn (reference date + coverage window), read lazily and at most once, then shared by planner validation, coverage, the executor and telemetry.
-- **`baseResponse()`** — line 97
+- **`baseResponse()`** — line 125
   - Purpose: (no comment in code — see name and calls below)
-- **`NO_PLANNER_USAGE()`** — line 123
+- **`NO_PLANNER_USAGE()`** — line 151
   - Purpose: (no comment in code — see name and calls below)
-- **`RELATIVE_KIND()`** — line 129
+- **`RELATIVE_KIND()`** — line 157
   - Purpose: (no comment in code — see name and calls below)
-- **`DAY()`** — line 130
+- **`DAY()`** — line 158
   - Purpose: (no comment in code — see name and calls below)
-- **`completePeriodNote()`** — line 137
+- **`completePeriodNote()`** — line 165
   - Purpose: Month-end (P-SF, disclosure only - the comparison itself is unchanged): a COMPLETE current period compared like-for-like can meet a SHORTER previous period (30 Apr -> 1-30 Mar). Say so instead of hiding it.
   - Calls in this file: `DAY()`
   - Calls other files: `src/services/analytics/periodEngine.js → resolvePeriod()`, `src/services/analytics/coverage.js → rangeText()`
-- **`futureVouchersNote()`** — line 151
+- **`futureVouchersNote()`** — line 179
   - Purpose: Future-dated vouchers (decision 1): relative periods end TODAY; vouchers dated later exist and are not in them.
   - Calls in this file: `RELATIVE_KIND()`
   - Calls other files: `src/services/analytics/coverage.js → fmtDay()`
-- **`plannerFailureMessage()`** — line 161
+- **`plannerFailureMessage()`** — line 189
   - Purpose: Honest, fixed text for a planner that failed. Only the entity-check message carries planner output, and that text is already sanitised and length-capped by the planner.
-- **`ASKS_PROFIT()`** — line 185
+- **`ASKS_PROFIT()`** — line 213
   - Purpose: profit or margin asked next to a sales/purchase comparison: the answer says profit is not calculated
   - Calls other files: `src/services/query/planner.js → mentionsAccountingProfit()`
-- **`answerAnalysis()`** _(async)_ — line 187
+- **`answerAnalysis()`** _(async)_ — line 215
   - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `getPlannerClient()`, `baseResponse()`, `plannerFailureMessage()`, `getSharedExecutor()`, `completePeriodNote()`, `futureVouchersNote()`, `questionLanguage()`, `ASKS_PROFIT()`
+  - Calls in this file: `baseResponse()`, `plannerFailureMessage()`, `getSharedExecutor()`, `countingExecute()`, `countingInsight()`, `completePeriodNote()`, `futureVouchersNote()`, `questionLanguage()`, `ASKS_PROFIT()`
   - Calls other files: `src/services/query/analysisPlanner.js → planAnalysis()`, `src/services/query/basicAnalysis.js → basicShape()`, `src/services/query/investigation.js → investigate()`, `src/services/query/analysisAnswer.js → formatAnalysisAnswer()`, `src/services/query/basicAnalysis.js → salesVsPurchaseText()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatch()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatchText()`, `src/services/query/followUp.js → buildAnalysisState()`, `src/services/query/followUp.js → readQueryState()`, `src/services/query/analysisPresentation.js → buildAnalysisPresentation()`, `src/services/query/presentation.js → displayIntent()`
-- **`recordExecution()`** — line 287
-  - Purpose: Telemetry only. Engine timing is known when the executor reports it (production wiring); otherwise null.
-- **`tryAnswerWithQueryEngine()`** _(async)_ — line 313
+- **`countExecution()`** — line 320
+  - Purpose: (no comment in code — see name and calls below)
+- **`countingExecute()`** — line 324
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `countExecution()`
+- **`countingInsight()`** — line 330
+  - Purpose: (no comment in code — see name and calls below)
+- **`recordExecution()`** — line 335
+  - Purpose: (no comment in code — see name and calls below)
+- **`tryAnswerWithQueryEngine()`** _(async)_ — line 361
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `answerTurn()`, `finishTurnMetrics()`
   - Calls other files: `src/services/query/followUp.js → readQueryState()`, `src/services/query/followUp.js → withPendingQuestion()`, `src/services/query/followUp.js → clarifiedQuestion()`
-- **`finishTurnMetrics()`** — line 346
+- **`finishTurnMetrics()`** — line 394
   - Purpose: Classifies the finished turn from what the turn itself reported (meta) - no re-derivation of routing.
-- **`answerTurn()`** _(async)_ — line 368
+- **`answerTurn()`** _(async)_ — line 420
   - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `getTenantResolver()`, `createTurnDates()`, `baseResponse()`, `NO_PLANNER_USAGE()`, `getPlannerClient()`, `plannerFailureMessage()`, `answerAnalysis()`, `completePeriodNote()`, `futureVouchersNote()`, `getSharedExecutor()`, `recordExecution()`, `questionLanguage()`, `withCalculation()`, `withPlain()`
+  - Calls in this file: `turnPlannerClient()`, `getTenantResolver()`, `createTurnDates()`, `baseResponse()`, `NO_PLANNER_USAGE()`, `plannerFailureMessage()`, `answerAnalysis()`, `completePeriodNote()`, `futureVouchersNote()`, `countingExecute()`, `getSharedExecutor()`, `recordExecution()`, `questionLanguage()`, `withCalculation()`, `withPlain()`
   - Calls other files: `src/services/query/followUp.js → readQueryState()`, `src/services/query/followUp.js → clarifiedQuestion()`, `src/services/query/groupComparison.js → intentOf()`, `src/services/query/groupComparison.js → rankingOf()`, `src/services/query/planner.js → planQuestion()`, `src/services/query/followUp.js → dataWindow()`, `src/services/query/followUp.js → scopeOf()`, `src/services/query/basicAnalysis.js → analysisMode()`, `src/services/query/followUp.js → analysisScopeOf()`, `src/services/query/answerFormatter.js → formatNonAnswer()`, `src/services/query/groupComparison.js → topNOf()`, `src/services/query/groupComparison.js → sameRanking()`, `src/services/query/followUp.js → buildQueryState()`, `src/services/query/groupComparison.js → rankingPlan()`, `src/services/query/groupComparison.js → groupState()`, `src/services/query/groupComparison.js → comparisonPlan()`, `src/services/query/validator.js → validateQueryPlan()`, `src/services/analytics/coverage.js → assessCoverage()`, `src/services/query/groupComparison.js → formatGroupAnswer()`, `src/services/query/presentation.js → displayIntent()`, `src/services/query/answerFormatter.js → formatQueryAnswer()`, `src/services/query/plainAnswer.js → plainQuerySummary()`, `src/services/query/presentation.js → buildPresentation()`, `src/services/query/calculation.js → buildCalculation()`
-- **`questionLanguage()`** — line 597
+- **`questionLanguage()`** — line 650
   - Purpose: The question's language: the planner's structured field; without it, Devanagari script means Hindi, otherwise English.
-- **`withPlain()`** — line 601
+- **`withPlain()`** — line 654
   - Purpose: the view opens with the same plain sentences as the text (an analysis step's view never gets them)
-- **`withCalculation()`** — line 602
+- **`withCalculation()`** — line 655
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/query/queryPlan.schema.js`
@@ -3384,7 +3446,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/turnTelemetry.js`
 **Used by:** `src/services/query/answerCache.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `verify-ai-telemetry.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-chat-management.js`, `verify-revenue-analysis-guard.js`
+**Tested by:** `eval-cache-baseline.js`, `verify-ai-telemetry.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-cache-telemetry.js`, `verify-chat-management.js`, `verify-planner-response-cache.js`, `verify-revenue-analysis-guard.js` (+1 more)
 
 **Imports:** `src/services/query/usageStore.js`
 
@@ -3400,64 +3462,65 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: (no comment in code — see name and calls below)
 - **`bool()`** — line 24
   - Purpose: (no comment in code — see name and calls below)
-- **`newTurnMetrics()`** — line 42
+- **`newTurnMetrics()`** — line 46
   - Purpose: Mutable per-turn metrics bag filled in by queryChat; plain numbers/codes only.
-- **`timeResolver()`** — line 47
+- **`timeResolver()`** — line 51
   - Purpose: Pass-through resolver wrapper: same arguments, same result, same error - only timed and counted.
   - Calls in this file: `now()`
-- **`timeEngineDeps()`** — line 70
+- **`timeEngineDeps()`** — line 74
   - Purpose: Answer-cache deps with the engine call timed (same functions, arguments and results).
   - Calls in this file: `now()`
-- **`sink()`** — line 85
+- **`sink()`** — line 89
   - Purpose: (no comment in code — see name and calls below)
-- **`setTelemetrySink()`** — line 87
+- **`setTelemetrySink()`** — line 91
   - Purpose: Tests only: replace the sink (returns the previous one).
-- **`buildTurnEvent()`** — line 94
+- **`buildTurnEvent()`** — line 98
   - Purpose: Build the allow-listed event. Pure; exported so tests can inspect exactly what would be logged.
-- **`emitTurnEvent()`** — line 112
+- **`emitTurnEvent()`** — line 116
   - Purpose: Emit one event. Never throws: telemetry failure must not affect the chat turn.
   - Calls in this file: `buildTurnEvent()`, `sink()`
   - Calls other files: `src/services/query/usageStore.js → persistTurnUsage()`
-- **`emitChatTurn()`** — line 131
+- **`emitChatTurn()`** — line 135
   - Purpose: Controller hook: adds the turn-level facts (latency, status, date context) to the query-engine metrics and emits once. Never throws.
   - Calls in this file: `emitTurnEvent()`
 
 ## `src/services/query/usageStore.js`
 **Used by:** `src/services/query/turnTelemetry.js`
 
-**Tested by:** `verify-ai-usage-persist.js`, `verify-analysis-planner.js`
+**Tested by:** `eval-cache-baseline.js`, `verify-ai-cost-path.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-cache-telemetry.js`, `harness.js`
 
-**Imports:** `src/models/aiTurnUsage.model.js`
+**Imports:** `src/services/query/aiPricing.js`, `src/models/aiTurnUsage.model.js`
 
 **Exports:** `buildUsageRecord`, `persistTurnUsage`, `setUsageWriter`, `plannerModel`
 
-- **`model()`** — line 13
+- **`model()`** — line 15
   - Purpose: (no comment in code — see name and calls below)
-- **`plannerModel()`** — line 14
+- **`plannerModel()`** — line 16
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `model()`
-- **`n()`** — line 16
+- **`n()`** — line 18
   - Purpose: (no comment in code — see name and calls below)
-- **`aiPathOf()`** — line 18
+- **`aiPathOf()`** — line 20
   - Purpose: (no comment in code — see name and calls below)
-- **`failureCategoryOf()`** — line 23
+- **`failureCategoryOf()`** — line 25
   - Purpose: (no comment in code — see name and calls below)
-- **`buildUsageRecord()`** — line 30
+- **`buildUsageRecord()`** — line 32
   - Purpose: Pure: the persisted document, built only from the already-sanitised telemetry event.
   - Calls in this file: `n()`, `aiPathOf()`, `plannerModel()`, `failureCategoryOf()`
-- **`writer()`** _(async)_ — line 64
+  - Calls other files: `src/services/query/aiPricing.js → estimateCost()`
+- **`writer()`** _(async)_ — line 87
   - Purpose: Default writer: upsert on requestId ($setOnInsert) so a repeated emit for one request never duplicates; no request id -> plain insert. Dropped when Mongo is not connected, so it can never block on buffering.
   - Calls other files: `src/models/aiTurnUsage.model.js → updateOne()`, `src/models/aiTurnUsage.model.js → create()`
-- **`setUsageWriter()`** — line 73
+- **`setUsageWriter()`** — line 96
   - Purpose: Tests only: replace the writer (returns the previous one).
-- **`persistTurnUsage()`** — line 80
+- **`persistTurnUsage()`** — line 103
   - Purpose: Fire-and-forget. Never throws; the caller never awaits it.
   - Calls in this file: `buildUsageRecord()`, `writer()`
 
 ## `src/services/query/validator.js`
 **Used by:** `src/services/query/analysisPlan.js`, `src/services/query/analysisPlanner.js`, `src/services/query/compile.js`, `src/services/query/execute.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-comparison-period-capability.js`, `verify-customer-count.js`, `verify-group-comparison.js`, `verify-growth-comparison-capability.js`, `verify-ledger-master.js`, `verify-month-boundary-dates.js`, `verify-planner-digest.js` (+8 more)
+**Tested by:** `eval-cache-baseline.js`, `eval-findings-real.js`, `verify-comparison-period-capability.js`, `verify-customer-count.js`, `verify-group-comparison.js`, `verify-growth-comparison-capability.js`, `verify-ledger-master.js`, `verify-month-boundary-dates.js` (+10 more)
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`, `src/services/query/queryPlan.schema.js`
 
@@ -4852,8 +4915,9 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 ## Verification suites (`verify-*.js`)
 
 - `verify-adjustment-note.js` (470 lines) — Credit Note / Debit Note -> AdjustmentNote pipeline (LedgerMaster phase follow-on). Sections: PARSE (adjustmentNoteParser, pure), CLASSIFY (adjustmentNoteClassifier, pure + one Mongo lookup), MODEL (schema), PERSISTENCE (idempotency/tombstone/ambiguity/tenant isolation, real Mongo), SYNC/SECURITY (runSyncForCompanyModule end-to-end against a local Tally-shaped HTTP stub - ownership rejection, checkpoint behavior, minimal-field requests - mirrors verify-sync-batching.js's pattern). Fixtures match _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/models/ledgerMaster.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/parser/adjustmentNoteParser.js` (+5 more)
+- `verify-ai-cost-path.js` (189 lines) — AI cost path, end to end through the REAL chat controller, queryChat, the shared planner response cache, the real planner client and the real Anthropic SDK - pointed at a LOCAL stand-in endpoint (eval/cost/harness.js). What this proves: the application's own behaviour (what is sent, how often, what telemetry records). What it CANNOT prove: anything about the provider (prompt-cache reads/writes, real token counts, real charges) - the stand-in's usage numbers are simulated. Those need the live run _Uses:_ `src/services/query/plannerResponseCache.js`, `src/services/query/aiPricing.js`, `src/services/query/usageStore.js`, `src/services/query/planner.js`
 - `verify-ai-telemetry.js` (271 lines) — P1-1: per-turn AI/query telemetry (`tallypulse.ai.turn`). Fakes only: no MongoDB connection, no Anthropic, no Tally, no network. The controller tests stub the Chat model, the date context and freshness in require.cache, so nothing is read or written anywhere. Run: node verify-ai-telemetry.js _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/queryChat.js`, `src/services/analytics/referenceDate.js`, `src/services/query/entityResolver.js`, `src/services/query/answerCache.js` (+2 more)
-- `verify-ai-usage-persist.js` (169 lines) — P0 persisted AI usage telemetry. Offline: the writer is replaced by an in-memory fake (and the Mongoose model by a stub for the default-writer idempotency check) - no MongoDB, no Anthropic, no Tally, no network. Run: node verify-ai-usage-persist.js _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/models/aiTurnUsage.model.js`
+- `verify-ai-usage-persist.js` (171 lines) — P0 persisted AI usage telemetry. Offline: the writer is replaced by an in-memory fake (and the Mongoose model by a stub for the default-writer idempotency check) - no MongoDB, no Anthropic, no Tally, no network. Run: node verify-ai-usage-persist.js _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/models/aiTurnUsage.model.js`
 - `verify-analysis-followup.js` (165 lines) — Follow-up context after an ANALYSIS turn (Phase 2): the scope every executed query step shares is saved as the turn's queryContext (followUp.buildAnalysisState), re-read strictly (readQueryState) on the next turn, and given to the analysis planner (planAnalysis previousScope), whose per-step guards read it like a previous plan. The REAL controller (sendChatMessage), chat turn, planners' checks and executor run; the model replies are scripted, the engine is in memory and the Chat model's database _Uses:_ `src/services/query/followUp.js`, `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js`
 - `verify-analysis-plan.js` (221 lines) — Analysis plans (services/query/analysisPlan.js), Milestone 1: a general multi-step plan over the existing query engine and insight tools, run by a deterministic executor. No model, no chat wiring. The end-to-end case is a 3-step analysis plus one insight step on synthetic data with hand-computed values: s1 total sales, October vs September -> s2 customers by change (largest fall first, top 2) -> s3 product change for exactly s2's customers (an input binding) ; s4 discount by product in October ( _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js` (+3 more)
 - `verify-analysis-planner.js` (489 lines) — Analysis planner (Milestone 2): a question the query planner declines with `needs_analysis` gets an analysis plan from a second forced tool call, validated with the existing checks, then run by the analysis executor and answered with the measured results only. MOCKED model provider only: no network, no Anthropic call, no Tally. Covers: the generated prompt and tool schema and their budgets; output parsing and protocol checks; valid plans of different shapes (a decline explained by customers and  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlanner.js` (+8 more)
@@ -4861,13 +4925,14 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-analytics-scope.js` (265 lines) — Analytics data-layer verification (synthetic data only; no Claude, no Tally): - voucher identity (tenantId + tallyGuid, not voucherNo) - analytics scope (tenant + active-only filtering, fails closed) - trust envelope states (valid/zero/stale/failed/never-synced/error) - company-context authorization Every fixture is a clearly-labelled synthetic document (VERIFY-* voucher numbers, a synthetic Company/User) created and removed around each test, regardless of pass/fail. The one write under TENANT_A _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/purchase.model.js`, `src/models/sales.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
 - `verify-ask-ai-basic-questions.js` (296 lines) — The five basic business questions a reviewer asked Ask AI (2026-10-24), through the real chat turn (queryChat.tryAnswerWithQueryEngine): the query planner, ASK_AI_ANALYSIS modes, the analysis planner, the executor, the insight tools, freshness and the answer text. Questions 1, 2, 3 and 5 were refused ("needs several separate analyses") because ASK_AI_ANALYSIS was off; question 4 answered with a failed-Purchase-sync warning. ASK_AI_ANALYSIS unset now means on; basic and off are still checked. 1.  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+6 more)
 - `verify-ask-ai-ux-fixes.js` (117 lines) — Ask AI follow-up fixes (offline: no database, no network, no real model; every name and figure is SYNTHETIC): - an empty answer's follow-up ("take the last synced data") is told where the data ends, and the year guard accepts that month - a long ranking says how many moved (100+ products fell), not just "biggest drops" - an analysis follow-up carries the previous ranking, so "these products" needs no question - one bounded retry when the analysis planner asks for what the scope already holds Run _Uses:_ `src/services/query/followUp.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`, `src/services/query/plainAnswer.js`, `src/services/query/presentation.js`
+- `verify-cache-telemetry.js` (66 lines) — Cache and AI-cost measurement (Phase 0): the per-turn counters are truthful, tenant-scoped and private. - reported model calls (claudeCalls / plannerCalls) = the scripted model's actual calls, in every turn, caches on or off; a planner-cache hit is counted as a hit, never as a call; - engine executions are counted by the answer cache's own status, for single queries AND every analysis step; engine computes = misses + bypasses; insight tool runs are counted; - the counters reach the persisted AiT _Uses:_ `src/services/query/usageStore.js`, `src/services/query/turnTelemetry.js`, `src/models/aiTurnUsage.model.js`
 - `verify-calculation.js` (169 lines) — The calculation record of a single-query answer (calculation.buildCalculation, attached to visualization.calculation by queryChat): what executed, with the engine's own values only. Checks the reported July/August example, both accounting bases, the % change rule of computeGrowth (zero previous), filters proven by the previous turn's scope, zero / missing totals, cut lists, incomplete periods, and that no number appears that the engine did not return. Every name is SYNTHETIC; the July/August tot _Uses:_ `src/services/query/calculation.js`, `src/services/analytics/salesAnalytics.js`, `src/services/query/answerFormatter.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 - `verify-chat-management.js` (435 lines) — Ask AI chat management + Stop (cancellation), at the real controller level. - STOP: a client disconnect (the browser's AbortController) before the planner, during the in-flight planner call, or right after the planner answered ends the turn: no further planner call, no save, telemetry clientAborted=true / httpStatus 499. The in-flight planner request receives the abort signal. A real SDK planner client pointed at a local stub (never api.anthropic.com) is aborted mid-request and makes exactly one _Uses:_ `src/services/query/planner.js`, `src/models/chat.model.js`, `src/config/db.js`, `src/controllers/chatController.js`, `src/services/query/turnTelemetry.js`
 - `verify-company-guid-match.js` (291 lines) — Company-GUID-match safety gate verification (2026-09-18). Product rule under test: adding a company to a TallyPulse account, and running Sales Sync, must both verify LIVE against Tally that the GUID being acted on is the company Tally actually has open right now - never trusted from the client, never inferred from company name alone. This uses the REAL live Tally instance (http://localhost:9000) and the REAL existing MongoDB company records already in this environment - not fabricated data - bec _Uses:_ `src/services/auth/tallyCompanyGuard.js`, `src/config/db.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/import/tallySalesImport.js` (+4 more)
 - `verify-company-identity.js` (598 lines) — Company registration WITHOUT a manual Tally GUID, and company identity (authController.js "Connect Tally" + companyIdentity.js + tallyCompanyGuard.js). Product flow under test: register (name/email/password) -> login -> Connect Tally -> the backend detects the company open in Tally and uses ITS GUID internally. Also: the same GUID keeps the same tenant (reactivation / orphan reuse, sync checkpoints preserved), and knowing or being able to open a company never grants access to another account's c _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/user.model.js`, `src/models/userCompanyAccess.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
 - `verify-company-ownership.js` (412 lines) — Company ownership / tenant-context guard (companyOwnership.js) across every path that consumes Tally data: incremental sync, recovery, reconciliation, self-heal and voucher-type master data. Scenario (confirmed live): two companies are open in TallyPrime and one is SELECTED. The open-company guard passes for BOTH tenants, but voucher and master queries answer for the selected company only - so a tenant can be handed the other company's data. The invariant under test: data may only change a tenan _Uses:_ `src/config/db.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/reconciliationCheckpoint.model.js`, `src/services/tally/companyOwnership.js` (+7 more)
 - `verify-comparison-period-capability.js` (611 lines) — Comparison & period capability AUDIT - characterizes what TallyPulse can answer today about period comparisons and growth/decline. It changes no production code and asserts CURRENT behaviour (surprising-but-correct behaviour is documented; defects are reported as KNOWN DEFECT, not fixed). A. period x comparison resolution matrix at two anchors (pure) B. known period-engine defects, characterized (pure) C. growth semantics: what the DSL/validator can and cannot represent (pure) D. planner represe _Uses:_ `src/services/query/validator.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/planner.js`, `src/services/query/semanticCatalog.js`, `src/services/analytics/periodEngine.js` (+8 more)
-- `verify-cost-forensic.js` (185 lines) — Cost-path regression at the REAL exported chatController.js `sendChatMessage` HTTP-handler level (not tryAnswerWithQueryEngine in isolation). The planner is the only interpreter, so the contract is: - every question that passes the safety gate costs exactly ONE planner call (a scripted fake here); - conversation history never reaches Claude - only the previous STRUCTURED plan reaches the planner, never the chat text; - the answer cache saves the ENGINE (cacheKey equality, executor skipped), not  _Uses:_ `src/config/db.js`, `src/models/chat.model.js`, `src/services/query/planner.js`, `src/controllers/chatController.js`, `src/services/query/answerCache.js` (+5 more)
+- `verify-cost-forensic.js` (192 lines) — Cost-path regression at the REAL exported chatController.js `sendChatMessage` HTTP-handler level (not tryAnswerWithQueryEngine in isolation). The planner is the only interpreter, so the contract is: - every question that passes the safety gate costs exactly ONE planner call (a scripted fake here); - conversation history never reaches Claude - only the previous STRUCTURED plan reaches the planner, never the chat text; - the answer cache saves the ENGINE (cacheKey equality, executor skipped), not  _Uses:_ `src/config/db.js`, `src/models/chat.model.js`, `src/services/query/planner.js`, `src/controllers/chatController.js`, `src/services/query/answerCache.js` (+6 more)
 - `verify-customer-count.js` (281 lines) — customerCount (Slice 3): distinct sales customers, counted only when the party name matches EXACTLY ONE live ledger of the tenant's own Ledger master and that ledger is a debtor (Sundry Debtors). NO Claude / Anthropic, no Tally, no network: synthetic tenants on the loopback test database only (the test-mode guard in connectDB refuses anything else). All synthetic data is removed at the end. The fixtures are built so that the RAW distinct-name count (before Ledger-master resolution) differs from  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/ledgerMaster.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/semanticCatalog.js` (+5 more)
 - `verify-dashboard-real-data.js` (186 lines) — Regression tests for the Dashboard/Analytics "no fabricated data" remediation: tenant-reference-date anchoring (referenceDate.js), the new monthly trend aggregations (getSalesTrend/getPurchaseTrend), and the new distinct-customer-count aggregation (getCustomerCounts). Every number is independently cross-checked against a raw Mongo aggregation computed a different way in this file, for both real tenants (WE FOUR, Nirmal) - never "trust the function under test to grade itself". Run: node verify-da _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/company.js`, `src/models/user.model.js` (+4 more)
 - `verify-db-connection-guard.js` (237 lines) — DB-free tests for the connection guard in src/config/db.js. Nothing here connects to MongoDB: the guard is a pure decision function. Run: node verify-db-connection-guard.js _Uses:_ `src/config/db.js`
@@ -4894,6 +4959,7 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-plain-query-answer.js` (168 lines) — The plain-language opening of a SINGLE-query answer (plainAnswer.plainQuerySummary, wired in queryChat): a few short sentences in the question's language (en / hinglish / hi - the query planner's optional `language` field, else Devanagari script -> hi, else en), built only from the engine result the detailed text formats. The detailed text (exact figures, basis, notes) follows unchanged; no figure is derived (rounding only). Every name and figure here is SYNTHETIC. Run: node verify-plain-query-a _Uses:_ `src/services/query/plainAnswer.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 - `verify-planner-digest.js` (351 lines) — The planner prompt's catalog digest (planner.js buildCatalogDigest): it must be GENERATED from semanticCatalog.js, carry the meaning the model needs to choose the right metric (each summed metric's own catalog description: the tax-inclusive voucher total vs the pre-tax item value, with its grain), state the validator rules the schema cannot express (including that voucher-grain metrics cannot be grouped by product), list what cannot be answered, and stay small. Offline and free: no model is call _Uses:_ `src/services/query/planner.js`, `src/services/query/semanticCatalog.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`
 - `verify-planner-live-eval.js` (447 lines) — Phase 1G - CONTROLLED LIVE PLANNER EVALUATION (manual; makes real Anthropic calls). For each representative Sales/Purchase question (the planner interprets every question; there is no router), this script: 1. asks the real Claude planner (exactly one call per question, no repair), 2. compares Claude's plan SEMANTICALLY against an independently written expectation, 3. executes the validated plan through the real engine + answer cache, 4. compares the final answer with an independent oracle (raw M _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/query/planner.js` (+4 more)
+- `verify-planner-response-cache.js` (286 lines) — Planner response cache (plannerResponseCache.js): a remembered model REPLY for an identical model request, per tenant. Offline, scripted models only (no network, no database, no paid call). Checks: hits/misses/bypasses, tenant isolation, the key (model, temperature, system, tools, tool_choice, max_tokens, messages), what is never stored (errors, timeouts, aborts, malformed / unexpected / truncated replies), bounds (per tenant, total, bytes, TTL, deterministic eviction), truthful usage (a hit is  _Uses:_ `src/services/query/plannerResponseCache.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js` (+2 more)
 - `verify-presentation.js` (222 lines) — Presentation model (services/query/presentation.js): a deterministic description of how an ENGINE RESULT is shown (KPI / ranking / trend / comparison / table / empty). Proves that: - every figure in the model is a value the engine returned, formatted exactly like the text answer - nothing is computed except the marked, derived "Avg invoice" (amount / invoices of two returned values) - the text answer is byte-for-byte what formatQueryAnswer produces (presentation never changes it) - clarification _Uses:_ `src/services/query/presentation.js`, `src/services/query/answerFormatter.js`, `src/services/query/plainAnswer.js`, `src/services/query/queryChat.js`, `src/services/query/planner.js` (+2 more)
 - `verify-product-return-analytics.js` (218 lines) — Product-Level Return Analytics: which products are returned (quantity and pre-tax value), reusing the existing sales_return/purchase_return entities, the generic "product" dimension (raw inventory.itemName, no StockItemMaster merge - same identity convention as sales/purchase), and the generic groupBy+sort+limit ranking machinery. No second DSL, no second classifier. ACCOUNTING BASIS (established from real WE FOUR data before writing any code - see docs/PROJECT_CONTEXT.md): inventory.quantity is _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/answerCache.js`, `src/services/query/compile.js` (+1 more)
 - `verify-purchase-mapper.js` (170 lines) — Tally Purchase voucher -> Purchase document: parser (tallyParser.parseTallyVoucher) -> mapper (purchaseMapper.mapTallyPurchase) -> the Purchase schema. The same path processSinglePurchaseVoucher (voucherPersistence.js) runs before every Purchase write, for the sync worker, recovery and the import. Every expected amount below is worked out by hand from the fixture's own numbers (see the comment next to each), never read back from the mapper. Contract (docs/PROJECT_CONTEXT.md, "Stored signs"; tall _Uses:_ `src/services/parser/tallyParser.js`, `src/services/mapper/purchaseMapper.js`, `src/models/purchase.model.js`
@@ -4935,9 +5001,16 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 
 ## Evaluations and corpora (`eval-*`, `backend/eval/`)
 
+- `eval-ai-cost-live.js` (132 lines) — LIVE provider verification of the AI cost path (paid, small, capped). It answers what no offline test can: does the provider's prompt cache actually write and read for TallyPulse's requests, and what do real turns cost? ANTHROPIC_API_KEY=<your key> node eval-ai-cost-live.js --confirm-spend [--max-usd=0.50] [--ttl-probe] Guards (all enforced before the first paid call): - refuses without --confirm-spend; prints the plan and the worst-case spend first; - the key must already be in the process envi _Uses:_ `src/services/query/aiPricing.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`
+- `eval-ai-cost-report.js` (70 lines) — Read-only cost report from the persisted per-turn usage records (AiTurnUsage): what the AI flow cost and whether the prompt cache and the planner response cache paid. ONE aggregation, aggregates only - no document, prompt, answer, tenant id or request id is printed, and nothing is written. MONGODB_URI=mongodb://127.0.0.1:27017/tallypulse_test node eval-ai-cost-report.js [--since=2026-10-01] (a non-loopback URI, e.g. production Atlas, is refused unless --confirm-read-only-aggregate is also given) _Uses:_ `src/services/query/aiPricing.js`
+- `eval-cache-baseline.js` (179 lines) — Cache and AI-cost baseline (Phase 0, measurement only): one fixed, scripted conversation run through the REAL chat turn (queryChat.tryAnswerWithQueryEngine), twice - with the planner response cache and the answer cache OFF, then ON - and the per-turn counters the turn itself reports (telemetry event -> AiTurnUsage record): model calls, planner-cache hits/misses/bypasses, engine executions by answer-cache status, insight runs. Offline and deterministic: a scripted model (no network, no paid call) _Uses:_ `src/services/query/queryChat.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js`, `src/services/query/turnTelemetry.js` (+3 more)
 - `eval-findings-real.js` (619 lines) — REAL-DATA VALIDATION of the analysis findings (services/query/evidence.js), READ-ONLY. Fixed, scripted analysis plans (no model) run through the real executeAnalysisPlan and formatAnalysisAnswer on ONE real company, and every figure is checked against an INDEPENDENTLY written aggregate (its own date bounds, grouping and sums; no engine code). Acceptance criteria: A1 numbers - figures in findings equal the reference aggregates to the paisa; breakdowns add up to their change A2 incomplete - a peri _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
 - `eval-investigations.js` (211 lines) — Planted-cause investigation evaluation (manual; never part of Ask AI). Seeds the synthetic company of eval/investigation/scenarios.js (known, planted causes) into a LOCAL test database, asks each scenario's questions through the real chat turn (queryChat.tryAnswerWithQueryEngine: planner -> analysis plan -> validator -> engine / insight tools -> answer), grades every answer with eval/investigation/grader.js and writes a report to eval/results/ (git-ignored). The data is removed at the end. Modes _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+4 more)
 - `eval-nlu-models.js` (332 lines) — Multi-model NLU evaluation: measures how well each model turns the corpus questions into TallyPulse Query Plans, with the existing Claude planner as the baseline. EVALUATION ONLY - the production Ask AI path never uses OpenRouter. Every model is run through the production planQuestion() (same prompt, Query Plan contract, validator and guards) and every answer is scored by the same semantic comparator (eval/nluScoring.js) against eval/nlu-corpus.json. The questions and plans are synthetic: nothin _Uses:_ `src/services/query/planner.js`
+- `eval/cost/harness.js` (132 lines) — AI cost-path harness: drives the REAL chat controller (sendChatMessage) -> queryChat -> the shared planner response cache -> the REAL planner client and Anthropic SDK -> an HTTP endpoint. The endpoint is either a local stand-in (createStub: free, deterministic, records the exact wire payload - application behaviour only, NEVER provider evidence) or the real provider (live runs, see eval-ai-cost-live.js). Only the DATA side is injected (engine execution, freshness, date context, name resolution)  _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js` (+1 more)
+- `eval/cost/run-baseline.js` (16 lines) — Prints what the ORIGINAL code does for Tests A-I and the SDK-retry check, through the real chat controller, against a local stand-in endpoint (no provider, no spend). Run: node eval/cost/run-baseline.js [--json=<file>]
+- `eval/cost/scenarios.js` (125 lines) — The cost-path scenarios (Tests A-I of the AI cost audit), run through the real controller by harness.js. A scenario returns plain observations: what the HTTP endpoint ACTUALLY received (stub.calls = every request the SDK sent, including SDK-internal retries) next to what telemetry REPORTED for the same turn. Nothing is asserted here.
+- `eval/cost/stub-server.js` (22 lines) — A local stand-in for the provider, for DRY-RUNNING eval-ai-cost-live.js (it spends nothing). `--simulate-cache` makes it behave like a 5-minute prompt cache (first request of a prefix writes, later ones read) - a SIMULATION to exercise the live script's arithmetic, never evidence about the real provider. Run: node eval/cost/stub-server.js [--simulate-cache] (prints its URL)
 - `eval/evalTimezone.js` (33 lines) — The NLU evaluation's time zone: UTC, set explicitly. The scorer resolves relative periods ("previous month", "this FY") and explicit custom ranges to concrete dates and compares those dates. Both resolutions use the machine's LOCAL time zone, so on a machine west of UTC the same two plans - a relative period and the custom range that means the same days - resolve to different dates and one is scored wrong (observed under America/New_York). CI happens to run in UTC; the evaluator must not depend
 - `eval/investigation/grader.js` (103 lines) — Deterministic grader for investigation answers (evaluation only). No model is involved: every criterion is a check on the answer text (or, for "context", on what the chat turn carried forward), so the same answer always gets the same grade. Criterion kinds: mentions - the text contains one of anyOf (string: case-insensitive substring; RegExp: tested as is) number - the text contains the number (Indian or plain digit grouping, ₹ optional, sign ignored) within tolerance discloses - the text matche
 - `eval/investigation/scenarios.js` (285 lines) — Planted-cause investigation scenarios (evaluation only; nothing under src/ requires this file). One synthetic company, anchored to the FOUR complete calendar months before the run date (M1 oldest .. M4 = the previous month), so undated questions ("where are orange sales declining?") have data in the periods the assistant would choose. The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked in verify-investigation-eval.js): - Apple: stable for
@@ -4957,207 +5030,3 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `refresh-ledger-master.js` (70 lines) — On-demand Tally Ledger master refresh (feeds "new customer/supplier"). Writes only to the LedgerMaster collection - never Sale, Purchase or SyncCheckpoint. Reads two Tally master collections (Group, Ledger), one at a time. Safe to re-run: idempotent upsert keyed by the ledger GUID, and a no-op when Tally's list is unchanged (pass --force to rewrite anyway). The selected Tally company must be this tenant's: a foreign company's masters fail the GUID ownership check and nothing is written. USAGE no _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/tally/ledgerMaster.js`
 - `refresh-stock-item-master.js` (84 lines) — On-demand Stock Item -> Stock Group master refresh. NOT a migration and NOT the incremental voucher sync: this writes only to the new, previously-empty StockItemMaster collection - it never reads or writes Sale, Purchase, or SyncCheckpoint, and never contacts Tally for voucher/transactional data. Safe to re-run at any time (idempotent upsert, keyed by {tenantId, tallyGuid}). There is no scheduled worker for this yet, by design (see the Stock Item master investigation report) - this script is the _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/tally/stockItemMaster.js`
 - `run-adjustment-note-sync.js` (62 lines) — One-off / manual Credit Note + Debit Note sync for a single tenant. Reuses the EXACT same code path as the background worker (runSyncForCompanyModule + CREDIT_NOTE_SYNC_MODULE/DEBIT_NOTE_SYNC_MODULE from tallySyncWorker.js) - same ownership guard, same completeness check, same checkpoint semantics, same minimal-field Tally request. Not a parallel implementation. USAGE node run-adjustment-note-sync.js --tenant <tenantId> _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/sync/tallySyncWorker.js`
-
-
-# 17. Work in another worktree (not in this branch)
-
-Ye files abhi is branch me nahi hain: wo `C:/Users/DELL/TallyPulse-cost-audit` worktree me uncommitted hain (cost/retry measurement). Wahan ke kuch purane files bhi badle hain (planner.js, queryChat.js, turnTelemetry.js, usageStore.js, aiTurnUsage.model.js, verify-ai-usage-persist.js): unka naya hissa yahan alag se nahi likha. Jab wo kaam commit/merge ho, is section ko hata kar generator dobara chalao.
-
-## `src/services/query/aiPricing.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** (none)
-
-**Exports:** `estimateCost`, `familyOf`, `PRICES`, `PRICING_VERSION`
-
-- **`familyOf()`** — line 20
-  - Purpose: "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5" (a dated snapshot id has the price of its family).
-- **`n()`** — line 22
-  - Purpose: (no comment in code — see name and calls below)
-- **`usd()`** — line 23
-  - Purpose: (no comment in code — see name and calls below)
-- **`estimateCost()`** — line 32
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `familyOf()`, `n()`, `usd()`
-
-## `src/services/query/plannerResponseCache.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/answerCache.js`
-
-**Exports:** `createPlannerResponseCache`, `getSharedPlannerResponseCache`, `isCachedResponse`, `isCacheableResponse`, `CACHED_RESPONSE`, `DEFAULTS`
-
-- **`isCachedResponse()`** — line 33
-  - Purpose: True for a reply served from this cache (it was not a model call).
-- **`isPlainObject()`** — line 35
-  - Purpose: (no comment in code — see name and calls below)
-- **`isCacheableResponse()`** — line 38
-  - Purpose: A reply worth remembering: exactly one call of the forced tool with an object input, not cut off.
-  - Calls in this file: `isPlainObject()`
-- **`untilAborted()`** — line 47
-  - Purpose: Resolves/rejects like `promise`, but rejects at once when `signal` aborts (a waiting request that was cancelled stops waiting).
-  - Calls in this file: `abortError()`
-- **`abortError()`** — line 60
-  - Purpose: (no comment in code — see name and calls below)
-- **`createPlannerResponseCache()`** — line 70
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `abortError()`, `isPlainObject()`, `untilAborted()`, `isCacheableResponse()`
-  - Calls other files: `src/services/query/answerCache.js → stableStringify()`
-- **`getSharedPlannerResponseCache()`** — line 219
-  - Purpose: The process-wide cache used by the production planner client (PLANNER_RESPONSE_CACHE=off disables it).
-  - Calls in this file: `createPlannerResponseCache()`
-
-## `src/services/query/providerAttempts.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** (none)
-
-**Exports:** `countingFetch`, `countedCall`
-
-- **`countingFetch()`** — line 16
-  - Purpose: A fetch that counts each request it sends into the current counted call (a plain fetch outside one).
-- **`countedCall()`** — line 25
-  - Purpose: Runs `fn` as one counted call and marks its result (or the error it throws) with `providerAttempts`.
-
-## `eval-ai-cost-live.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/aiPricing.js`, `src/services/query/planner.js`, `eval/cost/harness.js`, `src/services/query/analysisPlanner.js`
-
-- **`flag()`** — line 23
-  - Purpose: (no comment in code — see name and calls below)
-- **`opt()`** — line 24
-  - Purpose: (no comment in code — see name and calls below)
-- **`cost()`** — line 66
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls other files: `src/services/query/aiPricing.js → estimateCost()`
-- **`sum()`** — line 67
-  - Purpose: (no comment in code — see name and calls below)
-
-## `eval-ai-cost-report.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/aiPricing.js`
-
-- **`opt()`** — line 15
-  - Purpose: (no comment in code — see name and calls below)
-
-## `eval-cache-baseline.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/queryChat.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js`, `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`
-
-**Exports:** `runBaseline`, `invariants`, `table`, `Q`
-
-- **`sales()`** — line 26
-  - Purpose: (no comment in code — see name and calls below)
-- **`scriptedModel()`** — line 45
-  - Purpose: The scripted model: a reply chosen from the request (the question and the tool), like a perfect planner would.
-- **`engine()`** — line 66
-  - Purpose: The engine: the period from the plan and the turn's own reference date (as the executor resolves it); counts computes.
-  - Calls other files: `src/services/query/validator.js → validateQueryPlan()`
-- **`DC()`** — line 82
-  - Purpose: (no comment in code — see name and calls below)
-- **`runBaseline()`** _(async)_ — line 90
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `scriptedModel()`, `engine()`, `DC()`
-  - Calls other files: `src/services/query/plannerResponseCache.js → createPlannerResponseCache()`, `src/services/query/answerCache.js → createAnswerCache()`, `src/services/query/queryChat.js → tryAnswerWithQueryEngine()`, `src/services/query/usageStore.js → buildUsageRecord()`, `src/services/query/turnTelemetry.js → buildTurnEvent()`
-- **`table()`** — line 137
-  - Purpose: (no comment in code — see name and calls below)
-- **`invariants()`** — line 147
-  - Purpose: Invariants that must hold in both runs: reported model calls are actual model calls, never cache hits.
-
-## `eval/cost/harness.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js`, `src/services/query/plannerResponseCache.js`
-
-**Exports:** `createStub`, `toResponse`, `createHarness`, `createEngine`, `DC`, `sha`
-
-- **`sha()`** — line 16
-  - Purpose: (no comment in code — see name and calls below)
-- **`r2()`** — line 17
-  - Purpose: (no comment in code — see name and calls below)
-- **`createStub()`** — line 20
-  - Purpose: Local stand-in for POST /v1/messages. `reply(body, n)` -> {status, json} | tool input object. Records every request.
-  - Calls in this file: `sha()`, `toResponse()`
-- **`toResponse()`** — line 60
-  - Purpose: A tool_use reply in the provider's shape. Usage is a rough SIMULATION (stub only): ~3.5 chars per token.
-- **`createEngine()`** — line 72
-  - Purpose: Synthetic engine: numbers depend on the tenant and a per-tenant data version, so staleness is observable.
-  - Calls in this file: `r2()`
-- **`createHarness()`** — line 95
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `createEngine()`
-  - Calls other files: `src/services/query/turnTelemetry.js → setTelemetrySink()`, `src/services/query/usageStore.js → setUsageWriter()`, `src/models/chat.model.js → hydrate()`, `src/controllers/chatController.js → sendChatMessage()`, `src/services/query/plannerResponseCache.js → getSharedPlannerResponseCache()`
-
-## `eval/cost/scenarios.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `eval/cost/harness.js`
-
-**Exports:** `run`, `scriptedReply`, `EQUIVALENT`, `WHY`, `PLAN_TOTAL`
-
-- **`cmpPlan()`** — line 11
-  - Purpose: (no comment in code — see name and calls below)
-- **`Q()`** — line 15
-  - Purpose: (no comment in code — see name and calls below)
-- **`scriptedReply()`** — line 18
-  - Purpose: The scripted "model": a stable planner that answers the same way for the same meaning (what a deterministic model would do).
-  - Calls in this file: `Q()`, `cmpPlan()`
-- **`summarize()`** — line 31
-  - Purpose: (no comment in code — see name and calls below)
-- **`turnView()`** — line 32
-  - Purpose: (no comment in code — see name and calls below)
-- **`run()`** _(async)_ — line 34
-  - Purpose: (no comment in code — see name and calls below)
-  - Calls in this file: `scriptedReply()`, `summarize()`, `turnView()`
-  - Calls other files: `eval/cost/harness.js → createStub()`, `eval/cost/harness.js → createHarness()`
-
-## `eval/cost/stub-server.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `eval/cost/harness.js`, `eval/cost/scenarios.js`
-
-- **`usage()`** — line 10
-  - Purpose: prefix hash -> time of the last write/read
-
-## `eval/cost/run-baseline.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `eval/cost/scenarios.js`
-
-**Purpose:** Prints what the ORIGINAL code does for Tests A-I and the SDK-retry check, through the real chat controller, against a local stand-in endpoint (no provider, no spend). Run: node eval/cost/run-baseline.js [--json=<file>]
-
-
-## `verify-ai-cost-path.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `eval/cost/scenarios.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/aiPricing.js`, `src/services/query/usageStore.js`, `src/services/query/planner.js`, `eval/cost/harness.js`
-
-- **`check()`** — line 26
-  - Purpose: (no comment in code — see name and calls below)
-- **`J()`** — line 30
-  - Purpose: (no comment in code — see name and calls below)
-
-## `verify-cache-telemetry.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `eval-cache-baseline.js`, `src/services/query/usageStore.js`, `src/services/query/turnTelemetry.js`, `src/models/aiTurnUsage.model.js`
-
-- **`check()`** — line 22
-  - Purpose: (no comment in code — see name and calls below)
-
-## `verify-planner-response-cache.js`
-**Worktree only:** is branch me ye file nahi hai, isliye 'Used by' wahan ke worktree me dekho.
-
-**Imports:** `src/services/query/plannerResponseCache.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js`, `src/services/query/turnTelemetry.js`, `src/services/query/queryChat.js`
-
-- **`check()`** — line 24
-  - Purpose: (no comment in code — see name and calls below)
-- **`settings()`** — line 28
-  - Purpose: (no comment in code — see name and calls below)
-- **`ok()`** — line 30
-  - Purpose: (no comment in code — see name and calls below)
-- **`counting()`** — line 31
-  - Purpose: (no comment in code — see name and calls below)
