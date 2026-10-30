@@ -144,10 +144,40 @@ function getAnalysisPrompt() {
 // ---------------------------------------------------------------- validation (no database)
 
 /**
+ * The revenue basis for an ANALYSIS (the question says "revenue"). "Revenue" has one meaning: sales + lineAmount (planner.isRevenuePlan).
+ * An analysis is several steps, and only its headline is the revenue figure, so the steps are judged together, not each as revenue:
+ *  - at least one step is a revenue step (sales + only line-grain metrics incl. lineAmount) - unless `requirePrimary` is false (a
+ *    later investigation round adds supporting steps to a headline that already ran);
+ *  - no step may show a tax-inclusive voucher total (any metric whose catalog amountBasis is voucher_total_incl_tax: invoiceAmount,
+ *    averageInvoiceValue), because it could be read as revenue;
+ *  - no step reads anything but sales (purchases and returns are not revenue).
+ * Counts (invoiceCount, customerCount, lineCount), quantity, breakdowns and sales-side insight tools are supporting steps and keep
+ * their own metric labels. Returns null when allowed, else the refusal with the exact step (`guardStep`, 0-based; null when the
+ * analysis as a whole has no revenue step) and the rule (`guardRule`) for telemetry. The user-facing reason is the revenue refusal.
+ */
+function revenueGuard(question, steps, { requirePrimary = true } = {}) {
+  if (!planner.mentionsRevenue(question)) return null;
+  const refuse = (guardStep, guardRule) => ({ status: "unsupported", source: "revenue_guard", code: "revenue_basis_unsupported", reason: planner.REVENUE_BASIS_REFUSAL, guardStep, guardRule });
+  let primary = false;
+  for (const [i, step] of steps.entries()) {
+    if (step.kind === "insight") {
+      if (!insightTools.insightToolVoucherTypes(step.tool, step.args).includes("Sales")) return refuse(i, "entity_not_sales");
+      continue;
+    }
+    const plan = parseQueryPlan(step.plan).plan;
+    if (plan.entity !== "sales") return refuse(i, "entity_not_sales");
+    if ((plan.metrics || []).some((m) => catalog.CATALOG.metrics[m] && catalog.CATALOG.metrics[m].amountBasis === "voucher_total_incl_tax")) return refuse(i, "invoice_total_not_revenue");
+    if (planner.isRevenuePlan(plan)) primary = true;
+  }
+  return requirePrimary && !primary ? refuse(null, "no_revenue_step") : null;
+}
+
+/**
  * Everything that can be checked before execution. Returns { errors } (repairable: our own codes), { refusal } (a decided
  * rule: final, never repaired) or { plan, notes } (the plan after the decided rewrites; definition notes by step id).
+ * options.requirePrimary: false for the supporting steps of a later investigation round (see revenueGuard).
  */
-function checkAnalysis(question, rawAnalysis, referenceDate, previousScope = null) {
+function checkAnalysis(question, rawAnalysis, referenceDate, previousScope = null, { requirePrimary = true } = {}) {
   const parsed = parseAnalysisPlan(rawAnalysis);
   if (!parsed.ok) return { errors: parsed.errors.map((e) => ({ code: e.code, path: e.path })) };
   // An indicative margin is never the answer to an accounting-profit question (profit, COGS, gross/net margin): refused with
@@ -162,17 +192,19 @@ function checkAnalysis(question, rawAnalysis, referenceDate, previousScope = nul
       if (!ANALYSIS_TOOL_IDS.includes(step.tool)) { errors.push({ code: "insight_tool_not_offered", path: `steps.${i}.tool` }); continue; }
       const args = insightTools.validateInsightArgs(step.tool, step.args);
       if (!args.ok) { for (const issue of args.issues) errors.push({ code: "invalid_insight_args", path: `steps.${i}.args.${issue.path}` }); continue; }
-      const refusal = planner.checkPlannedQuery(question, { period: step.args.period, metrics: [], groupBy: [], having: [] }, previousScope);
+      const refusal = planner.checkPlannedQuery(question, { period: step.args.period, metrics: [], groupBy: [], having: [] }, previousScope, { revenue: false });
       if (refusal) return { refusal };
       continue;
     }
     const qp = parseQueryPlan(step.plan);
     const v = validateQueryPlan(qp.plan, { referenceDate });
     if (!v.ok) { for (const e of v.errors.slice(0, 3)) errors.push({ code: e.code, path: `steps.${i}.plan.${e.path || ""}` }); continue; }
-    const refusal = planner.checkPlannedQuery(question, qp.plan, previousScope);
+    const refusal = planner.checkPlannedQuery(question, qp.plan, previousScope, { revenue: false });
     if (refusal) return { refusal };
   }
   if (errors.length) return { errors };
+  const revenueRefusal = revenueGuard(question, parsed.plan.steps, { requirePrimary });
+  if (revenueRefusal) return { refusal: revenueRefusal };
   // The query planner's decided rewrites and definition notes (applyPlanRules, one implementation) for every query step, so a
   // step gives the same numbers and notes as the same plan asked on its own.
   const revenueNote = planner.mentionsRevenue(question) ? [planner.REVENUE_ASSUMPTION] : [];
@@ -182,7 +214,9 @@ function checkAnalysis(question, rawAnalysis, referenceDate, previousScope = nul
     if (step.kind !== "query") { steps.push(step); continue; }
     const ruled = planner.applyPlanRules(question, parseQueryPlan(step.plan).plan, { referenceDate, previousPlan: previousScope });
     if (ruled.error) return { errors: [{ code: "invalid_query_plan", path: `steps.${i}.plan` }] };
-    if (revenueNote.length || ruled.notes.length) notes[step.id] = [...revenueNote, ...ruled.notes];
+    // the revenue definition belongs to the revenue step only: a supporting step (quantity, a count, a breakdown) is not revenue
+    const stepNotes = [...(revenueNote.length && planner.isRevenuePlan(ruled.plan) ? revenueNote : []), ...ruled.notes];
+    if (stepNotes.length) notes[step.id] = stepNotes;
     steps.push({ ...step, plan: ruled.plan });
   }
   const final = parseAnalysisPlan({ ...parsed.plan, steps });
@@ -268,7 +302,8 @@ async function planAnalysis(question, options = {}) {
         : { status: "unsupported", route: "honest_response", source: "analysis_planner", code: `analysis_${d.code}`, reason: message, usage };
     }
 
-    const checked = checkAnalysis(text, input.analysis, referenceDate, previous);
+    // an investigation round (evidence given) adds supporting steps to a headline that already ran: no revenue step is required of it
+    const checked = checkAnalysis(text, input.analysis, referenceDate, previous, { requirePrimary: !evidence });
     if (checked.refusal) return { ...checked.refusal, route: "honest_response", usage };
     if (checked.plan) {
       const assumptions = (Array.isArray(input.assumptions) ? input.assumptions : []).slice(0, 3).map((a) => cleanText(a, 160)).filter(Boolean);

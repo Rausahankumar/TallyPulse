@@ -202,6 +202,7 @@ async function answerAnalysis(a, tm) {
   tm.plannerCacheCreationTokens = usage.cache_creation_input_tokens;
   tm.plannerStatus = ap.status;
   tm.plannerCode = ap.code || null;
+  if (ap.guardRule) { tm.guardRule = ap.guardRule; tm.guardStep = Number.isInteger(ap.guardStep) ? ap.guardStep : null; }
   const meta = { route: "analysis", claudeCalls: usage.calls, usage };
 
   if (ap.status === "needs_clarification" || ap.status === "unsupported") {

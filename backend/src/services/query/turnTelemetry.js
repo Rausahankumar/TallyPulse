@@ -28,6 +28,7 @@ const FIELDS = {
   path: code, route: code, outcome: code, answerSource: code,
   claudeCalls: int, claudeReason: code,
   plannerStatus: code, plannerCode: code, plannerLatencyMs: ms, plannerAttempts: int,
+  guardStep: int, guardRule: code, // an analysis refused by the revenue basis: the 0-based step that broke it (absent: the analysis as a whole) and the rule
   plannerInputTokens: int, plannerOutputTokens: int, plannerCacheReadTokens: int, plannerCacheCreationTokens: int,
   answerCache: code, answerCacheHit: bool, answerCacheLookupMs: ms, answerCacheStored: bool,
   executeMs: ms, engineRan: bool, engineLatencyMs: ms, engineStatus: code, engineErrorCode: code,

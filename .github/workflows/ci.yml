@@ -193,6 +193,7 @@ jobs:
             verify-plain-answer.js \
             verify-plain-query-answer.js \
             verify-ask-ai-ux-fixes.js \
+            verify-revenue-analysis-guard.js \
             verify-sync-success-time.js \
             verify-calculation.js \
             verify-unavailable-concepts.js \

@@ -504,11 +504,12 @@ const failed = (code, reason, usage, extra = {}) => ({ status: "planner_failed",
  *        planQuestion reads its previous plan: its measure for the tax-off term, its own dates' years as already stated
  * @returns {null | {status, code, reason, source}} null when the plan may run
  */
-function checkPlannedQuery(question, plan, previousPlan = null) {
+function checkPlannedQuery(question, plan, previousPlan = null, { revenue = true } = {}) {
   const text = String(question || "").replace(/\s+/g, " ").trim();
   const term = uncalculableTermRefusal(text, plan, previousPlan);
   if (term) return term;
-  if (mentionsRevenue(text) && !isRevenuePlan(plan)) return { status: "unsupported", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL };
+  // revenue: false - the caller applies the revenue basis itself (an analysis judges its steps together: analysisPlanner.revenueGuard)
+  if (revenue && mentionsRevenue(text) && !isRevenuePlan(plan)) return { status: "unsupported", source: "revenue_guard", code: "revenue_basis_unsupported", reason: REVENUE_BASIS_REFUSAL };
   if (!datesStated(plan, text, previousPlan)) return { status: "needs_clarification", source: "date_guard", code: "year_missing", reason: "Which year do you mean?" };
   if (isNewPartyPlan(plan)) return { status: "unsupported", source: "new_party_guard", code: "unsupported_new_party", reason: NEW_PARTY_REASON };
   return null;
@@ -852,6 +853,8 @@ module.exports = {
   checkPlannedQuery,
   applyPlanRules,
   mentionsRevenue,
+  isRevenuePlan,
+  REVENUE_BASIS_REFUSAL,
   // The same accounting-profit words the profit refusal uses (profit, COGS, gross/net margin), on the normalised question.
   mentionsAccountingProfit: (question) => PROFIT_TERMS.test(normalizeTerms(question)),
 };
