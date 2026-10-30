@@ -59,7 +59,21 @@ function getPlannerClient() {
  * (plannerResponseCache.js); an injected client (tests) is not, unless the test injects a cache too (deps.plannerResponseCache).
  */
 function turnPlannerClient(deps, tenantId, tm) {
-  const base = deps.plannerClient || getPlannerClient();
+  const raw = deps.plannerClient || getPlannerClient();
+  // Provider requests actually sent this turn, retries included. The real client marks its reply or error with the number of
+  // attempts; a client that does not (a test double) counts as one request per invocation. Under the cache: a hit sends none.
+  tm.plannerHttpAttempts = 0;
+  const attemptsOf = (x) => (x && Number.isInteger(x.providerAttempts) && x.providerAttempts >= 0 ? x.providerAttempts : 1);
+  const base = async (request, callOptions) => {
+    try {
+      const response = await raw(request, callOptions);
+      tm.plannerHttpAttempts += attemptsOf(response);
+      return response;
+    } catch (error) {
+      tm.plannerHttpAttempts += attemptsOf(error);
+      throw error;
+    }
+  };
   const cache = deps.plannerResponseCache !== undefined ? deps.plannerResponseCache : deps.plannerClient ? null : getSharedPlannerResponseCache();
   if (!cache) return base;
   tm.plannerResponseCache = { hit: 0, miss: 0, bypass: 0 };

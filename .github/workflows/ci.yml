@@ -214,6 +214,7 @@ jobs:
             verify-ai-telemetry.js \
             verify-ai-usage-persist.js \
             verify-cost-forensic.js \
+            verify-ai-cost-path.js \
             verify-chat-management.js \
             verify-nlu-eval.js \
             verify-openrouter-eval.js \

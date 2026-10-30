@@ -28,6 +28,7 @@
 // --------------------------------------------------
 
 const catalog = require("./semanticCatalog");
+const { countingFetch, countedCall } = require("./providerAttempts");
 const { parseQueryPlan, queryPlanJsonSchema } = require("./queryPlan.schema");
 const { validateQueryPlan } = require("./validator");
 const { readScope, scopeMessage } = require("./followUp");
@@ -786,7 +787,7 @@ async function planQuestionCore(question, options = {}) {
  */
 function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEOUT_MS, maxRetries = PLANNER_MAX_RETRIES, deadlineMs = PLANNER_DEADLINE_MS, sdkOptions = {} } = {}) {
   let client = null;
-  return async function anthropicPlannerClient(request, { signal } = {}) {
+  const send = async function anthropicPlannerClient(request, { signal } = {}) {
     if (!client) {
       const Anthropic = require("@anthropic-ai/sdk");
       const apiKey = sdkOptions.apiKey || process.env.ANTHROPIC_API_KEY;
@@ -795,7 +796,7 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
         err.code = "AI_NOT_CONFIGURED";
         throw err;
       }
-      client = new Anthropic({ ...sdkOptions, apiKey, maxRetries, timeout: attemptTimeoutMs });
+      client = new Anthropic({ ...sdkOptions, apiKey, maxRetries, timeout: attemptTimeoutMs, fetch: countingFetch(sdkOptions.fetch) }); // every provider request, SDK retries included, is counted (providerAttempts.js)
     }
     const controller = new AbortController();
     // The caller's signal (client disconnected) aborts the same in-flight request as the deadline does.
@@ -826,6 +827,8 @@ function createAnthropicPlannerClient({ attemptTimeoutMs = PLANNER_ATTEMPT_TIMEO
       if (signal) signal.removeEventListener("abort", onClientAbort);
     }
   };
+  // The reply (or the error) carries how many provider requests the call took, as a non-enumerable `providerAttempts`.
+  return (request, callOptions) => countedCall(() => send(request, callOptions));
 }
 
 module.exports = {

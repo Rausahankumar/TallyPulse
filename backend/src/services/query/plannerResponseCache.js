@@ -17,6 +17,9 @@
 // Never errors, timeouts, cancelled requests, truncated (max_tokens) or malformed replies.
 // Bounded: entries per tenant and in total (oldest evicted first), bytes per entry, and a TTL.
 // A hit returns a deep clone with zero usage and the CACHED_RESPONSE mark, so callers count no model call and no tokens.
+// Concurrent IDENTICAL requests of one tenant (a double click, two tabs) share ONE model call: the first leads, the others wait for
+// its reply and are served like hits. If the leader fails, is cancelled or returns something not reusable, each waiting request
+// makes its own call - an error or a cancellation of one request never becomes another request's result.
 // --------------------------------------------------
 
 const crypto = require("crypto");
@@ -40,6 +43,20 @@ function isCacheableResponse(request, response) {
   return !!forced && uses.length === 1 && uses[0].name === forced && isPlainObject(uses[0].input);
 }
 
+/** Resolves/rejects like `promise`, but rejects at once when `signal` aborts (a waiting request that was cancelled stops waiting). */
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e) => { signal.removeEventListener("abort", onAbort); reject(e); }
+    );
+  });
+}
+
 function abortError(signal) {
   const err = new Error("The planner request was aborted.");
   err.name = "AbortError";
@@ -55,7 +72,8 @@ function createPlannerResponseCache(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const tenants = new Map(); // tenantId -> Map(key -> {value, expires})
   let total = 0;
-  const stats = { hit: 0, miss: 0, stored: 0, bypass: 0, evicted: 0 };
+  const stats = { hit: 0, miss: 0, stored: 0, bypass: 0, evicted: 0, coalesced: 0 };
+  const inflight = new Map(); // `${tenantId}\0${key}` -> Promise<stored value | null> of the request currently leading that key
 
   function keyFor(request, settings) {
     const { system, tools, tool_choice, max_tokens, messages } = request;
@@ -90,8 +108,8 @@ function createPlannerResponseCache(options = {}) {
   }
   function store(tenantId, key, response) {
     const value = JSON.stringify({ content: response.content, stop_reason: response.stop_reason || null, model: response.model || null });
-    if (Buffer.byteLength(value, "utf8") > cfg.maxEntryBytes) return false;
-    if (!(cfg.maxEntriesPerTenant >= 1 && cfg.maxEntries >= 1)) return false; // a cap below 1 stores nothing (never loops)
+    if (Buffer.byteLength(value, "utf8") > cfg.maxEntryBytes) return null;
+    if (!(cfg.maxEntriesPerTenant >= 1 && cfg.maxEntries >= 1)) return null; // a cap below 1 stores nothing (never loops)
     let part = tenants.get(tenantId);
     if (part && part.has(key)) drop(tenantId, part, key);
     part = tenants.get(tenantId);
@@ -110,7 +128,7 @@ function createPlannerResponseCache(options = {}) {
     part.set(key, { value, expires: now() + cfg.ttlMs });
     total += 1;
     stats.stored += 1;
-    return true;
+    return value;
   }
   /** The response to hand back on a hit: a fresh clone, zero usage, marked as not a model call. */
   function revive(value) {
@@ -145,11 +163,39 @@ function createPlannerResponseCache(options = {}) {
         count("hit");
         return revive(hit);
       }
+      const flightKey = `${tenantId}\u0000${key}`;
+      const leader = inflight.get(flightKey);
+      if (leader) {
+        let value = null;
+        try {
+          value = await untilAborted(leader, signal); // a cancelled waiting request stops waiting (and never calls)
+        } catch (error) {
+          if (signal && signal.aborted) throw error;
+        }
+        if (value) {
+          stats.hit += 1;
+          stats.coalesced += 1;
+          count("hit"); // it avoided a model call, like a hit
+          return revive(value);
+        }
+        // the leader produced nothing reusable: this request makes its own call below
+      }
       stats.miss += 1;
       count("miss");
-      const response = await client(request, callOptions); // errors and timeouts propagate unchanged and are never stored
-      if (!(signal && signal.aborted) && isCacheableResponse(request, response)) store(tenantId, key, response);
-      return response;
+      let settle = () => {};
+      const lead = !inflight.has(flightKey);
+      if (lead) inflight.set(flightKey, new Promise((resolve) => { settle = resolve; }));
+      try {
+        const response = await client(request, callOptions); // errors and timeouts propagate unchanged and are never stored
+        const value = !(signal && signal.aborted) && isCacheableResponse(request, response) ? store(tenantId, key, response) : null;
+        settle(value);
+        return response;
+      } catch (error) {
+        settle(null);
+        throw error;
+      } finally {
+        if (lead) inflight.delete(flightKey);
+      }
     };
   }
 
