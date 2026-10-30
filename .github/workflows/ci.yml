@@ -196,6 +196,8 @@ jobs:
             verify-revenue-analysis-guard.js \
             verify-sync-success-time.js \
             verify-calculation.js \
+            verify-planner-response-cache.js \
+            verify-cache-telemetry.js \
             verify-unavailable-concepts.js \
             verify-ask-ai-basic-questions.js \
             verify-query-cache.js \
@@ -215,6 +217,7 @@ jobs:
             verify-ai-telemetry.js \
             verify-ai-usage-persist.js \
             verify-cost-forensic.js \
+            verify-ai-cost-path.js \
             verify-chat-management.js \
             verify-nlu-eval.js \
             verify-openrouter-eval.js \
