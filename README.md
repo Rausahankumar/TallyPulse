@@ -59,5 +59,5 @@ Start with [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) for a map of the
 | [`docs/SEMANTIC_FOUNDATION.md`](docs/SEMANTIC_FOUNDATION.md) | **Maintained** | What the query engine's time, comparison and party terms mean |
 | [`TallyPulse-Security-Audit.md`](TallyPulse-Security-Audit.md) | Historical record | Audit findings (F-xx) and probe ids (SEC-xx) that code comments and `verify-security-audit.js` cite |
 | [`docs/CODE_WALKTHROUGH_HINGLISH.md`](docs/CODE_WALKTHROUGH_HINGLISH.md), [`docs/TALLY_TO_MONGO_FILES.md`](docs/TALLY_TO_MONGO_FILES.md) | Explanatory | Beginner walkthroughs in Hinglish; check the code or the maintained docs for current detail |
-| [`docs/CODE_REFERENCE.md`](docs/CODE_REFERENCE.md) | Snapshot (2026-10-15) | Per-file function list; its generator is not in the repository, so it is not kept current |
+| [`docs/CODE_REFERENCE.md`](docs/CODE_REFERENCE.md) | Generated (date in its header) | Per-file function list and call flow, produced from the source by `docs/gen_ref.js` (static analysis; re-run it after structural changes) |
 | `docs/*.excalidraw`, `docs/TallyPulse_Architecture_Handover.pptx` | Snapshots | Architecture diagrams and the handover deck |
