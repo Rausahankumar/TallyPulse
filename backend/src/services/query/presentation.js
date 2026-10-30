@@ -17,6 +17,7 @@
 
 const { CATALOG, LIMITS } = require("./semanticCatalog");
 const { rangeText } = require("../analytics/coverage");
+const { dataDayOf } = require("./evidence");
 const { fmtValue, fmtSigned, pctOf, periodText } = require("./answerFormatter");
 
 const PRESENTATION_VERSION = 1;
@@ -125,7 +126,7 @@ const change = (id, c) => {
   };
 };
 
-function build({ plan, result, notes = [], zero = false }) {
+function build({ plan, result, notes = [], zero = false, dataThrough = null }) {
   const entityLabel = CATALOG.entities[plan.entity].label;
   const base = {
     v: PRESENTATION_VERSION,
@@ -136,7 +137,9 @@ function build({ plan, result, notes = [], zero = false }) {
   const bases = [...new Set(Object.values(result.amountBasis || {}))].filter((b) => BASIS_TEXT[b]);
   const withCommon = (p) => ({ ...p, basis: bases.map((b) => BASIS_TEXT[b]), notes: notes.filter((n) => !BASIS_NOTES.has(n)) });
 
-  if (zero) return withCommon({ ...base, kind: "empty" });
+  // an empty answer says where the data ends, so the user can pick a period that has data (the day as YYYY-MM-DD)
+  const through = dataDayOf(dataThrough);
+  if (zero) return withCommon({ ...base, kind: "empty", ...(through ? { dataThrough: through } : {}) });
 
   if (plan.mode === "list") {
     const rows = (result.rows || []).slice(0, MAX_TABLE_ROWS).map((r) => ({

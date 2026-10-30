@@ -436,10 +436,18 @@ function readPreviousPlan(previousPlan) {
   return { plan: parsed.plan, json: JSON.stringify(compact) };
 }
 
-function previousPlanMessage(json, text) {
+// The data window of a follow-up to an EMPTY answer (followUp.dataWindow: server-derived dates, never model output). Anything else is no window.
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+function readDataWindow(w) {
+  if (!w || typeof w !== "object" || !YMD.test(w.through) || !w.lastCompleteMonth || !YMD.test(w.lastCompleteMonth.from) || !YMD.test(w.lastCompleteMonth.to)) return null;
+  return { through: w.through, from: w.lastCompleteMonth.from, to: w.lastCompleteMonth.to };
+}
+
+function previousPlanMessage(json, text, window = null) {
   return [
     "Previous query plan (structured JSON). The question below may refine or modify it:",
     json,
+    ...(window ? [`That plan found no data. This company's data ends on ${window.through}; its last complete month is ${window.from} to ${window.to}. A request for the "latest", "last synced" or "available" data means that month (a custom period).`] : []),
     "Interpret the question in that context and return one complete new plan that follows the same rules. Keep whatever the question does not change. If the question is not a follow-up, ignore the previous plan.",
     `Question: ${text}`,
   ].join("\n");
@@ -461,6 +469,7 @@ function plannedYears(plan) {
   };
   add(plan.period);
   if (plan.compare && plan.compare.mode === "custom") add(plan.compare.period);
+  for (const y of plan.dataWindowYears || []) years.add(y); // the years of the server's data window (see planQuestionCore)
   return years;
 }
 
@@ -577,7 +586,8 @@ async function planQuestionCore(question, options = {}) {
   const previous = readPreviousPlan(options.previousPlan);
   // without a previous plan, an analysis turn's carried scope (followUp.scopeOf): the same framing the analysis planner gets
   const scope = previous ? null : readScope(options.previousScope);
-  const context = previous ? previous.plan : scope; // read by the guards and plan rules as a previous plan (its stated years, measure)
+  const window = previous ? readDataWindow(options.dataWindow) : null;
+  const context = previous ? (window ? { ...previous.plan, dataWindowYears: [...new Set([window.from, window.to].map((d) => Number(d.slice(0, 4))))] } : previous.plan) : scope; // read by the guards and plan rules as a previous plan (its stated years, measure)
   if (typeof claudeClient !== "function") throw new Error("planQuestion requires a claudeClient function.");
   const maxRepairs = Math.min(MAX_REPAIRS_CAP, Math.max(0, Number.isInteger(options.maxRepairs) ? options.maxRepairs : 0));
   const usage = newUsage();
@@ -589,7 +599,7 @@ async function planQuestionCore(question, options = {}) {
   if (text.length > PLANNER_MAX_QUESTION_CHARS) return { status: "needs_clarification", route: "honest_response", source: "planner_gate", code: "question_too_long", reason: "Please shorten the question.", usage };
 
   const prompt = getPlannerPrompt();
-  let messages = [{ role: "user", content: previous ? previousPlanMessage(previous.json, text) : scope ? scopeMessage(scope, text) : text }];
+  let messages = [{ role: "user", content: previous ? previousPlanMessage(previous.json, text, window) : scope ? scopeMessage(scope, text) : text }];
   let lastFailure = null;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {

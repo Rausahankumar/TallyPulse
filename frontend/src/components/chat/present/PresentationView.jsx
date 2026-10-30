@@ -120,6 +120,12 @@ function Empty({ p }) {
             <dd className="inline break-words text-ink-700">{s.value}</dd>
           </div>
         ))}
+        {p.dataThrough && (
+          <div>
+            <dt className="inline">Latest data in this company: </dt>
+            <dd className="inline text-ink-700">{new Date(`${p.dataThrough}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</dd>
+          </div>
+        )}
       </dl>
     </div>
   );

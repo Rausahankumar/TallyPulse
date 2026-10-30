@@ -3,6 +3,7 @@ const Purchase = require("../models/purchase.model");
 const SyncCheckpoint = require("../models/syncCheckpoint.model");
 const ReconciliationCheckpoint = require("../models/reconciliationCheckpoint.model");
 const { resolveTenantContext } = require("../services/import/tallySalesImport");
+const { successTimeOf } = require("../services/analytics/freshness");
 
 const RECENT_LIMIT = 10;
 
@@ -10,7 +11,8 @@ function serializeCheckpoint(doc) {
   if (!doc) return null;
   return {
     lastAlterId: doc.lastAlterId,
-    lastSyncedAt: doc.lastSyncedAt,
+    lastSyncedAt: doc.lastSyncedAt, // the last ATTEMPT (a failed run sets it too)
+    lastSuccessAt: successTimeOf(doc), // the last SUCCESSFUL sync (null when unknown)
     lastRunStatus: doc.lastRunStatus,
     lastError: doc.lastError,
     isRunning: doc.isRunning,

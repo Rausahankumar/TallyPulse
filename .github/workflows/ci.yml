@@ -192,6 +192,8 @@ jobs:
             verify-overall-direction.js \
             verify-plain-answer.js \
             verify-plain-query-answer.js \
+            verify-ask-ai-ux-fixes.js \
+            verify-sync-success-time.js \
             verify-calculation.js \
             verify-unavailable-concepts.js \
             verify-ask-ai-basic-questions.js \

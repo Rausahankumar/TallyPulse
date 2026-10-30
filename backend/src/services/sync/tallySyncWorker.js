@@ -219,6 +219,10 @@ async function releaseLock(
     lastError: error,
   };
 
+  // lastSyncedAt is the time of this ATTEMPT; only a successful run is a success time (lastSuccessAt). Freshness and the
+  // coverage of the data both read the success time, so a failing sync never makes the data look current.
+  if (status === "success") update.lastSuccessAt = update.lastSyncedAt;
+
   // The one rule that matters: the checkpoint only ever advances here, on
   // an explicitly successful run. A failed run leaves lastAlterId
   // untouched, so the next tick safely re-fetches the same delta.

@@ -172,7 +172,7 @@ function plannerFailureMessage(planned) {
     }
     return `${planned.reason} Please check the name and try again.`;
   }
-  return "I couldn't turn this question into a query I can run safely. Please rephrase it, for example by naming the period and whether it is about sales or purchases.";
+  return "I couldn't turn this question into a query I can run safely, so I ran nothing. If my last answer was not what you wanted, tell me what you expected instead (for example \"only the top 10\" or \"for last month\") and I will redo it. Otherwise, rephrase by naming the period and whether it is about sales or purchases.";
 }
 
 // ---------------------------------------------------------------- analysis plans (several existing analyses for one question)
@@ -420,7 +420,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     const tp = now();
     // Validated against the SAME tenant reference date (the date is never sent to Claude). A follow-up of an analysis turn gets that
     // turn's carried scope (e.g. its period), never a partial plan as if it were a complete previous plan.
-    if (!planned) planned = await planQuestion(question, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, previousPlan: prevPlan || undefined, previousScope: prevState && prevState.source === "analysis" ? followUp.scopeOf(prevState) : undefined, referenceDate, signal });
+    if (!planned) planned = await planQuestion(question, { claudeClient: deps.plannerClient || getPlannerClient(), resolveEntity, previousPlan: prevPlan || undefined, dataWindow: prevPlan && prevState.empty && dc && dc.latestVoucher ? followUp.dataWindow(dc.latestVoucher) : undefined, previousScope: prevState && prevState.source === "analysis" ? followUp.scopeOf(prevState) : undefined, referenceDate, signal });
     tm.plannerLatencyMs = now() - tp;
     const plannerUsage = planned.usage;
     tm.plannerStatus = planned.status;
@@ -451,7 +451,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
     // basic takes only the planner's own needs_analysis decline; an unusable plan keeps its one call and fixed message
     const mode = needsSteps ? analysisMode(deps) : "off";
     if (needsSteps && (mode === "on" || (mode === "basic" && planned.code === "planner_needs_analysis"))) {
-      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, previousScope: followUp.scopeOf(prevState), basicOnly: mode === "basic", outsideBasic: (meta) => declined({ claudeCalls: meta.claudeCalls, usage: meta.usage }) }, tm);
+      return answerAnalysis({ tenantId, userMessage: question, dc, referenceDate, resolveEntity, getFreshness, deps, signal, plannerUsage, previousScope: followUp.analysisScopeOf(prevState), basicOnly: mode === "basic", outsideBasic: (meta) => declined({ claudeCalls: meta.claudeCalls, usage: meta.usage }) }, tm);
     }
     if (planned.code === "planner_needs_analysis") return declined({ claudeCalls: plannerUsage.calls, usage: plannerUsage });
     if (planned.status === "needs_clarification" || planned.status === "unsupported") {
@@ -503,7 +503,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       if (cov.status === "outside") {
         return {
           handled: true,
-          queryContext,
+          queryContext: { ...queryContext, empty: true }, // a follow-up ("take the last synced data") is told where the data ends
           structured: baseResponse(cov.message, {
             toolCalls: [{ toolName: "query_engine", state: "no_usable_data" }],
             warnings: [cov.message],
@@ -560,6 +560,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
       };
     }
     const formatted = formatQueryAnswer({ plan, result, definitionNotes, plannerAssumptions, contextNotes, dataThrough });
+    if (formatted.zero) queryContext = { ...queryContext, empty: true };
     // the plain-language opening (the question's language) comes first; the exact figures, basis and notes follow unchanged
     const language = questionLanguage(planned.language, userMessage);
     const plain = plainQuerySummary({ plan, result, zero: formatted.zero, language, dataThrough });
@@ -578,7 +579,7 @@ async function answerTurn({ context, userMessage, conversationHistory = [], prev
         meta: { ...meta, cache: cache && cache.status, language },
         // Presentation only (tables/charts for the frontend): built from this same result, never changes the text.
         visualization: withCalculation(
-          withPlain(buildPresentation({ plan, result, notes: formatted.notes, zero: formatted.zero, display: displayIntent(userMessage) }), plain),
+          withPlain(buildPresentation({ plan, result, notes: formatted.notes, zero: formatted.zero, dataThrough, display: displayIntent(userMessage) }), plain),
           // what executed, for "View calculation": the plan, the engine's own values and the notes above (no new figure)
           buildCalculation({ plan, result, zero: formatted.zero, previousScope: followUp.scopeOf(prevState), definitionNotes, plannerAssumptions, contextNotes, freshness, dataThrough })
         ),

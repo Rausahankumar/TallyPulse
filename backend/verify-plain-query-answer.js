@@ -39,12 +39,12 @@ const prodRes = res({ period: AUG, comparison: JUL, metrics: ["lineAmount"], gro
 
 {
   const en = say(prodPlan, prodRes, "en");
-  check("product-fall-en", "opens with the scoped total in words, pre-tax said, then the biggest drops in the engine's order", en[0] === "Sales to Synthetic Traders (before tax) fell from ₹4.03 lakh in July 2025 to ₹1.14 lakh in August 2025 — down ₹2.89 lakh (71.7%)." && en[1] === "Biggest drops:" && en[2] === "Synthetic Tint 36ML had ₹1.45 lakh of sales in July 2025, but none recorded in August 2025." && en[3] === "Synthetic Product B: sales dropped from ₹1.5 lakh to ₹60,000.", en.join("\n"));
+  check("product-fall-en", "opens with the scoped total in words, pre-tax said, then the biggest drops in the engine's order", en[0] === "Sales to Synthetic Traders (before tax) fell from ₹4.03 lakh in July 2025 to ₹1.14 lakh in August 2025 — down ₹2.89 lakh (71.7%)." && en[1] === "3 products fell. Biggest drops:" && en[2] === "Synthetic Tint 36ML had ₹1.45 lakh of sales in July 2025, but none recorded in August 2025." && en[3] === "Synthetic Product B: sales dropped from ₹1.5 lakh to ₹60,000.", en.join("\n"));
   check("product-fall-rows", "at most 2 named rows (the full list stays in the details)", en.length === 4, en.length);
   const hl = say(prodPlan, prodRes, "hinglish");
-  check("product-fall-hinglish", "the same facts in Hinglish", hl[0] === "Synthetic Traders ki bikri (tax se pehle) August 2025 mein kam hui: July 2025 mein ₹4.03 lakh thi, August 2025 mein ₹1.14 lakh — yaani ₹2.89 lakh (71.7%) ki girawat." && hl[1] === "Sabse zyada girawat:", hl.join("\n"));
+  check("product-fall-hinglish", "the same facts in Hinglish", hl[0] === "Synthetic Traders ki bikri (tax se pehle) August 2025 mein kam hui: July 2025 mein ₹4.03 lakh thi, August 2025 mein ₹1.14 lakh — yaani ₹2.89 lakh (71.7%) ki girawat." && hl[1] === "3 products gire. Sabse zyada girawat:", hl.join("\n"));
   const hi = say(prodPlan, prodRes, "hi");
-  check("product-fall-hindi", "the same facts in Hindi (Hindi month names, लाख)", hi[0] === "Synthetic Traders की बिक्री (टैक्स से पहले) अगस्त 2025 में घटी: जुलाई 2025 में ₹4.03 लाख थी, अगस्त 2025 में ₹1.14 लाख — यानी ₹2.89 लाख (71.7%) की गिरावट।" && hi[1] === "सबसे ज़्यादा गिरावट:", hi.join("\n"));
+  check("product-fall-hindi", "the same facts in Hindi (Hindi month names, लाख)", hi[0] === "Synthetic Traders की बिक्री (टैक्स से पहले) अगस्त 2025 में घटी: जुलाई 2025 में ₹4.03 लाख थी, अगस्त 2025 में ₹1.14 लाख — यानी ₹2.89 लाख (71.7%) की गिरावट।" && hi[1] === "उत्पादों में से 3 में गिरावट आई। सबसे ज़्यादा गिरावट:", hi.join("\n"));
   // no new figure: every amount in the opening is the rounding of a value the engine returned (value, previous or change)
   const engine = [cT, pT, cmp(cT, pT).delta, ...prodRes.rows.flatMap((r) => [r.values.lineAmount, r.comparison.lineAmount.previous, r.comparison.lineAmount.delta])];
   for (const [lang, lines] of [["en", en], ["hinglish", hl], ["hi", hi]]) {

@@ -30,8 +30,25 @@ function basisOf(plan, { revenue = false } = {}) {
 }
 
 /** The structured state persisted on the assistant message. Plain JSON; no tenant, no figures. */
-function buildQueryState(plan, { revenue = false } = {}) {
-  return { v: STATE_VERSION, plan: JSON.parse(JSON.stringify(plan)), basis: basisOf(plan, { revenue }) };
+function buildQueryState(plan, { revenue = false, empty = false } = {}) {
+  // empty: this turn found no data for the plan (no records, or a period outside the synced data); the next turn is then given the data window
+  return { v: STATE_VERSION, plan: JSON.parse(JSON.stringify(plan)), basis: basisOf(plan, { revenue }), ...(empty ? { empty: true } : {}) };
+}
+
+const pad2 = (n) => String(n).padStart(2, "0");
+/**
+ * Where the tenant's data ends, for a follow-up to an empty answer ("take it from the last synced data"): the latest voucher's calendar
+ * day and the last COMPLETE month of data (that month when the latest voucher is its last day, else the month before). From the tenant date
+ * context (local midnight of the voucher day), never from the model.
+ */
+function dataWindow(latestVoucher) {
+  const d = new Date(latestVoucher);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear(), m = d.getMonth(), day = d.getDate(); // dc.latestVoucher is the local midnight of that calendar day
+  const daysIn = (yy, mm) => new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate();
+  let cy = y, cm = m;
+  if (day < daysIn(y, m)) { cm -= 1; if (cm < 0) { cm = 11; cy -= 1; } }
+  return { through: `${y}-${pad2(m + 1)}-${pad2(day)}`, lastCompleteMonth: { from: `${cy}-${pad2(cm + 1)}-01`, to: `${cy}-${pad2(cm + 1)}-${pad2(daysIn(cy, cm))}` } };
 }
 
 // ---- analysis turns: the scope EVERY executed query step shares, and nothing else.
@@ -134,15 +151,30 @@ function readQueryState(stored) {
     if (stored.source !== undefined || !okTop || !Array.isArray(g.members) || g.members.length > g.top || !g.members.every((m) => typeof m === "string" && m.length <= MAX_MEMBER_CHARS)) return null;
     group = { group: { top: g.top, members: [...g.members] } };
   }
-  return { plan: stored.plan, basis: stored.basis, ...analysis, ...group, ...(hasPending ? { pending } : {}) };
+  return { plan: stored.plan, basis: stored.basis, ...analysis, ...group, ...(stored.empty === true && stored.source === undefined ? { empty: true } : {}), ...(hasPending ? { pending } : {}) };
 }
 
 // ---- the scope as given to a planner (query or analysis planner): the carried parts only, framed before the question. Never
 // rows, tenant or chat text. One turn deep: each answered turn replaces it, and the planner is told to ignore it for a new topic.
-const SCOPE_KEYS = CARRY_KEYS;
+// The ranking a single-query answer showed ("products whose sales fell", biggest falls first, top 100): what "these products" /
+// "those customers" refers to in an analysis follow-up. Only a single-query state has one; an analysis state has no single ranking.
+const RANKING_KEYS = ["groupBy", "sort", "having", "limit"];
+const SCOPE_KEYS = [...CARRY_KEYS, ...RANKING_KEYS];
 const SCOPE_MAX_CHARS = 1200;
 const SCOPE_LEAD = "Previous turn's analysis scope (structured JSON; only what that turn's steps all shared - anything not listed was not shared and must come from the question):";
-const SCOPE_RULE = 'The question below may refer to that scope ("this", "those", "same period"): keep the listed scope for what the question does not change. If the question is not a follow-up, ignore it.';
+const SCOPE_RULE = 'The question below may refer to that scope ("this", "those", "same period"): keep the listed scope for what the question does not change. When groupBy/sort/having/limit are listed they are the ranking the previous answer showed: "these products" / "those customers" means the rows of that ranking, so plan the investigation over the same period and ranking instead of asking which ones. If the question is not a follow-up, ignore it.';
+/** The scope handed to the ANALYSIS planner: the carried scope, plus - for a single-query state with a breakdown - its ranking. */
+function analysisScopeOf(state) {
+  const scope = scopeOf(state);
+  if (!scope || state.source === "analysis" || !Array.isArray(state.plan.groupBy) || !state.plan.groupBy.length) return scope;
+  for (const k of RANKING_KEYS) {
+    const v = state.plan[k];
+    if (v === undefined || v === null || (Array.isArray(v) && !v.length)) continue;
+    scope[k] = v;
+  }
+  return scope;
+}
+
 /** A scope as a planner may receive it: a small plain object of known keys (at least one); anything else is no scope. */
 function readScope(scope) {
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return null;
@@ -156,4 +188,4 @@ ${JSON.stringify(scope)}
 ${SCOPE_RULE}
 Question: ${text}`;
 
-module.exports = { readScope, scopeMessage, buildQueryState, buildAnalysisState, scopeOf, readQueryState, withPendingQuestion, clarifiedQuestion, basisOf, STATE_VERSION, MAX_PENDING_CHARS, CARRY_KEYS };
+module.exports = { readScope, scopeMessage, analysisScopeOf, dataWindow, buildQueryState, buildAnalysisState, scopeOf, readQueryState, withPendingQuestion, clarifiedQuestion, basisOf, STATE_VERSION, MAX_PENDING_CHARS, CARRY_KEYS };

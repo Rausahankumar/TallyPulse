@@ -215,7 +215,11 @@ async function planAnalysis(question, options = {}) {
   const asked = previous ? scopeMessage(previous, text) : text;
   let messages = [{ role: "user", content: evidence ? `${asked}\n\n${EVIDENCE_LEAD}\n${evidence}` : asked }];
 
-  for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
+  // One bounded retry when the model asks a question although the previous turn's scope already fixed the period: the scope is
+  // re-stated as the answer to that question, once. A second clarification is returned as it is. Counted like any model call.
+  let clarifyRetry = previous && previous.period ? 1 : 0;
+  let repairsLeft = maxRepairs;
+  for (;;) {
     if (options.signal && options.signal.aborted) return failed("planner_call_failed", "The request was cancelled.", usage, { retryable: true });
     let response;
     usage.calls += 1;
@@ -250,6 +254,15 @@ async function planAnalysis(question, options = {}) {
       const d = input.decline;
       if (!isPlainObject(d) || !DECLINE_CODES.includes(d.code)) return failed("planner_protocol_violation", "The planner decline was malformed.", usage);
       const message = cleanText(d.message, 200) || "This question cannot be answered with the available Sales/Purchase analyses.";
+      if (d.code === "needs_clarification" && clarifyRetry > 0) {
+        clarifyRetry -= 1;
+        messages = [
+          messages[0],
+          { role: "assistant", content: [toolUses[0]] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: toolUses[0].id, is_error: true, content: "Not needed: the previous turn's scope already gives the period (and, when listed, the ranking whose rows 'these' refers to). Do not ask for those: plan the analysis with them, or decline for a different reason." }] },
+        ];
+        continue;
+      }
       return d.code === "needs_clarification"
         ? { status: "needs_clarification", route: "honest_response", source: "analysis_planner", code: "analysis_needs_clarification", reason: message, usage }
         : { status: "unsupported", route: "honest_response", source: "analysis_planner", code: `analysis_${d.code}`, reason: message, usage };
@@ -262,7 +275,8 @@ async function planAnalysis(question, options = {}) {
       const unavailable = Array.isArray(input.unavailable) ? [...input.unavailable] : [];
       return { status: "supported", route: "analysis", source: "analysis_planner", analysis: checked.plan, definitionNotes: checked.notes, assumptions, unavailable, actions: input.actions === true, language: LANGUAGES.includes(input.language) ? input.language : null, usage };
     }
-    if (attempt < maxRepairs) {
+    if (repairsLeft > 0) {
+      repairsLeft -= 1;
       // One repair round: only OUR codes and paths go back (no data, no tenant).
       messages = [
         messages[0],
@@ -273,7 +287,6 @@ async function planAnalysis(question, options = {}) {
     }
     return failed("analysis_invalid_plan", "The planner produced an analysis plan that cannot be run.", usage, { errors: checked.errors.slice(0, 6) });
   }
-  return failed("analysis_invalid_plan", "The planner produced an analysis plan that cannot be run.", usage);
 }
 
 module.exports = { planAnalysis, getAnalysisPrompt, checkAnalysis, ANALYSIS_TOOL_NAME, ANALYSIS_TOOL_IDS, ANALYSIS_MAX_TOKENS };

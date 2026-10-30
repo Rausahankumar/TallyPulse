@@ -278,6 +278,8 @@ const QSAY = {
   en: {
     total: (s, V, P) => `${s}${P ? ` ${/ to /.test(P) ? "from" : "in"} ${P}` : ""}: ${V}.`,
     zero: (noun, scope, P) => `No ${noun} found${scope ? ` for ${scope}` : ""}${P ? ` in ${P}` : ""}.`,
+    // how many moved, said up front, so a long ranking is not mistaken for the whole list ("+" = the engine's row limit was hit)
+    movedLead: (dir, n, more, dims) => `${n}${more ? "+" : ""} ${dims} ${dir < 0 ? "fell" : "rose"}${more ? " (the list is cut at the row limit; more exist)" : ""}. Biggest ${dir < 0 ? "drops" : "increases"}:`,
     rank: (order, dims) => (order === "desc" ? `Top ${dims}:` : order === "asc" ? `Bottom ${dims}:` : `${dims[0].toUpperCase()}${dims.slice(1)}:`),
     row: (n, V) => `${n}: ${V}`,
     same: (n, V) => `${n}: no change (${V}).`,
@@ -288,6 +290,7 @@ const QSAY = {
   hinglish: {
     total: (s, V, P) => `${s}${P ? ` (${P})` : ""}: ${V}.`,
     zero: (noun, scope, P) => `${P ? `${P} mein ` : ""}${scope ? `${scope} ki ` : ""}koi ${noun} nahi mili.`,
+    movedLead: (dir, n, more, dims) => `${n}${more ? "+" : ""} ${dims} ${dir < 0 ? "gire" : "badhe"}${more ? " (list row limit par kat gayi; aur bhi hain)" : ""}. Sabse zyada ${dir < 0 ? "girawat" : "badhat"}:`,
     rank: (order, dims) => `${dims[0].toUpperCase()}${dims.slice(1)} ${order === "desc" ? "mein sabse zyada" : order === "asc" ? "mein sabse kam" : "ki list"}:`,
     row: (n, V) => `${n}: ${V}`,
     same: (n, V) => `${n}: koi badlav nahi (${V}).`,
@@ -298,6 +301,7 @@ const QSAY = {
   hi: {
     total: (s, V, P) => `${s}${P ? ` (${P})` : ""}: ${V}।`,
     zero: (noun, scope, P) => `${P ? `${P} में ` : ""}${scope ? `${scope} की ` : ""}कोई ${noun} नहीं मिली।`,
+    movedLead: (dir, n, more, dims) => `${dims} में से ${n}${more ? "+" : ""} ${dir < 0 ? "में गिरावट आई" : "में बढ़त हुई"}${more ? " (सूची सीमा पर कट गई; और भी हैं)" : ""}। सबसे ज़्यादा ${dir < 0 ? "गिरावट" : "बढ़त"}:`,
     rank: (order, dims) => `${dims} ${order === "desc" ? "में सबसे ज़्यादा" : order === "asc" ? "में सबसे कम" : "की सूची"}:`,
     row: (n, V) => `${n}: ${V}`,
     same: (n, V) => `${n}: कोई बदलाव नहीं (${V})।`,
@@ -372,7 +376,9 @@ function plainQuerySummary({ plan, result, zero = false, language = "en", dataTh
   const dir = cmp && s && (s.by === `${metric}.delta` || s.by === `${metric}.deltaPct`) ? (s.dir === "asc" ? -1 : 1) : 0;
   const moved = dir ? rows.filter((r) => r.comparison && r.comparison[metric] && Math.sign(r.comparison[metric].delta) === dir) : [];
   const dims = dimsText(groups.map((g) => g.dim), lang);
-  lines.push(moved.length ? (dir < 0 ? say.dropLead(null) : say.riseLead(null)) : q.rank(s && s.by === metric ? s.dir : null, dims));
+  // a long ranking says how many moved; a short one keeps the plain lead
+  const countLead = moved.length > MAX_ROWS || (moved.length && result.truncated);
+  lines.push(countLead ? q.movedLead(dir, moved.length, !!result.truncated, dims) : moved.length ? (dir < 0 ? say.dropLead(null) : say.riseLead(null)) : q.rank(s && s.by === metric ? s.dir : null, dims));
   for (const r of (moved.length ? moved : rows).slice(0, MAX_ROWS)) {
     const name = rowName(r.key), cur = r.values[metric], c = r.comparison && r.comparison[metric];
     if (!c || !cmp) lines.push(q.row(name, val(cur)));
