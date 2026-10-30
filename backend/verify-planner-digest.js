@@ -162,7 +162,9 @@ function sectionSizes(digest) {
   section("C. validator rules and the decline list");
   const rule = (code) => CATALOG.queryRules.find((r) => r.code === code).description;
   check("the validator rules the schema cannot express are stated, as the catalog words them: sort for high-cardinality groupings, list-mode shape, and voucher-grain metrics cannot be grouped by product/productGroup", text.includes(rule("high_cardinality_requires_sort")) && text.includes(rule("list_mode_shape")) && text.includes(rule("dimension_not_applicable_to_voucher_metric")) && /Mode "list" returns individual invoices/.test(text));
-  check("every unsupported capability in the catalog is in the decline sentence, in plain words (its label, else its id)", CATALOG.unsupported.every((u) => text.includes(require("./src/services/query/semanticCatalog").unsupportedLabel(u))));
+  check("every unsupported capability in the catalog is in the decline sentence, in plain words (its digest label when several share one, else its label, else its id)", CATALOG.unsupported.every((u) => text.includes(u.digestLabel || require("./src/services/query/semanticCatalog").unsupportedLabel(u))));
+  const shared = CATALOG.unsupported.filter((u) => u.digestLabel);
+  check("entries sharing a digest label are partial and each keeps its own label, business meaning and reason (the analysis planner lists them one by one)", shared.length > 1 && shared.every((u) => u.partial === true && u.label && u.meaning && u.reason && u.label !== u.digestLabel) && new Set(shared.map((u) => u.label)).size === shared.length && new Set(shared.map((u) => u.reason)).size === shared.length);
   const profitEntry = CATALOG.unsupported.find((u) => u.id === "profit_margin");
   check("accounting profit stays unsupported: shown as 'accounting profit', and its reason keeps 'No cost/COGS data is available' and names gross and net margin", !!profitEntry && /accounting profit/.test(text) && profitEntry.reason.startsWith("No cost/COGS data is available") && /gross margin and net margin/.test(profitEntry.reason) && /labelled as indicative/.test(profitEntry.reason));
   check("the outdated discount refusal is gone: discounts are no longer listed as unsupported", !CATALOG.unsupported.some((u) => u.id === "discount_analysis") && !/discount analysis/.test(text));
@@ -201,7 +203,7 @@ function sectionSizes(digest) {
     const cannot = declineLine.slice(0, declineLine.indexOf("do NOT guess"));
     const several = (declineLine.match(/Several analyses \(([^)]*)\)/) || [])[1] || "";
     check("multi-step catalog entries (sales next to purchases) go to needs_analysis, not to the cannot-answer list", multi.length > 0 && multi.every((l) => several.includes(l) && !cannot.includes(l)), JSON.stringify({ multi, several }));
-    check("single-entity limits stay in the cannot-answer list (accounting profit among them)", CATALOG.unsupported.filter((u) => !u.multiStep).every((u) => cannot.includes(catalog.unsupportedLabel(u))) && cannot.includes("accounting profit"));
+    check("single-entity limits stay in the cannot-answer list (accounting profit among them)", CATALOG.unsupported.filter((u) => !u.multiStep).every((u) => cannot.includes(u.digestLabel || catalog.unsupportedLabel(u))) && cannot.includes("accounting profit"));
   }
   check("relative periods compare with like_for_like; custom dates only when the user gave them (the year guard refuses invented years)", /compare = the EARLIER period \(like_for_like when it is the one just before a relative period; custom only with dates the user gave\)/.test(text));
   check("CONTRADICTION FIXED: the prompt no longer tells the model to decline returns / credit notes", !/returns\/credit notes/.test(text) && !fs.readFileSync(path.join(__dirname, "src", "services", "query", "planner.js"), "utf8").includes("returns/credit notes"));

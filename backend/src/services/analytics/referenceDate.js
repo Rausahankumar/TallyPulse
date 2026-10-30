@@ -1,6 +1,7 @@
 const Sale = require("../../models/sales.model");
 const Purchase = require("../../models/purchase.model");
 const SyncCheckpoint = require("../../models/syncCheckpoint.model");
+const { successTimeOf } = require("./freshness");
 const { buildVoucherMatchStage } = require("./analyticsScope");
 const { calendarDayOfStored } = require("./dateRanges");
 
@@ -49,11 +50,13 @@ async function voucherDateBounds(Model, tenantId) {
   return { earliest, latest };
 }
 
-// The last successful incremental sync of this tenant (any voucher type). The incremental sync fetches every
-// voucher altered in Tally up to that moment, whatever its date, so data is complete up to it.
+// The last SUCCESSFUL incremental sync of this tenant (any voucher type). The incremental sync fetches every
+// voucher altered in Tally up to that moment, whatever its date, so data is complete up to it. A FAILED attempt is not one: it
+// also sets lastSyncedAt, and counting it made the data look complete through today whenever Tally was unreachable (the
+// coverage then called a month with no data a real zero instead of missing data). freshness.successTimeOf is the one rule.
 async function lastSuccessfulSync(tenantId) {
-  const rows = await SyncCheckpoint.find({ tenantId, lastSyncedAt: { $type: "date" } }).select({ lastSyncedAt: 1, _id: 0 }).lean();
-  const times = rows.map((r) => new Date(r.lastSyncedAt).getTime()).filter(Number.isFinite);
+  const rows = await SyncCheckpoint.find({ tenantId }).select({ lastSyncedAt: 1, lastSuccessAt: 1, lastRunStatus: 1, _id: 0 }).lean();
+  const times = rows.map((r) => successTimeOf(r)).filter(Boolean).map((d) => new Date(d).getTime()).filter(Number.isFinite);
   return times.length ? new Date(Math.max(...times)) : null;
 }
 

@@ -105,7 +105,8 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     const a = getPlannerPrompt();
     const b = getPlannerPrompt();
     check("system prompt and tool are built once and byte-stable (cache-friendly)", a === b && JSON.stringify(a) === JSON.stringify(b));
-    check("tool input schema is closed (additionalProperties:false) with plan/decline/assumptions only", req.tools[0].input_schema.additionalProperties === false && eq(Object.keys(req.tools[0].input_schema.properties).sort(), ["assumptions", "decline", "plan"]));
+    check("tool input schema is closed (additionalProperties:false) with plan/decline/assumptions/language only", req.tools[0].input_schema.additionalProperties === false && eq(Object.keys(req.tools[0].input_schema.properties).sort(), ["assumptions", "decline", "language", "plan"]));
+    check("language is an optional enum of en/hi/hinglish, with no prompt sentence (the system prompt budget is full)", eq([...req.tools[0].input_schema.properties.language.enum].sort(), ["en", "hi", "hinglish"]) && !(req.tools[0].input_schema.required || []).includes("language") && !/language/i.test(req.system[0].text));
     const second = fakeClaude(reply({ plan: plan({}) }));
     await planQuestion("show sales this month", { claudeClient: second, resolveEntity: resolver });
     check("system + tool bytes identical across different questions", JSON.stringify(second.requests[0].system) === JSON.stringify(req.system) && JSON.stringify(second.requests[0].tools) === JSON.stringify(req.tools));
@@ -147,6 +148,14 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     check("planner assumptions are capped (3), cleaned of control chars and length-bounded", r.plannerAssumptions.length === 3 && r.plannerAssumptions.every((a) => a.length <= 160 && !/[\u0000-\u001f]/.test(a)));
     check("result exposes validator warnings/assumptions and usage", Array.isArray(r.warnings) && Array.isArray(r.assumptions) && r.usage.calls === 1);
     check("the returned plan is a plain JSON clone (not Claude's object)", r.plan !== undefined && JSON.stringify(r.plan) === JSON.stringify(JSON.parse(JSON.stringify(r.plan))));
+    // the question's language (presentation only): passed through beside a plan, never fails the turn, never changes the plan
+    const hl = await planQuestion("pichle mahine ki sales", { claudeClient: fakeClaude(reply({ plan: plan({}), language: "hinglish" })) });
+    const noLang = await planQuestion("pichle mahine ki sales", { claudeClient: fakeClaude(reply({ plan: plan({}) })) });
+    check("language: a known value beside a plan is returned; the plan is the same as without it", hl.status === "supported" && hl.language === "hinglish" && noLang.status === "supported" && noLang.language === null && JSON.stringify(hl.plan) === JSON.stringify(noLang.plan), `${hl.status}/${hl.language}/${noLang.language}`);
+    const badLang = await planQuestion("sales", { claudeClient: fakeClaude(reply({ plan: plan({}), language: "french" })) });
+    check("language: an unknown value is dropped (null), the plan is still answered (not a protocol violation)", badLang.status === "supported" && badLang.language === null, `${badLang.status}/${badLang.code}/${badLang.language}`);
+    const decLang = await planQuestion("sales", { claudeClient: fakeClaude(reply({ decline: { code: "needs_clarification", message: "Which year?" }, language: "hi" })) });
+    check("language beside a decline: the decline is unchanged", decLang.status === "needs_clarification" && decLang.reason === "Which year?", `${decLang.status}/${decLang.code}`);
   }
 
   // =============================================================== D. hostile / malformed Claude output

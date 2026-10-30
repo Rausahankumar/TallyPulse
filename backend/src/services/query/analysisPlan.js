@@ -31,7 +31,7 @@ const MAX_STEPS = 4;
 const MAX_INPUTS_PER_STEP = 2;
 const MAX_INPUT_VALUES = catalog.LIMITS.maxInValues; // an in_ci filter takes at most this many values
 const DEFAULT_DEADLINE_MS = 25000; // leaves room inside the chat's 60 s request for planning and answering
-const BINDABLE_DIMS = ["customer", "supplier", "product", "productGroup"];
+const BINDABLE_DIMS = catalog.nameDimensionIds();
 const NAME_DIMS = new Set(BINDABLE_DIMS);
 const VOUCHER_TYPE_BY_ENTITY = { sales: "Sales", purchase: "Purchase", sales_return: "Credit Note", purchase_return: "Debit Note" };
 

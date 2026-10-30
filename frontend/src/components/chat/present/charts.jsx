@@ -1,4 +1,4 @@
-import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Cell } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Cell, Legend } from "recharts";
 
 // Chart components for a presentation model. They plot ONLY the numeric values the backend put in
 // `chart.points` and show the backend's own formatted string (`display`) in tooltips - nothing is derived,
@@ -44,7 +44,7 @@ function CategoryTick({ x, y, payload }) {
   return (
     <text x={x} y={y} dy={4} textAnchor="end" fontSize={11} fill="#344054">
       <title>{full}</title>
-      {shorten(full, 24)}
+      {shorten(full, 20)}
     </text>
   );
 }
@@ -59,7 +59,7 @@ export function RankingChart({ chart }) {
         <BarChart data={chart.points} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }} barGap={2}>
           <CartesianGrid stroke="#eef1f8" horizontal={false} />
           <XAxis type="number" tick={AXIS} axisLine={false} tickLine={false} tickFormatter={tick(chart.money)} />
-          <YAxis type="category" dataKey="label" width={150} tick={<CategoryTick />} axisLine={false} tickLine={false} interval={0} />
+          <YAxis type="category" dataKey="label" width={128} tick={<CategoryTick />} axisLine={false} tickLine={false} interval={0} />
           <Tooltip content={<PointTooltip metric={chart.metric} />} cursor={{ fill: "#f4f6fb" }} />
           {hasPrev && <Bar dataKey="previous" fill={MUTED} radius={[0, 4, 4, 0]} maxBarSize={14} isAnimationActive={false} />}
           <Bar dataKey="value" fill={BRAND} radius={[0, 4, 4, 0]} maxBarSize={hasPrev ? 14 : 20} isAnimationActive={false} />
@@ -87,7 +87,7 @@ export function TrendChart({ chart }) {
   );
 }
 
-/** Previous vs current: two bars, current period highlighted. */
+/** Previous vs current: two bars, current period highlighted (or the bar `chart.highlight` names, e.g. a top group). */
 export function ComparisonChart({ chart }) {
   return (
     <div role="img" aria-label={`${chart.metric}: ${chart.points.map((p) => `${p.label} ${p.display}`).join(" versus ")}`}>
@@ -99,11 +99,48 @@ export function ComparisonChart({ chart }) {
           <Tooltip content={<PointTooltip metric={chart.metric} />} cursor={{ fill: "#f4f6fb" }} />
           <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={56} isAnimationActive={false}>
             {chart.points.map((p, i) => (
-              <Cell key={i} fill={i === chart.points.length - 1 ? BRAND : MUTED} />
+              <Cell key={i} fill={i === (chart.highlight ?? chart.points.length - 1) ? BRAND : MUTED} />
             ))}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+function PairTooltip({ active, payload, series }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div className="max-w-[16rem] rounded-lg border border-surface-border bg-white px-3 py-2 text-xs shadow-card-lg">
+      <p className="mb-1 break-words font-medium text-ink-800">{p.label}</p>
+      {series.map((s) => (
+        <p key={s.key} className="text-ink-700">
+          {s.label}: <span className="font-semibold text-ink-900">{p[`${s.key}Display`]}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** Two series per name (sales and purchases of the same products, same measure and basis). A missing value is no bar, never 0. */
+export function PairedChart({ chart }) {
+  const height = Math.max(160, chart.points.length * 40 + 48);
+  return (
+    <div role="img" aria-label={`${chart.series.map((s) => s.label).join(" and ")} (${chart.metric}) for ${chart.points.length} items`}>
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={chart.points} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }} barGap={2}>
+          <CartesianGrid stroke="#eef1f8" horizontal={false} />
+          <XAxis type="number" tick={AXIS} axisLine={false} tickLine={false} tickFormatter={tick(chart.money)} />
+          <YAxis type="category" dataKey="label" width={128} tick={<CategoryTick />} axisLine={false} tickLine={false} interval={0} />
+          <Tooltip content={<PairTooltip series={chart.series} />} cursor={{ fill: "#f4f6fb" }} />
+          <Legend verticalAlign="top" height={24} iconType="square" wrapperStyle={{ fontSize: 11.5 }} />
+          {chart.series.map((s, i) => (
+            <Bar key={s.key} name={s.label} dataKey={s.key} fill={i === 0 ? BRAND : "#f59e0b"} radius={[0, 4, 4, 0]} maxBarSize={12} isAnimationActive={false} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+      {chart.shownOf && <p className="mt-1 text-[11.5px] text-ink-500">Chart shows the first {chart.shownOf.shown} of {chart.shownOf.total}; the table lists every row.</p>}
     </div>
   );
 }
