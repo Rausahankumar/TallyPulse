@@ -1,12 +1,12 @@
 # TallyPulse code reference (generated from the source)
 
-> **Generated on 2026-10-30 by `docs/gen_ref.js`** from the code in this checkout. To refresh it: install `acorn acorn-jsx` outside the repo (`npm install --no-save acorn acorn-jsx` in a scratch folder) and run `NODE_PATH=<that folder>/node_modules node docs/gen_ref.js`. It is static analysis: only top-level functions are listed, and "Calls other files" shows calls it could resolve from `require()`/`import`; calls through objects passed as arguments are not traced. For the current map of rules and architecture use [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
+> **Generated on 2026-11-20 by `docs/gen_ref.js`** from the code in this checkout. To refresh it: install `acorn acorn-jsx` outside the repo (`npm install --no-save acorn acorn-jsx` in a scratch folder) and run `NODE_PATH=<that folder>/node_modules node docs/gen_ref.js`. It is static analysis: only top-level functions are listed, and "Calls other files" shows calls it could resolve from `require()`/`import`; calls through objects passed as arguments are not traced. For the current map of rules and architecture use [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
 
 Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har function kya karta hai (code ke apne comments se), aur wo kis dusri file ka kaun sa function call karta hai. "Tested by" batata hai kaun si verify-*.js suites us file ko require karti hain.
 
 > Comments code se uthaye gaye hain, isliye English me hain. Simple Hindi/Hinglish samjhane wala hissa alag file `CODE_WALKTHROUGH_HINGLISH.md` me hai (wo haath se likha hai, is file se purana ho sakta hai).
 
-**Is snapshot me:** backend 108 source files (784 functions), frontend 86 files (222 functions/components), backend scripts 110 files.
+**Is snapshot me:** backend 108 source files (783 functions), frontend 86 files (222 functions/components), backend scripts 105 files.
 
 ## Index
 
@@ -21,7 +21,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 **2. Middleware (har request ke raaste me)**
 
 - `src/middleware/auth.js` (80 lines, 1 functions)
-- `src/middleware/errorHandler.js` (88 lines, 3 functions)
+- `src/middleware/errorHandler.js` (111 lines, 4 functions)
 - `src/middleware/httpSecurity.js` (50 lines, 2 functions)
 - `src/middleware/rateLimit.js` (144 lines, 4 functions)
 - `src/middleware/requestId.js` (27 lines, 1 functions)
@@ -40,12 +40,12 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **4. Controllers (request handle)**
 
-- `src/controllers/analyticsController.js` (493 lines, 6 functions)
+- `src/controllers/analyticsController.js` (475 lines, 5 functions)
 - `src/controllers/authController.js` (480 lines, 7 functions)
 - `src/controllers/chatController.js` (243 lines, 5 functions)
 - `src/controllers/importController.js` (285 lines, 6 functions)
 - `src/controllers/odbcController.js` (146 lines, 2 functions)
-- `src/controllers/reportController.js` (223 lines, 6 functions)
+- `src/controllers/reportController.js` (212 lines, 5 functions)
 - `src/controllers/syncRecoveryController.js` (86 lines, 1 functions)
 - `src/controllers/syncStatusController.js` (123 lines, 4 functions)
 - `src/controllers/voucherController.js` (135 lines, 7 functions)
@@ -339,13 +339,13 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls other files: `src/models/user.model.js → findById()`
 
 ## `src/middleware/errorHandler.js`
-**Used by:** `src/controllers/authController.js`, `src/controllers/chatController.js`, `src/controllers/importController.js`, `src/middleware/upload.js`, `src/services/auth/companyContext.js`, `server.js`
+**Used by:** `src/controllers/analyticsController.js`, `src/controllers/authController.js`, `src/controllers/chatController.js`, `src/controllers/importController.js`, `src/controllers/reportController.js`, `src/middleware/upload.js`, `src/services/auth/companyContext.js`, `server.js`
 
-**Tested by:** `verify-security-audit.js`
+**Tested by:** `verify-route-handler.js`, `verify-security-audit.js`
 
 **Imports:** (none)
 
-**Exports:** `errorHandler`, `notFoundHandler`, `userError`, `GENERIC_SERVER_ERROR`
+**Exports:** `errorHandler`, `notFoundHandler`, `userError`, `routeHandler`, `GENERIC_SERVER_ERROR`
 
 - **`userError()`** — line 40
   - Purpose: Error to throw for a client mistake whose message is safe to show.
@@ -353,6 +353,8 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: (no comment in code — see name and calls below)
 - **`errorHandler()`** — line 52
   - Purpose: eslint-disable-next-line no-unused-vars
+- **`routeHandler()`** — line 91
+  - Purpose: Route wrapper used by the analytics and report controllers (one copy of what each used to define itself). A thrown error that carries a 4xx `status` is a validation error whose message the controller wrote: it is returned as is. Anything else is logged under `logLabel` and answered with the generic message (audit F-12). This is NOT the same rule as errorHandler above (which shows a 4xx message only when `userFacin...
 
 ## `src/middleware/httpSecurity.js`
 **Used by:** `server.js`
@@ -569,25 +571,23 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **Tested by:** `verify-insights.js`
 
-**Imports:** `src/services/analytics/salesAnalytics.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/insights.js`, `src/services/analytics/dateRanges.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`
+**Imports:** `src/services/analytics/salesAnalytics.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/insights.js`, `src/services/analytics/dateRanges.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`, `src/middleware/errorHandler.js`
 
 **Exports:** `getDiscountSummary`, `getProductRates`, `getProductMargin`, `getProductTrend`, `getSupplierRates`, `getSalesSummary`, `getSalesComparison`, `getTopProducts`, `getGrowingProducts`, `getDecliningProducts`, `getTopCustomers`, `getSalesTrend`, `getCustomerCounts`, `getStockGroupPerformance`, `getPurchaseSummary`, `getPurchaseComparison`, `getTopSuppliers`, `getPurchaseTrend`
 
-- **`parsePeriodFromQuery()`** — line 39
+- **`parsePeriodFromQuery()`** — line 40
   - Purpose: `referenceDate` anchors what "current_month"/"previous_month" actually mean - see services/analytics/referenceDate.js for why this is the tenant's own latest voucher date, not necessarily the wall clock. Every caller below computes it once per request and threads it through; period="custom" ignores it entirely (an explicit from/to needs no anchor).
   - Calls other files: `src/services/analytics/dateRanges.js → resolveRequestPeriod()`
-- **`parseTrendPeriodFromQuery()`** — line 65
+- **`parseTrendPeriodFromQuery()`** — line 66
   - Purpose: Default window for a trend chart when the caller hasn't picked an explicit range: the last 6 complete months ending at the tenant's own reference date (see above) - not a hardcoded set of months.
   - Calls other files: `src/services/analytics/dateRanges.js → customRange()`, `src/services/analytics/dateRanges.js → lastNMonthsEnding()`
-- **`parseComparisonTypeFromQuery()`** — line 77
+- **`parseComparisonTypeFromQuery()`** — line 78
   - Purpose: (no comment in code — see name and calls below)
-- **`parseLimitFromQuery()`** — line 91
+- **`parseLimitFromQuery()`** — line 92
   - Purpose: (no comment in code — see name and calls below)
-- **`parseStockGroupPeriodFromQuery()`** — line 111
+- **`parseStockGroupPeriodFromQuery()`** — line 112
   - Purpose: Stock Group performance uses the NEW, richer period engine (periodEngine.js) - its own period-kind set (17 kinds, see that file), completely separate from PERIOD_KINDS/parsePeriodFromQuery above, which stays exactly as it was for every existing endpoint. Adding this parser changes no existing endpoint's accepted query params or behavior.
   - Calls other files: `src/services/analytics/periodEngine.js → resolvePeriod()`, `src/services/analytics/periodEngine.js → resolveComparisonPeriod()`, `src/services/analytics/periodEngine.js → resolveSamePeriodLastYear()`
-- **`handle()`** — line 157
-  - Purpose: Wraps a handler so any thrown error (bad query params, or anything unexpected) becomes a clean HTTP error response instead of a 500 with no message - matches the pattern already used across authController/importController.
 
 ## `src/controllers/authController.js`
 **Used by:** `src/routes/authRoutes.js`
@@ -688,22 +688,20 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/controllers/reportController.js`
 **Used by:** `src/routes/reportRoutes.js`
 
-**Imports:** `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/analytics/reportAnalytics.js`, `src/services/analytics/analyticsScope.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`, `src/services/analytics/dateRanges.js`
+**Imports:** `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/analytics/reportAnalytics.js`, `src/services/analytics/analyticsScope.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`, `src/services/analytics/dateRanges.js`, `src/middleware/errorHandler.js`
 
 **Exports:** `getProductReport`, `getCustomerReport`, `exportSalesReport`, `exportPurchaseReport`, `exportProductReport`, `exportCustomerReport`
 
-- **`parsePeriodFromQuery()`** — line 24
+- **`parsePeriodFromQuery()`** — line 25
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/analytics/dateRanges.js → resolveRequestPeriod()`
-- **`parsePagination()`** — line 46
+- **`parsePagination()`** — line 47
   - Purpose: (no comment in code — see name and calls below)
-- **`handle()`** — line 55
-  - Purpose: (no comment in code — see name and calls below)
-- **`csvField()`** — line 73
+- **`csvField()`** — line 62
   - Purpose: Minimal RFC 4180 CSV field escaping - wraps in quotes and doubles any embedded quote whenever the field contains a comma, quote or newline (real party/item names can contain any of these, e.g. `M/S ABC, INC.`).
-- **`csvRow()`** — line 82
+- **`csvRow()`** — line 71
   - Purpose: (no comment in code — see name and calls below)
-- **`sendCsv()`** — line 86
+- **`sendCsv()`** — line 75
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `csvRow()`
 
@@ -3109,7 +3107,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/planner.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `eval-nlu-models.js`, `verify-ai-cost-path.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js` (+23 more)
+**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `verify-ai-cost-path.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js` (+20 more)
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/providerAttempts.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/followUp.js`, `src/services/query/plannerResponseCache.js`
 
@@ -4951,8 +4949,6 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-month-boundary-dates.js` (179 lines) — Month-boundary date regression: "previous month" and every other month/year shift must land in the right calendar month on EVERY anchor day - including 29-31 Mar, 31 May/Jul/Oct/Dec, 31 Jan, 29-30 Apr, 31 Aug and 29 Feb, where a plain `new Date(y, m - 1, day)` rolls over into the wrong month. Checked on every surface that resolves periods: dateRanges (shared helpers) -> periodEngine -> Query DSL validator (planner/engine) REST analytics/report API (dateRanges.resolveRequestPeriod / resolveReques _Uses:_ `src/services/analytics/dateRanges.js`, `src/services/analytics/periodEngine.js`, `src/services/query/validator.js`
 - `verify-multi-company.js` (256 lines) — Multi-company-per-account verification, over the real HTTP routes, with the "Connect Tally" flow (no GUID typed anywhere). Product rules under test: - one TallyPulse account (email) can hold several companies; connecting one never needs a second email - the company connected is whichever one TallyPrime has open - detected by the backend, never supplied by the client - the first company needs only the session, further ones re-check the password - switching between the account's own companies need _Uses:_ `src/config/db.js`, `src/models/user.model.js`, `src/models/company.js`, `src/models/userCompanyAccess.model.js`, `src/routes/authRoutes.js` (+1 more)
 - `verify-nlu-eval.js` (539 lines) — NLU evaluation harness: measures how well TallyPulse understands natural-language questions, against eval/nlu-corpus.json (synthetic names, expected plans in the existing queryPlan v1 contract). The planner is the only interpreter (there is no deterministic router), so the evaluation is of the planner. node verify-nlu-eval.js FREE: corpus self-check + scoring self-tests with fake providers (period mutations, a one-field-at-a-time mutation test of the comparator, the UTC pin, and the 380-row buck _Uses:_ `src/services/query/planner.js`, `src/services/query/queryPlan.schema.js`
-- `verify-nvidia-eval.js` (201 lines) — Offline tests of the evaluation-only NVIDIA client (eval/nvidiaClient.js) and its CLI wiring. No network: every request goes to a local stub server on 127.0.0.1; any other fetch throws. No API key is read from backend/.env (a synthetic marker key is used). Covers: the reproducible reasoning switch (--nvidia-thinking / NVIDIA_THINKING), requested vs verified structured output, redaction of everything persisted or thrown, and isolation from OpenRouter. Run: node verify-nvidia-eval.js _Uses:_ `src/services/query/planner.js`
-- `verify-openrouter-eval.js` (752 lines) — The multi-model NLU evaluation (eval-nlu-models.js, eval/openRouterClient.js, eval/nluModelRunner.js, eval/nluScoring.js). Offline and free: OpenRouter is a local stub HTTP server, the key is a fake, no Claude call is made, and nothing touches a database or Tally. It proves: the OpenRouter request is built correctly and identically for every model, the key never leaks, malformed / rejected / failed / timed-out answers are told apart, concurrency is bounded, scoring marks a plan that executes but _Uses:_ `src/services/query/planner.js`
 - `verify-overall-direction.js` (102 lines) — The overall result governs the answer (evidence.overallOf): the measured total's direction is stated first, in words, and when the plan's own breakdowns look the other way (ranked by / filtered to falls while the total rose, or the reverse) the answer says the comparison does not show the opposite. Customer/product declines and zero sales stay secondary findings. Grounded fixture: the reported June -> July 2025 comparison - sales invoice amount ₹40,85,714.10 -> ₹57,16,599.12 (+₹16,30,885.02, +39 _Uses:_ `src/services/query/evidence.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/query/queryChat.js`
 - `verify-period-engine.js` (235 lines) — Regression tests for periodEngine.js - the new, deterministic, LLM-independent date-period resolver (Part 1 of the Stock Group analytics foundation). Every expected value below was independently computed (printed via a throwaway script, cross-checked by hand against the calendar) BEFORE being hardcoded here - never generated by calling the function under test and trusting its own output. All comparisons use .toISOString(). The engine resolves calendar days in the server's local timezone, and the _Uses:_ `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`
 - `verify-plain-answer.js` (128 lines) — The plain-language opening of an analysis answer (plainAnswer.js): the same verified facts as the detailed findings, in the question's language (en / hinglish / hi, from the analysis planner's structured `language`), short and in business words - without changing a figure or turning a possibility into a fact. Grounded fixture (reported): Ashok Traders sales ₹4,77,389.87 (Jul 2025) -> ₹1,34,075.39 (Aug 2025), -₹3,43,314.48 (71.9%); RANGEELA TEMPRA CLR 36ML sales ₹1,45,463.04 -> none recorded; its _Uses:_ `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/queryChat.js`
@@ -4978,6 +4974,7 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-return-query.js` (101 lines) — Sales/purchase return query capability (LedgerMaster phase follow-on): the sales_return/purchase_return catalog entities end-to-end against real synthetic AdjustmentNote documents (engine vs a hand-computed oracle). (Phrasing -> plan is the planner's job; see verify-query-planner.js.) Complements verify-adjustment-note.js (sync pipeline) and verify-query-engine.js/verify-query-dsl.js (unaffected regression, already re-run for this phase). Synthetic tenant only. Run: node verify-return-query.js _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/semanticCatalog.js`
 - `verify-return-ranking.js` (159 lines) — Return Analytics: Top-N customer/supplier ranking by sales/purchase return amount (execute.js/compile.js unchanged - groupBy+sort+limit, already generic). Complements verify-return-analytics.js (totals/trend/comparison) and verify-return-query.js. This suite is the ranking-specific checklist: top 1/5/10, no-N default, both directions, date filtering, tenant isolation, zero vs missing coverage, deterministic ties and cache hits. (Phrasing -> plan is the planner's job; see verify-query-planner.js. _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/answerCache.js`
 - `verify-revenue-analysis-guard.js` (103 lines) — The revenue basis inside an ANALYSIS (analysisPlanner.revenueGuard). "Revenue" means sales + lineAmount (pre-tax item value). An analysis is judged as a whole: it needs one revenue step, may carry supporting steps (quantity, counts, breakdowns, sales-side insight tools) under their own labels, and must never show a tax-inclusive voucher total or a non-sales entity beside "revenue". Offline: no database, no network, no model; every name and figure is SYNTHETIC. Run: node verify-revenue-analysis-g _Uses:_ `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/turnTelemetry.js`
+- `verify-route-handler.js` (96 lines) — routeHandler (middleware/errorHandler.js): the one copy of the wrapper the analytics and report controllers use. What it must keep doing (it replaced two identical copies): - an error with a 4xx `status` is answered with that status and ITS OWN message (the controllers write those messages); - any other error (no status, or 5xx) is answered 500 with the generic message, never the error text, and is logged under the controller's label; - a handler that does not throw is left alone. It is delibera _Uses:_ `src/middleware/errorHandler.js`
 - `verify-sales-import.js` (197 lines) — Sales import pipeline, end to end against MongoDB: importTallySales (the function behind POST /api/import/tally-json) -> resolveTenantContext (Company) -> extractVoucherCollection -> importParsedVouchers -> processSingleVoucher (voucherPersistence.js, Sale model). The background sync worker and "Run Sales Sync Now" (importTallySalesFromTally) end in the same processSingleVoucher. Covers: a multi-voucher file is persisted, the stored document matches the mapper contract, a re-import is idempotent _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/services/import/tallySalesImport.js`
 - `verify-sales-mapper.js` (112 lines) — Tally voucher -> Sale document: parser (tallyParser.parseTallyVoucher) -> mapper (salesMapper.mapTallySale) -> the Sale schema, with the guarantees the sync and the manual import rely on. Pure and offline: synthetic vouchers defined inline, no MongoDB connection, no Tally, no network. Run: node verify-sales-mapper.js _Uses:_ `src/services/parser/tallyParser.js`, `src/services/mapper/salesMapper.js`, `src/models/sales.model.js`
 - `verify-sales-sync-worker.js` (204 lines) — Sales sync worker, end to end: runSyncForCompanyModule(company, SALES_SYNC_MODULE) with the REAL module - the real odbcService fetchers (getPendingVoucherAlterIds, getSalesVouchersSinceAlterId) talking HTTP to a Tally-shaped stub on 127.0.0.1, the open-company guard, voucher-type classification, batch ownership, and the real Sales persistence (processSingleVoucher -> Sale). verify-sync-batching.js covers batching with injected Purchase fetchers; this suite covers the Sales module itself, which n _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/sync/tallySyncWorker.js`, `src/services/tally/voucherTypeClassifier.js`
@@ -5006,7 +5003,6 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `eval-cache-baseline.js` (179 lines) — Cache and AI-cost baseline (Phase 0, measurement only): one fixed, scripted conversation run through the REAL chat turn (queryChat.tryAnswerWithQueryEngine), twice - with the planner response cache and the answer cache OFF, then ON - and the per-turn counters the turn itself reports (telemetry event -> AiTurnUsage record): model calls, planner-cache hits/misses/bypasses, engine executions by answer-cache status, insight runs. Offline and deterministic: a scripted model (no network, no paid call) _Uses:_ `src/services/query/queryChat.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js`, `src/services/query/turnTelemetry.js` (+3 more)
 - `eval-findings-real.js` (619 lines) — REAL-DATA VALIDATION of the analysis findings (services/query/evidence.js), READ-ONLY. Fixed, scripted analysis plans (no model) run through the real executeAnalysisPlan and formatAnalysisAnswer on ONE real company, and every figure is checked against an INDEPENDENTLY written aggregate (its own date bounds, grouping and sums; no engine code). Acceptance criteria: A1 numbers - figures in findings equal the reference aggregates to the paisa; breakdowns add up to their change A2 incomplete - a peri _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
 - `eval-investigations.js` (211 lines) — Planted-cause investigation evaluation (manual; never part of Ask AI). Seeds the synthetic company of eval/investigation/scenarios.js (known, planted causes) into a LOCAL test database, asks each scenario's questions through the real chat turn (queryChat.tryAnswerWithQueryEngine: planner -> analysis plan -> validator -> engine / insight tools -> answer), grades every answer with eval/investigation/grader.js and writes a report to eval/results/ (git-ignored). The data is removed at the end. Modes _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+4 more)
-- `eval-nlu-models.js` (332 lines) — Multi-model NLU evaluation: measures how well each model turns the corpus questions into TallyPulse Query Plans, with the existing Claude planner as the baseline. EVALUATION ONLY - the production Ask AI path never uses OpenRouter. Every model is run through the production planQuestion() (same prompt, Query Plan contract, validator and guards) and every answer is scored by the same semantic comparator (eval/nluScoring.js) against eval/nlu-corpus.json. The questions and plans are synthetic: nothin _Uses:_ `src/services/query/planner.js`
 - `eval/cost/harness.js` (132 lines) — AI cost-path harness: drives the REAL chat controller (sendChatMessage) -> queryChat -> the shared planner response cache -> the REAL planner client and Anthropic SDK -> an HTTP endpoint. The endpoint is either a local stand-in (createStub: free, deterministic, records the exact wire payload - application behaviour only, NEVER provider evidence) or the real provider (live runs, see eval-ai-cost-live.js). Only the DATA side is injected (engine execution, freshness, date context, name resolution)  _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js` (+1 more)
 - `eval/cost/run-baseline.js` (16 lines) — Prints what the ORIGINAL code does for Tests A-I and the SDK-retry check, through the real chat controller, against a local stand-in endpoint (no provider, no spend). Run: node eval/cost/run-baseline.js [--json=<file>]
 - `eval/cost/scenarios.js` (125 lines) — The cost-path scenarios (Tests A-I of the AI cost audit), run through the real controller by harness.js. A scenario returns plain observations: what the HTTP endpoint ACTUALLY received (stub.calls = every request the SDK sent, including SDK-internal retries) next to what telemetry REPORTED for the same turn. Nothing is asserted here.
@@ -5014,11 +5010,8 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `eval/evalTimezone.js` (33 lines) — The NLU evaluation's time zone: UTC, set explicitly. The scorer resolves relative periods ("previous month", "this FY") and explicit custom ranges to concrete dates and compares those dates. Both resolutions use the machine's LOCAL time zone, so on a machine west of UTC the same two plans - a relative period and the custom range that means the same days - resolve to different dates and one is scored wrong (observed under America/New_York). CI happens to run in UTC; the evaluator must not depend
 - `eval/investigation/grader.js` (103 lines) — Deterministic grader for investigation answers (evaluation only). No model is involved: every criterion is a check on the answer text (or, for "context", on what the chat turn carried forward), so the same answer always gets the same grade. Criterion kinds: mentions - the text contains one of anyOf (string: case-insensitive substring; RegExp: tested as is) number - the text contains the number (Indian or plain digit grouping, ₹ optional, sign ignored) within tolerance discloses - the text matche
 - `eval/investigation/scenarios.js` (285 lines) — Planted-cause investigation scenarios (evaluation only; nothing under src/ requires this file). One synthetic company, anchored to the FOUR complete calendar months before the run date (M1 oldest .. M4 = the previous month), so undated questions ("where are orange sales declining?") have data in the periods the assistant would choose. The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked in verify-investigation-eval.js): - Apple: stable for
-- `eval/nluModelRunner.js` (482 lines) — Library behind eval-nlu-models.js: runs the SAME corpus rows through the production planner (planQuestion, unchanged) with different models behind the planner's client seam, scores every answer with the shared semantic scorer, and aggregates the measurements. NLU only: nothing here touches a database, Tally or real business data - the corpus is synthetic. Pure logic and file caching live here so they can be tested offline; the CLI only wires arguments, keys and output. _Uses:_ `src/services/query/planner.js`
-- `eval/nluScoring.js` (333 lines) — The NLU scoring used by every evaluation of the planner (verify-nlu-eval.js and eval-nlu-models.js): the corpus, the semantic plan comparator and the outcome scoring. One implementation, so Claude and every other model are judged by exactly the same rules. Plans are compared SEMANTICALLY: both go through the real validator (relative periods resolve against the corpus reference date, defaults are applied) and are compared field by field - never as JSON text. A plan that validates and compiles but _Uses:_ `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/compile.js`, `src/services/query/semanticCatalog.js`, `src/services/query/entityResolver.js`
-- `eval/nvidiaClient.js` (298 lines) — NVIDIA API Catalog adapter for the planner's model seam - EVALUATION ONLY. Nothing under src/ requires this file: the production Ask AI path never reaches NVIDIA. Same seam as eval/openRouterClient.js: claudeClient(request, { signal, meta }) -> an Anthropic-shaped response ({ content: [{ type: "tool_use", name, input }], usage }). The request is sent to NVIDIA's hosted, OpenAI-compatible endpoint (official API reference for nvidia/nemotron-3-super-120b-a12b: POST https://integrate.api.nvidia.com
-- `eval/openRouterClient.js` (434 lines) — OpenRouter adapter for the planner's client seam - EVALUATION ONLY. The planner (src/services/query/planner.js) talks to its model through ONE seam: claudeClient(request, { signal }) -> an Anthropic-shaped response where `request` is { system, messages, tools, tool_choice, max_tokens } and the response carries `content: [{type:"tool_use", name, input}]` and `usage`. This adapter implements the same seam on top of OpenRouter's OpenAI-compatible chat-completions API, so planQuestion() runs unchang
-- `eval/promptAblations.js` (47 lines) — Evaluation-only prompt ablations. Each one changes ONE thing in the system text of the planner request, so a live run of the same corpus rows shows which sentence a behaviour depends on. They are applied by eval-nlu-models.js (--ablate=<name>) to the request just before it is sent; planner.js and the catalog are never modified, and nothing under src/ imports this file. History: the 77-call ablation (no-limit-bounded, restore-product-rule, no-headline) was run against the prompt of that time; its
+- `eval/nluModelRunner.js` (285 lines) — Library behind verify-nlu-eval.js: runs the corpus rows through the production planner (planQuestion, unchanged) behind the planner's client seam, scores every answer with the shared semantic scorer, and aggregates the measurements. NLU only: nothing here touches a database, Tally or real business data - the corpus is synthetic. _Uses:_ `src/services/query/planner.js`
+- `eval/nluScoring.js` (333 lines) — The NLU scoring used by every evaluation of the planner (verify-nlu-eval.js): the corpus, the semantic plan comparator and the outcome scoring. One implementation, so Claude and every other model are judged by exactly the same rules. Plans are compared SEMANTICALLY: both go through the real validator (relative periods resolve against the corpus reference date, defaults are applied) and are compared field by field - never as JSON text. A plan that validates and compiles but means something else i _Uses:_ `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/compile.js`, `src/services/query/semanticCatalog.js`, `src/services/query/entityResolver.js`
 
 ## Operator and migration scripts
 

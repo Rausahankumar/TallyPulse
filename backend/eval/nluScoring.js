@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * The NLU scoring used by every evaluation of the planner (verify-nlu-eval.js and eval-nlu-models.js): the corpus, the
+ * The NLU scoring used by every evaluation of the planner (verify-nlu-eval.js): the corpus, the
  * semantic plan comparator and the outcome scoring. One implementation, so Claude and every other model are judged by
  * exactly the same rules.
  *

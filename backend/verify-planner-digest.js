@@ -7,7 +7,7 @@
  * product), list what cannot be answered, and stay small.
  *
  * Offline and free: no model is called. What this proves is that the prompt carries the information and that it agrees with the corpus
- * expectations and the validator. Whether a model USES it is measured only by a live evaluation (eval-nlu-models.js).
+ * expectations and the validator. Whether a model USES it is measured only by a live evaluation (verify-nlu-eval.js --live).
  *
  * Run: node verify-planner-digest.js
  */

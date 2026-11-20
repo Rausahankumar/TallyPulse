@@ -582,7 +582,7 @@ question (+ the previous turn's structured plan, for follow-ups)
 
 **Failure behaviour:** planner unreachable or unusable → a fixed "planner unavailable" message (no figure, no second Claude path); query too slow/large or any unexpected error → a fixed failure message; period outside the synced window → a missing-data refusal; unsupported or ambiguous question → the planner's decline or clarification.
 
-**Evaluation:** `backend/verify-nlu-eval.js` scores the planner against `backend/eval/nlu-corpus.json` (synthetic names, expected Query Plans). Its default mode is a free self-check; `--live --limit=N` makes one planner call per question. `backend/eval-nlu-models.js` compares models: it runs the same corpus rows through the unchanged planner with the Claude baseline and any OpenRouter models (`OPENROUTER_EVAL_MODELS`, `OPENROUTER_API_KEY`), scores every answer with the same semantic comparator (a plan that executes but means the wrong thing is *wrong*), and reports exact / acceptable / wrong / invalid / failure rates, latency percentiles, tokens and per-category breakdowns (language, follow-up, comparison, ranking, period, grouping, entity, capability-gap, clarification). It uses bounded concurrency (`NLU_EVAL_CONCURRENCY`) and a response cache keyed by the planner prompt/schema fingerprint, writes git-ignored reports to `backend/eval/results/`, and is evaluation-only: the OpenRouter client lives under `backend/eval/` and no production file imports it. OpenRouter use is **free-only**: each model id must be an exact `:free` id whose every price field in the live catalogue is 0 (otherwise it is recorded as unavailable and not called, never replaced), requests name that one model, forbid provider fallbacks and cap the price at 0, routers (`openrouter/*`) are refused, and a response reporting a cost halts the model. OpenRouter limits free models to 20 requests/minute and, for an account that never purchased credits, 50 requests/day, so `--sample=N` evaluates N evenly spaced rows, requests are paced (`--rpm`), a model refused three times in a row is halted, and cached answers let later days continue where a run stopped.
+**Evaluation:** `backend/verify-nlu-eval.js` scores the planner against `backend/eval/nlu-corpus.json` (synthetic names, expected Query Plans). Its default mode is a free self-check; `--live --limit=N` makes one planner call per question.
 
 ---
 
@@ -605,7 +605,7 @@ There is no test framework: every suite is a plain `node verify-*.js` script in 
 |---|---|
 | Query pipeline | `verify-query-dsl`, `verify-query-engine`, `verify-query-cache`, `verify-query-parity` (real data), `verify-query-parity-synthetic` (the same `runParity()` on two synthetic tenants), `verify-query-planner`, `verify-planner-digest`, `verify-query-chat`, `verify-semantic-foundation`, `verify-entity-resolver`, `verify-presentation` |
 | Chat, cost, telemetry | `verify-chat-management`, `verify-cost-forensic`, `verify-ai-telemetry`, `verify-ai-usage-persist` |
-| Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-openrouter-eval` (offline tests of the multi-model evaluation, local stub server), `eval-nlu-models.js` (manual; the Claude baseline is billed, OpenRouter models are free-only), `verify-planner-live-eval` (manual, real tenant, billed) |
+| Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-planner-live-eval` (manual, real tenant, billed) |
 | Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-timezone-boundaries` (six server zones), `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
 | Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-purchase-mapper`, `verify-migrate-voucher-total-amount` |
 | Import and sync pipeline (stub Tally server, no live Tally) | `verify-sales-import`, `verify-sales-sync-worker` |
@@ -722,7 +722,7 @@ This is a dated record; the durable rules it produced are in `PROJECT_CONTEXT.md
 - **Runtime dependencies:** all backend and frontend runtime dependencies have live importers.
 - **Manual import:** the pipeline (`/api/import/*`, `services/import/*`) is used by the frontend and reuses `voucherPersistence`.
 - **Unused code:** `ErrorState.jsx` was the only unreachable frontend file.
-- **OpenRouter:** `backend/eval/` is evaluation tooling only. Production Ask AI calls Anthropic through `planner.js`.
+- **AI provider:** Production Ask AI calls Anthropic through `planner.js`. The OpenRouter/NVIDIA multi-model evaluation tooling was removed (it was not used).
 - **Next:** the remaining cleanup batches and the agreed AI direction are in `PROJECT_CONTEXT.md` §L.
 
 ---

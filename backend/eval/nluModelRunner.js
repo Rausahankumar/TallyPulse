@@ -1,11 +1,9 @@
 "use strict";
 
 /**
- * Library behind eval-nlu-models.js: runs the SAME corpus rows through the production planner (planQuestion, unchanged) with
- * different models behind the planner's client seam, scores every answer with the shared semantic scorer, and aggregates the
- * measurements. NLU only: nothing here touches a database, Tally or real business data - the corpus is synthetic.
+ * Library behind verify-nlu-eval.js: runs the corpus rows through the production planner (planQuestion, unchanged) behind the
+ * planner's client seam, scores every answer with the shared semantic scorer, and aggregates the measurements. NLU only: nothing here touches a database, Tally or real business data - the corpus is synthetic.
  *
- * Pure logic and file caching live here so they can be tested offline; the CLI only wires arguments, keys and output.
  */
 
 const crypto = require("crypto");
@@ -19,33 +17,6 @@ const pct = (part, whole) => (whole ? Math.round((part / whole) * 1000) / 10 : n
 
 // ---------------------------------------------------------------------------------------------------------------
 // Targets (what is being evaluated)
-
-const MODEL_SPEC = /^(?:openrouter:)?([A-Za-z0-9][A-Za-z0-9._~:@+-]*\/[A-Za-z0-9][A-Za-z0-9._~:@+/-]*)$/;
-
-/**
- * "claude" -> the existing Claude planner (the baseline); "openrouter:vendor/model" or a bare "vendor/model" -> an OpenRouter
- * model. Duplicates are dropped; anything else is an error (nothing is guessed).
- */
-function parseModelSpecs(list) {
-  const out = [];
-  const seen = new Set();
-  for (const raw of String(list || "").split(",").map((s) => s.trim()).filter(Boolean)) {
-    const spec = raw.toLowerCase() === "claude" ? { provider: "claude", model: null, label: "claude" } : null;
-    let parsed = spec;
-    // "nvidia:vendor/model" -> the NVIDIA API Catalog (eval/nvidiaClient.js). Only with this explicit prefix: a bare id stays OpenRouter.
-    const nv = !parsed && raw.match(/^nvidia:([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)$/);
-    if (nv) parsed = { provider: "nvidia", model: nv[1], label: `nvidia:${nv[1]}` };
-    if (!parsed) {
-      const m = raw.match(MODEL_SPEC);
-      if (!m) throw new Error(`Unrecognised model "${raw}": use "claude" or an OpenRouter id like "vendor/model-name".`);
-      parsed = { provider: "openrouter", model: m[1], label: m[1] };
-    }
-    if (seen.has(parsed.label)) continue;
-    seen.add(parsed.label);
-    out.push(parsed);
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Row selection and cache keys
@@ -69,82 +40,10 @@ function selectRows(rows, { group, ids, includeFollowUps = true, includeGaps = t
   return Number.isInteger(limit) && limit > 0 ? out.slice(0, limit) : out;
 }
 
-/** Everything that changes what a model is asked: planner prompt + tool schema + token cap + corpus version + client settings. */
-function configFingerprint(clientSettings = {}) {
-  const prompt = getPlannerPrompt();
-  return sha(JSON.stringify({ system: prompt.system.map((b) => b.text), tool: prompt.tool, maxTokens: PLANNER_MAX_TOKENS, corpusVersion: scoring.corpus.version, referenceDate: scoring.corpus.referenceDate, client: clientSettings })).slice(0, 16);
-}
-
 const rowKey = (row) => sha(`${row.id}\u0000${row.question}\u0000${JSON.stringify(row.previousPlan || null)}`).slice(0, 24);
-
-/**
- * File-backed cache of raw model answers for ONE (provider, model, configuration). The configuration fingerprint is part of the
- * file name, so answers produced under a different prompt, schema, corpus or client setting are never reused. Failures
- * (timeouts, HTTP errors) are never cached - only answers the model actually gave.
- */
-class ResponseCache {
-  constructor(file) {
-    this.file = file;
-    this.entries = {};
-    this.dirty = false;
-    if (file && fs.existsSync(file)) {
-      try {
-        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-        if (parsed && parsed.version === 1 && parsed.entries && typeof parsed.entries === "object") this.entries = parsed.entries;
-      } catch (e) {
-        this.entries = {}; // an unreadable cache is just a cold cache
-      }
-    }
-  }
-
-  get(key) {
-    return this.entries[key] || null;
-  }
-
-  set(key, entry) {
-    this.entries[key] = entry;
-    this.dirty = true;
-  }
-
-  flush() {
-    if (!this.file || !this.dirty) return;
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries: this.entries }));
-    fs.renameSync(tmp, this.file);
-    this.dirty = false;
-  }
-}
-
-const cacheFileName = (target, fingerprint) => `${target.provider}-${String(target.model || "default").replace(/[^A-Za-z0-9._-]+/g, "_")}-${fingerprint}.json`;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Bounded concurrency
-
-/** Run `worker(item, index)` for every item with at most `concurrency` in flight; results keep the input order. */
-async function runPool(items, concurrency, worker) {
-  const limit = Math.max(1, Math.floor(Number(concurrency)) || 1);
-  const results = new Array(items.length);
-  let next = 0;
-  let inFlight = 0;
-  let maxInFlight = 0;
-  async function lane() {
-    for (;;) {
-      const i = next;
-      next += 1;
-      if (i >= items.length) return;
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      try {
-        results[i] = await worker(items[i], i);
-      } finally {
-        inFlight -= 1;
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
-  return { results, maxInFlight };
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // One row, one target
@@ -264,18 +163,6 @@ async function evaluateRow({ row, target, resolver, cache }) {
   };
 }
 
-/** A request-rate cap: successive provider requests start at least 60000/rpm ms apart. Shared by every model on one provider. */
-function createSpacer(requestsPerMinute, { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
-  const gap = Math.ceil(60000 / Math.max(1, requestsPerMinute));
-  let nextAt = 0;
-  return async function throttle() {
-    const startAt = Math.max(now(), nextAt);
-    nextAt = startAt + gap;
-    const wait = startAt - now();
-    if (wait > 0) await sleep(wait);
-  };
-}
-
 // ---------------------------------------------------------------------------------------------------------------
 // Aggregation
 
@@ -362,13 +249,6 @@ function partitionProblem(summary) {
   return parts.join("; ") || "the partition accounting is inconsistent";
 }
 
-/** The assertion: the bucket totals equal the evaluated rows (only harness errors and skipped rows are outside), or it throws. */
-function assertPartition(summary) {
-  const problem = partitionProblem(summary);
-  if (problem) throw new Error(`Evaluation accounting error: ${problem}.`);
-  return summary;
-}
-
 /** Per-category summary (a row can count in several categories). */
 function breakdown(records) {
   const out = {};
@@ -388,17 +268,6 @@ const col = (v, w) => String(v === null || v === undefined ? "-" : v).padEnd(w);
 const rcol = (v, w) => String(v === null || v === undefined ? "-" : v).padStart(w);
 const fmtPct = (v) => (v === null || v === undefined ? "-" : `${v.toFixed(1)}%`);
 
-function comparisonTable(targets) {
-  const nameWidth = Math.max(22, ...targets.map((t) => t.label.length + 1));
-  const head = `${col("Model", nameWidth)}${rcol("Exact", 8)}${rcol("Accept", 9)}${rcol("Wrong", 8)}${rcol("FalseRef", 10)}${rcol("KindDiff", 10)}${rcol("Invalid", 9)}${rcol("Fail", 8)}${rcol("NotEval", 9)}${rcol("P50 ms", 9)}${rcol("P95 ms", 9)}${rcol("In tok", 10)}${rcol("Out tok", 10)}`;
-  const lines = [head, "-".repeat(head.length)];
-  for (const t of targets) {
-    const s = t.summary;
-    lines.push(`${col(t.label, nameWidth)}${rcol(fmtPct(s.exactPct), 8)}${rcol(fmtPct(s.acceptablePct), 9)}${rcol(fmtPct(s.wrongPlanPct), 8)}${rcol(fmtPct(s.falseRefusalPct), 10)}${rcol(fmtPct(s.refusalKindDiffersPct), 10)}${rcol(fmtPct(s.invalidPlanPct), 9)}${rcol(fmtPct(s.failurePct), 8)}${rcol((s.harnessErrors || 0) + (s.skipped || 0), 9)}${rcol(s.latencyMs ? s.latencyMs.p50 : null, 9)}${rcol(s.latencyMs ? s.latencyMs.p95 : null, 9)}${rcol(s.tokens.input, 10)}${rcol(s.tokens.output, 10)}`);
-  }
-  return [...lines, "", ...accountingLines(targets)].join("\n");
-}
-
 /** One line per model: how every evaluated row is accounted for (the table's percentages are of the evaluated rows). */
 function accountingLines(targets) {
   const lines = ["Accept = exact + imprecise + correct refusals. Accept + Wrong + FalseRef + KindDiff + Invalid + Fail = 100% of the evaluated rows. NotEval = harness errors + skipped (not in any percentage)."];
@@ -412,70 +281,4 @@ function accountingLines(targets) {
   return lines;
 }
 
-function breakdownTable(targets) {
-  const names = Object.keys(scoring.CATEGORIES).filter((c) => targets.some((t) => t.breakdown[c]));
-  const nameWidth = Math.max(22, ...targets.map((t) => t.label.length + 1));
-  const head = `${col("Exact % by category", nameWidth)}${names.map((n) => rcol(n, Math.max(10, n.length + 2))).join("")}`;
-  const lines = [head, "-".repeat(head.length)];
-  for (const t of targets) lines.push(`${col(t.label, nameWidth)}${names.map((n) => rcol(t.breakdown[n] ? fmtPct(t.breakdown[n].exactPct) : "-", Math.max(10, n.length + 2))).join("")}`);
-  lines.push(`${col("(questions)", nameWidth)}${names.map((n) => rcol((targets.find((t) => t.breakdown[n]) || { breakdown: {} }).breakdown[n]?.questions, Math.max(10, n.length + 2))).join("")}`);
-  return lines.join("\n");
-}
-
-/**
- * Which model leads each measure. Facts only: ties are all listed and NO winner is chosen here. Claude (the baseline) is
- * reported as the deltas of every other model against it.
- */
-function leaders(allTargets) {
-  // A model that mostly gave no usable answer has no meaningful 'lowest wrong-plan rate': provider errors / timeouts on more than half its
-  // questions, or - since a refusal is not a wrong plan - provider failures plus false refusals (supported questions it declined or
-  // clarified) on more than half; or none scored. It is listed as ineligible with the reason instead of leading a ranking.
-  const noAnswerPct = (t) => (t.summary.failurePct || 0) + (t.summary.falseRefusalPct || 0);
-  const eligibleTarget = (t) => t.summary.questions > 0 && (t.summary.failurePct === null || t.summary.failurePct <= 50) && noAnswerPct(t) <= 50;
-  const targets = allTargets.filter(eligibleTarget);
-  const ineligibleReason = (t) => {
-    if (!t.summary.questions) return "no question was scored";
-    if (t.summary.failurePct > 50) return `${t.summary.failurePct}% of its questions failed at the provider (errors or timeouts)`;
-    return `${Math.round(noAnswerPct(t) * 10) / 10}% of its questions got no usable answer (${t.summary.failurePct || 0}% failed at the provider, ${t.summary.falseRefusalPct || 0}% were declined or clarified although the corpus expects an answer)`;
-  };
-  const ineligible = allTargets.filter((t) => !eligibleTarget(t)).map((t) => ({ model: t.label, reason: ineligibleReason(t) }));
-  const best = (value, direction) => {
-    const scored = targets.map((t) => ({ label: t.label, v: value(t) })).filter((x) => x.v !== null && x.v !== undefined);
-    if (!scored.length) return null;
-    const top = direction === "max" ? Math.max(...scored.map((x) => x.v)) : Math.min(...scored.map((x) => x.v));
-    return { value: top, models: scored.filter((x) => x.v === top).map((x) => x.label) };
-  };
-  const cat = (names, field) => (t) => {
-    const rows = names.map((n) => t.breakdown[n]).filter(Boolean);
-    const total = rows.reduce((s, r) => s + r.questions, 0);
-    return total ? Math.round((rows.reduce((s, r) => s + (r[field] / 100) * r.questions, 0) / total) * 1000) / 10 : null;
-  };
-  const baseline = allTargets.find((t) => t.provider === "claude");
-  return {
-    ineligible,
-    bestExactAccuracy: best((t) => t.summary.exactPct, "max"),
-    bestAcceptableOutcome: best((t) => t.summary.acceptablePct, "max"),
-    lowestWrongPlanRate: best((t) => t.summary.wrongPlanPct, "min"),
-    lowestFalseRefusalRate: best((t) => t.summary.falseRefusalPct, "min"),
-    // a refusal is not a wrong plan, so the wrong-plan rate alone rewards a model that declines supported questions
-    lowestWrongOrFalseRefusalRate: best((t) => (t.summary.questions ? Math.round(((t.summary.counts.wrong_but_executable + t.summary.counts.wrong_not_executable + t.summary.counts.false_refusal) / t.summary.questions) * 1000) / 10 : null), "min"),
-    lowestInvalidOutputRate: best((t) => t.summary.invalidPlanPct, "min"),
-    lowestFailureRate: best((t) => t.summary.failurePct, "min"),
-    bestMedianLatency: best((t) => (t.summary.latencyMs ? t.summary.latencyMs.p50 : null), "min"),
-    bestHinglishAndMixedExact: best(cat(["hinglish", "mixed"], "exactPct"), "max"),
-    bestFollowUpExact: best((t) => (t.breakdown.follow_up ? t.breakdown.follow_up.exactPct : null), "max"),
-    againstClaudeBaseline: baseline
-      ? allTargets
-          .filter((t) => t !== baseline && eligibleTarget(t))
-          .map((t) => ({
-            model: t.label,
-            exactPctDelta: t.summary.exactPct === null || baseline.summary.exactPct === null ? null : Math.round((t.summary.exactPct - baseline.summary.exactPct) * 10) / 10,
-            acceptablePctDelta: t.summary.acceptablePct === null || baseline.summary.acceptablePct === null ? null : Math.round((t.summary.acceptablePct - baseline.summary.acceptablePct) * 10) / 10,
-            wrongPlanPctDelta: t.summary.wrongPlanPct === null || baseline.summary.wrongPlanPct === null ? null : Math.round((t.summary.wrongPlanPct - baseline.summary.wrongPlanPct) * 10) / 10,
-            falseRefusalPctDelta: t.summary.falseRefusalPct === null || baseline.summary.falseRefusalPct === null ? null : Math.round((t.summary.falseRefusalPct - baseline.summary.falseRefusalPct) * 10) / 10,
-          }))
-      : null,
-  };
-}
-
-module.exports = { parseModelSpecs, selectRows, sampleEvenly, createSpacer, newTargetState, HALT_AFTER_REFUSALS, configFingerprint, rowKey, ResponseCache, cacheFileName, runPool, evaluateRow, submittedPlan, aggregate, partitionProblem, assertPartition, breakdown, comparisonTable, accountingLines, breakdownTable, leaders, percentile };
+module.exports = { selectRows, sampleEvenly, newTargetState, HALT_AFTER_REFUSALS, rowKey, evaluateRow, submittedPlan, aggregate, partitionProblem, breakdown, accountingLines, percentile };
