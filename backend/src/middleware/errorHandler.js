@@ -84,4 +84,27 @@ function errorHandler(err, req, res, next) {
   return res.status(status).json(body);
 }
 
-module.exports = { errorHandler, notFoundHandler, userError, GENERIC_SERVER_ERROR };
+// Route wrapper used by the analytics and report controllers (one copy of what each used to define itself). A thrown error that
+// carries a 4xx `status` is a validation error whose message the controller wrote: it is returned as is. Anything else is logged
+// under `logLabel` and answered with the generic message (audit F-12). This is NOT the same rule as errorHandler above (which
+// shows a 4xx message only when `userFacing` is set), so the two are kept apart on purpose.
+function routeHandler(logLabel) {
+  return function handle(fn) {
+    return async (req, res) => {
+      try {
+        await fn(req, res);
+      } catch (error) {
+        const status = error.status >= 400 && error.status < 500 ? error.status : 500;
+
+        if (status === 500) console.error(logLabel + ":", error);
+
+        return res.status(status).json({
+          success: false,
+          message: status === 500 ? GENERIC_SERVER_ERROR : error.message,
+        });
+      }
+    };
+  };
+}
+
+module.exports = { errorHandler, notFoundHandler, userError, routeHandler, GENERIC_SERVER_ERROR };

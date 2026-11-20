@@ -5,6 +5,7 @@ const { buildVoucherMatchStage } = require("../services/analytics/analyticsScope
 const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
 const dateRanges = require("../services/analytics/dateRanges");
+const { routeHandler } = require("../middleware/errorHandler");
 
 // --------------------------------------------------
 // Reports module. Every JSON endpoint below returns the same trust
@@ -52,20 +53,8 @@ function parsePagination(query) {
   };
 }
 
-function handle(fn) {
-  return async (req, res) => {
-    try {
-      await fn(req, res);
-    } catch (error) {
-      const status = error.status >= 400 && error.status < 500 ? error.status : 500;
-      if (status === 500) console.error("REPORT ERROR:", error);
-      return res.status(status).json({
-        success: false,
-        message: status === 500 ? "Something went wrong on the server. Please try again." : error.message,
-      });
-    }
-  };
-}
+// see routeHandler in middleware/errorHandler.js
+const handle = routeHandler("REPORT ERROR");
 
 // Minimal RFC 4180 CSV field escaping - wraps in quotes and doubles any
 // embedded quote whenever the field contains a comma, quote or newline
