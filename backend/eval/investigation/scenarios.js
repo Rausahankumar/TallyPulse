@@ -5,8 +5,7 @@
 //
 // One synthetic company, anchored to the FOUR complete calendar months before the run date (M1 oldest .. M4 = the previous
 // month), so undated questions ("where are orange sales declining?") have data in the periods the assistant would choose.
-// The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked in
-// verify-investigation-eval.js):
+// The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked):
 //   - Apple: stable for M1-M3, then in M4 two customers who bought 70% of it (Sharma Fruits, Gupta Mart) stop. Rate unchanged.
 //     A supply HYPOTHESIS: purchases of apple from Himachal Orchards fell from 100 to 30 units in M3, the month before.
 //   - Orange: same three customers, same quantity every month, but the rate is cut from 120 to 90 in M4 (a price decline).
