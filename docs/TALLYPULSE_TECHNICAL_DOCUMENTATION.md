@@ -353,7 +353,7 @@ For any **further** company the account's password is required again:
   "success": true,
   "message": "Company connected.",
   "token": "<JWT scoped to the connected company>",
-  "data": { "companyGuid": "<opaque key used only by switch-company>", "companyName": "We Four", "created": true, "reactivated": false }
+  "data": { "companyGuid": "<opaque key used only by switch-company>", "companyName": "Acme Stores", "created": true, "reactivated": false }
 }
 ```
 `tenantId` is never returned. `created`/`reactivated` describe what happened; a company that already existed (deactivated, or its record deleted) keeps its tenant, checkpoints and data.
@@ -424,7 +424,7 @@ Tests connectivity to TallyPrime and returns the company name TDL report. **JWT 
   "success": true,
   "message": "Tally API connection successful",
   "data": { /* raw Tally JSONEx company list, for diagnostics */ },
-  "detected": { "state": "ok", "companyName": "WE FOUR" }
+  "detected": { "state": "ok", "companyName": "Acme Stores" }
 }
 ```
 
@@ -599,7 +599,7 @@ question (+ the previous turn's structured plan, for follow-ups)
 
 ## 13. Testing
 
-There is no test framework: every suite is a plain `node verify-*.js` script in `backend/` (and `verify-*.mjs` in `frontend/`) that prints a pass/fail line per check and exits non-zero on failure. Suites that need MongoDB use **synthetic tenants** they create and remove themselves; suites with a "REAL DATA" section compare against the real WE FOUR / Nirmal tenants read-only and print `SKIPPED` where those do not exist.
+There is no test framework: every suite is a plain `node verify-*.js` script in `backend/` (and `verify-*.mjs` in `frontend/`) that prints a pass/fail line per check and exits non-zero on failure. Suites that need MongoDB use **synthetic tenants** they create and remove themselves; suites with a "REAL DATA" section compare against the live tenant A / live tenant B tenants read-only and print `SKIPPED` where those do not exist.
 
 | Area | Suites |
 |---|---|
@@ -607,7 +607,7 @@ There is no test framework: every suite is a plain `node verify-*.js` script in 
 | Chat, cost, telemetry | `verify-chat-management`, `verify-cost-forensic`, `verify-ai-telemetry`, `verify-ai-usage-persist` |
 | Planner evaluation | `verify-nlu-eval` (free self-check; `--live` is billed), `verify-planner-live-eval` (manual, real tenant, billed) |
 | Semantics and capabilities | `verify-comparison-period-capability`, `verify-growth-comparison-capability`, `verify-period-engine`, `verify-month-boundary-dates`, `verify-timezone-boundaries` (six server zones), `verify-return-*`, `verify-product-return-analytics`, `verify-ledger-master`, `verify-adjustment-note` |
-| Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-purchase-mapper`, `verify-migrate-voucher-total-amount` |
+| Analytics and data layer | `verify-analytics-scope`, `verify-stock-item-master`, `verify-stock-group-analytics`, `verify-tally-parser-voucher-total`, `verify-sales-mapper`, `verify-purchase-mapper`, |
 | Import and sync pipeline (stub Tally server, no live Tally) | `verify-sales-import`, `verify-sales-sync-worker` |
 | Sync and recovery | `verify-sync-batching`, `verify-voucher-recovery`, `verify-self-heal`, `verify-reconciliation-history`, `verify-reconciliation-perf-and-failure` |
 | Identity and security | `verify-security-audit` (executable audit probes), `verify-company-identity`, `verify-company-ownership`, `verify-multi-company` |
@@ -619,8 +619,8 @@ There is no test framework: every suite is a plain `node verify-*.js` script in 
 
 The backend suite step reports each suite as **PASS**, **FAIL**, **PARTIAL** or **NOT RUN**:
 - **PARTIAL**: a suite on the step's hard-coded PARTIAL list printed `SKIP`. Its other checks ran and passed; the skipped real-data section did **not** run and is not proven by CI. A `SKIP` from a suite not on the list fails the job.
-- **NOT RUN**: `verify-query-parity.js`, which only compares against the real WE FOUR tenant. `verify-query-parity-synthetic.js` runs the same comparisons on synthetic tenants instead.
-- When a real-data section's checks are generic (engine vs. an independent oracle, no company facts), the suite runs them on a synthetic tenant when the real one is absent. Examples: `verify-stock-group-analytics.js` section B (synthetic tenant C with hand-computed totals and growth), and sections of `verify-query-engine`, `verify-comparison-period-capability`, `verify-query-planner` and `verify-query-chat`. Company-specific checks (real WE FOUR/Nirmal totals and rankings, genuine zeros, the stored-GUID audit) stay real-data only. That is why `verify-query-engine`, `verify-return-analytics` and `verify-return-ranking` are still PARTIAL in CI.
+- **NOT RUN**: `verify-query-parity.js`, which only compares against the live tenant A. `verify-query-parity-synthetic.js` runs the same comparisons on synthetic tenants instead.
+- When a real-data section's checks are generic (engine vs. an independent oracle, no company facts), the suite runs them on a synthetic tenant when the real one is absent. Examples: `verify-stock-group-analytics.js` section B (synthetic tenant C with hand-computed totals and growth), and sections of `verify-query-engine`, `verify-comparison-period-capability`, `verify-query-planner` and `verify-query-chat`. Company-specific checks (live tenants A and B totals and rankings, genuine zeros, the stored-GUID audit) stay real-data only. That is why `verify-query-engine`, `verify-return-analytics` and `verify-return-ranking` are still PARTIAL in CI.
 
 ---
 
@@ -862,7 +862,7 @@ curl -X POST http://localhost:5000/api/auth/companies \
   -d '{}'
 ```
 
-Response (201): `{ "success": true, "message": "Company connected.", "token": "<company-scoped JWT>", "data": { "companyName": "We Four", "created": true, "reactivated": false, ... } }`. Use the returned `token` from here on. A second company additionally needs `{"password": "ChangeMe123!"}` in the body.
+Response (201): `{ "success": true, "message": "Company connected.", "token": "<company-scoped JWT>", "data": { "companyName": "Acme Stores", "created": true, "reactivated": false, ... } }`. Use the returned `token` from here on. A second company additionally needs `{"password": "ChangeMe123!"}` in the body.
 
 ### 19.3 Upload a Tally JSON export
 

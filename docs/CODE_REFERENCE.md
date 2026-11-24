@@ -6,13 +6,13 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 > Comments code se uthaye gaye hain, isliye English me hain. Simple Hindi/Hinglish samjhane wala hissa alag file `CODE_WALKTHROUGH_HINGLISH.md` me hai (wo haath se likha hai, is file se purana ho sakta hai).
 
-**Is snapshot me:** backend 108 source files (783 functions), frontend 86 files (222 functions/components), backend scripts 105 files.
+**Is snapshot me:** backend 108 source files (794 functions), frontend 86 files (222 functions/components), backend scripts 96 files.
 
 ## Index
 
 **0. Entry point**
 
-- `server.js` (80 lines, 0 functions)
+- `server.js` (87 lines, 0 functions)
 
 **1. Config**
 
@@ -22,8 +22,8 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 - `src/middleware/auth.js` (80 lines, 1 functions)
 - `src/middleware/errorHandler.js` (111 lines, 4 functions)
-- `src/middleware/httpSecurity.js` (50 lines, 2 functions)
-- `src/middleware/rateLimit.js` (144 lines, 4 functions)
+- `src/middleware/httpSecurity.js` (59 lines, 3 functions)
+- `src/middleware/rateLimit.js` (173 lines, 6 functions)
 - `src/middleware/requestId.js` (27 lines, 1 functions)
 - `src/middleware/upload.js` (41 lines, 1 functions)
 
@@ -31,7 +31,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 - `src/routes/analyticsRoutes.js` (52 lines, 0 functions)
 - `src/routes/authRoutes.js` (31 lines, 0 functions)
-- `src/routes/chatRoutes.js` (27 lines, 0 functions)
+- `src/routes/chatRoutes.js` (29 lines, 0 functions)
 - `src/routes/importRoutes.js` (30 lines, 0 functions)
 - `src/routes/odbcRoutes.js` (24 lines, 0 functions)
 - `src/routes/reportRoutes.js` (31 lines, 0 functions)
@@ -44,7 +44,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/controllers/authController.js` (480 lines, 7 functions)
 - `src/controllers/chatController.js` (243 lines, 5 functions)
 - `src/controllers/importController.js` (285 lines, 6 functions)
-- `src/controllers/odbcController.js` (146 lines, 2 functions)
+- `src/controllers/odbcController.js` (147 lines, 2 functions)
 - `src/controllers/reportController.js` (212 lines, 5 functions)
 - `src/controllers/syncRecoveryController.js` (86 lines, 1 functions)
 - `src/controllers/syncStatusController.js` (123 lines, 4 functions)
@@ -69,7 +69,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 **6. Tally se baat (odbc)**
 
-- `src/services/odbc/odbcService.js` (1329 lines, 23 functions)
+- `src/services/odbc/odbcService.js` (1166 lines, 21 functions)
 - `src/services/odbc/tallyUrl.js` (86 lines, 4 functions)
 
 **7. Tally rules / masters**
@@ -100,7 +100,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/sync/reconciliation.js` (254 lines, 3 functions)
 - `src/services/sync/reconciliationWorker.js` (360 lines, 10 functions)
 - `src/services/sync/selfHeal.js` (186 lines, 2 functions)
-- `src/services/sync/tallySyncWorker.js` (795 lines, 12 functions)
+- `src/services/sync/tallySyncWorker.js` (794 lines, 22 functions)
 - `src/services/sync/voucherLineBackfill.js` (286 lines, 10 functions)
 - `src/services/sync/voucherPersistence.js` (287 lines, 1 functions)
 - `src/services/sync/voucherRecovery.js` (383 lines, 5 functions)
@@ -156,7 +156,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - `src/services/query/plannerResponseCache.js` (226 lines, 7 functions)
 - `src/services/query/presentation.js` (314 lines, 19 functions)
 - `src/services/query/providerAttempts.js` (48 lines, 2 functions)
-- `src/services/query/queryChat.js` (661 lines, 24 functions)
+- `src/services/query/queryChat.js` (691 lines, 24 functions)
 - `src/services/query/queryPlan.schema.js` (307 lines, 8 functions)
 - `src/services/query/semanticCatalog.js` (760 lines, 10 functions)
 - `src/services/query/turnTelemetry.js` (155 lines, 13 functions)
@@ -304,7 +304,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/config/db.js`
 **Used by:** `server.js`
 
-**Tested by:** `backfill-voucher-line-details.js`, `drop-stale-indexes.js`, `eval-findings-real.js`, `eval-investigations.js`, `list-indexes.js`, `migrate-voucher-identity.js`, `migrate-voucher-total-amount.js`, `refresh-ledger-master.js` (+52 more)
+**Tested by:** `run-adjustment-note-sync.js`, `verify-adjustment-note.js`, `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-chat-management.js`, `verify-company-guid-match.js` (+42 more)
 
 **Imports:** (none)
 
@@ -359,26 +359,28 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/middleware/httpSecurity.js`
 **Used by:** `server.js`
 
-**Tested by:** `verify-security-audit.js`
+**Tested by:** `verify-proxy-and-chat-limits.js`, `verify-security-audit.js`
 
 **Imports:** (none)
 
-**Exports:** `applyHttpSecurity`, `parseAllowedOrigins`, `DEV_ORIGINS`
+**Exports:** `applyHttpSecurity`, `parseAllowedOrigins`, `parseTrustProxy`, `DEV_ORIGINS`
 
 - **`parseAllowedOrigins()`** — line 22
   - Purpose: (no comment in code — see name and calls below)
 - **`applyHttpSecurity()`** — line 31
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `parseAllowedOrigins()`
+- **`parseTrustProxy()`** — line 53
+  - Purpose: How many reverse proxies (Render, nginx, a tunnel...) sit in front of the app, from TRUST_PROXY. Express then reads the real client address from X-Forwarded-For, so per-address limits (login, register) are per client and not one shared bucket for everyone. Only a positive whole number is accepted (the hop count): "true" would trust a header any client can forge. Unset or anything else = null = off, which is right...
 
 ## `src/middleware/rateLimit.js`
-**Used by:** `src/routes/authRoutes.js`
+**Used by:** `src/routes/authRoutes.js`, `src/routes/chatRoutes.js`
 
-**Tested by:** `verify-security-audit.js`
+**Tested by:** `verify-proxy-and-chat-limits.js`, `verify-security-audit.js`
 
 **Imports:** (none)
 
-**Exports:** `createRateLimiter`, `loginLimiters`, `registerLimiter`, `connectCompanyLimiter`, `resetAllRateLimiters`
+**Exports:** `createRateLimiter`, `loginLimiters`, `registerLimiter`, `connectCompanyLimiter`, `chatLimiters`, `resetAllRateLimiters`
 
 - **`createRateLimiter()`** — line 22
   - Purpose: (no comment in code — see name and calls below)
@@ -387,7 +389,11 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: (no comment in code — see name and calls below)
 - **`emailKey()`** — line 97
   - Purpose: The e-mail part of a login key: only a real string is used (anything else is rejected by the controller anyway), trimmed, lower-cased and length-capped so the key cannot be used to bloat memory.
-- **`resetAllRateLimiters()`** — line 133
+- **`positiveInt()`** — line 137
+  - Purpose: The chat route calls the paid model once or more per question, so it is limited per SIGNED-IN USER (not per address: behind a proxy or an office network many users share one). A per-minute limit stops a runaway script or a held-down send button; a per-day limit caps what one account can spend. Every question counts (nothing is refunded). Defaults can be changed with CHAT_MAX_PER_MINUTE and CHAT_MAX_PER_DAY (positi...
+- **`chatUserKey()`** — line 141
+  - Purpose: (no comment in code — see name and calls below)
+- **`resetAllRateLimiters()`** — line 161
   - Purpose: For tests: forget every counter.
 
 ## `src/middleware/requestId.js`
@@ -470,9 +476,9 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/routes/chatRoutes.js`
 **Used by:** `server.js`
 
-**Tested by:** `verify-multi-company.js`, `verify-security-audit.js`
+**Tested by:** `verify-multi-company.js`, `verify-proxy-and-chat-limits.js`, `verify-security-audit.js`
 
-**Imports:** `src/middleware/auth.js`, `src/services/auth/companyContext.js`, `src/controllers/chatController.js`
+**Imports:** `src/middleware/auth.js`, `src/services/auth/companyContext.js`, `src/middleware/rateLimit.js`, `src/controllers/chatController.js`
 
 **Exports:** `router (default)`
 
@@ -480,8 +486,8 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 
 - `router.use() → auth (src/middleware/auth.js) → activeCompanyContext (src/services/auth/companyContext.js)`
 - `router.get("/") → listChats (src/controllers/chatController.js)`
-- `router.post("/message") → sendChatMessage (src/controllers/chatController.js)`
-- `router.post("/:chatId/message") → sendChatMessage (src/controllers/chatController.js)`
+- `router.post("/message") → ...chatLimiters → sendChatMessage (src/controllers/chatController.js)`
+- `router.post("/:chatId/message") → ...chatLimiters → sendChatMessage (src/controllers/chatController.js)`
 - `router.get("/:chatId") → getChat (src/controllers/chatController.js)`
 - `router.patch("/:chatId") → renameChat (src/controllers/chatController.js)`
 - `router.delete("/:chatId") → deleteChat (src/controllers/chatController.js)`
@@ -674,6 +680,8 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/controllers/odbcController.js`
 **Used by:** `src/routes/odbcRoutes.js`
 
+**Tested by:** `verify-odbc-company-response.js`
+
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/voucherTypeClassifier.js`
 
 **Exports:** `testTallyConnection`, `getSales`
@@ -681,7 +689,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`testTallyConnection()`** _(async)_ — line 16
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/services/odbc/odbcService.js → getCompanyInfo()`, `src/services/auth/tallyCompanyGuard.js → resolveSelectedOpenCompany()`
-- **`getSales()`** _(async)_ — line 69
+- **`getSales()`** _(async)_ — line 70
   - Purpose: No auth/tenant context on this route (a legacy diagnostic endpoint, not the real tenant-scoped /api/import/tally-live path) - so unlike that path, there's no companyGuId to resolve a Company from. Instead it resolves classification for whichever company Tally currently has open, same generic voucherTypeClassifier the rest of the app uses, never a hardcoded name and never a silent fallback to $$VchTypeSales.
   - Calls other files: `src/services/auth/tallyCompanyGuard.js → resolveSelectedOpenCompany()`, `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`, `src/services/odbc/odbcService.js → getSalesVouchers()`
 
@@ -783,7 +791,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/aiTurnUsage.model.js`
 **Used by:** `src/services/query/usageStore.js`
 
-**Tested by:** `verify-ai-usage-persist.js`, `verify-cache-telemetry.js`
+**Tested by:** `verify-ai-usage-persist.js`
 
 **Imports:** (none)
 
@@ -807,7 +815,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/company.js`
 **Used by:** `src/controllers/authController.js`, `src/services/auth/companyContext.js`, `src/services/auth/companyIdentity.js`, `src/services/import/tallySalesImport.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/tallySyncWorker.js`
 
-**Tested by:** `backfill-voucher-line-details.js`, `eval-findings-real.js`, `refresh-ledger-master.js`, `refresh-stock-item-master.js`, `run-adjustment-note-sync.js`, `verify-analytics-scope.js`, `verify-company-guid-match.js`, `verify-company-identity.js` (+17 more)
+**Tested by:** `run-adjustment-note-sync.js`, `verify-analytics-scope.js`, `verify-company-guid-match.js`, `verify-company-identity.js`, `verify-comparison-period-capability.js`, `verify-dashboard-real-data.js`, `verify-growth-comparison-capability.js`, `verify-multi-company.js` (+13 more)
 
 **Imports:** `src/services/odbc/tallyUrl.js`
 
@@ -839,7 +847,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/purchase.model.js`
 **Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/analytics/insights.js`, `src/services/analytics/purchaseAnalytics.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/query/entityResolver.js`, `src/services/query/execute.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`
 
-**Tested by:** `eval-findings-real.js`, `eval-investigations.js`, `migrate-voucher-total-amount.js`, `verify-analysis-planner.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-company-ownership.js`, `verify-comparison-period-capability.js` (+26 more)
+**Tested by:** `verify-analysis-planner.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-company-ownership.js`, `verify-comparison-period-capability.js`, `verify-dashboard-real-data.js`, `verify-growth-comparison-capability.js`, `verify-insight-tools.js` (+21 more)
 
 **Imports:** `src/models/gstSchemas.js`, `src/services/query/dataVersion.js`
 
@@ -861,7 +869,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/sales.model.js`
 **Used by:** `src/controllers/reportController.js`, `src/controllers/syncStatusController.js`, `src/controllers/voucherController.js`, `src/services/analytics/insights.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/reportAnalytics.js`, `src/services/analytics/salesAnalytics.js`, `src/services/analytics/stockGroupAnalytics.js`, `src/services/import/tallySalesImport.js`, `src/services/query/entityResolver.js`, `src/services/query/execute.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`
 
-**Tested by:** `eval-findings-real.js`, `eval-investigations.js`, `list-indexes.js`, `migrate-voucher-total-amount.js`, `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js` (+33 more)
+**Tested by:** `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-company-guid-match.js`, `verify-comparison-period-capability.js`, `verify-cost-forensic.js`, `verify-customer-count.js` (+27 more)
 
 **Imports:** `src/models/gstSchemas.js`, `src/services/query/dataVersion.js`
 
@@ -881,7 +889,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/syncCheckpoint.model.js`
 **Used by:** `src/controllers/syncStatusController.js`, `src/services/analytics/freshness.js`, `src/services/analytics/referenceDate.js`, `src/services/auth/companyIdentity.js`, `src/services/sync/selfHeal.js`, `src/services/sync/tallySyncWorker.js`
 
-**Tested by:** `eval-findings-real.js`, `eval-investigations.js`, `verify-adjustment-note.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-company-identity.js`, `verify-company-ownership.js`, `verify-insights.js` (+14 more)
+**Tested by:** `verify-adjustment-note.js`, `verify-analytics-scope.js`, `verify-ask-ai-basic-questions.js`, `verify-company-identity.js`, `verify-company-ownership.js`, `verify-insights.js`, `verify-query-cache.js`, `verify-query-chat.js` (+12 more)
 
 **Imports:** (none)
 
@@ -893,7 +901,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/models/tenantDataVersion.model.js`
 **Used by:** `src/services/query/dataVersion.js`
 
-**Tested by:** `eval-investigations.js`, `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-ask-ai-basic-questions.js`, `verify-cost-forensic.js`, `verify-customer-count.js`, `verify-insight-tools.js`, `verify-investigation-eval.js` (+3 more)
+**Tested by:** `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-ask-ai-basic-questions.js`, `verify-cost-forensic.js`, `verify-customer-count.js`, `verify-insight-tools.js`, `verify-query-cache.js`, `verify-query-chat.js` (+1 more)
 
 **Imports:** (none)
 
@@ -929,7 +937,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/odbc/odbcService.js`
 **Used by:** `src/controllers/odbcController.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/import/tallySalesImport.js`, `src/services/sync/reconciliationWorker.js`, `src/services/sync/tallySyncWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherRecovery.js`, `src/services/tally/ledgerMaster.js`, `src/services/tally/stockItemGst.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/voucherTypeClassifier.js`
 
-**Tested by:** `verify-company-guid-match.js`, `verify-reconciliation.js`, `verify-security-audit.js`, `verify-stock-item-gst.js`, `verify-sync-batching.js`, `verify-sync-worker-guard.js`, `verify-voucher-lifecycle.js`, `verify-voucher-line-details.js` (+2 more)
+**Tested by:** `verify-company-guid-match.js`, `verify-reconciliation.js`, `verify-security-audit.js`, `verify-stock-item-gst.js`, `verify-sync-batching.js`, `verify-sync-worker-guard.js`, `verify-tally-since-alterid-requests.js`, `verify-voucher-lifecycle.js` (+3 more)
 
 **Imports:** `src/services/odbc/tallyUrl.js`
 
@@ -954,7 +962,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: GET VOUCHER TYPE MASTERS (for generic Sales/Purchase classification)   Confirmed live against TallyPrime: "Type": "VoucherType" is a flat master collection - every voucher type in the company, each carrying its own "parent" (one level up) plus Tally's own ambient metadata.reservedname (returned automatically, without needing to ask for it via Native Method). reservedname is a permanent internal system-class tag th...
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
 - **`getStockItemMasters()`** _(async)_ — line 297
-  - Purpose: GET STOCK ITEM MASTERS (Stock Item -> Stock Group)   Confirmed live against this project's own connected TallyPrime instance (WE FOUR, 2026-09): "Type": "StockItem" is a flat master collection, exactly like "Type": "VoucherType" above - every Stock Item in the company, each carrying its own $Parent (the Stock Group it belongs to) and $Guid. Live result: 2,696 Stock Items returned, 100% with a non-empty Parent, 100...
+  - Purpose: GET STOCK ITEM MASTERS (Stock Item -> Stock Group)   Confirmed live against this project's own connected TallyPrime instance (live tenant A, 2026-09): "Type": "StockItem" is a flat master collection, exactly like "Type": "VoucherType" above - every Stock Item in the company, each carrying its own $Parent (the Stock Group it belongs to) and $Guid. Live result: 2,696 Stock Items returned, 100% with a non-empty Parent, 100...
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
 - **`isSafeStockGroupNameForFormula()`** — line 379
   - Purpose: The group name is placed inside a TDL formula string, so a name that could break out of it is refused (the caller reports the group as skipped; its items keep whatever GST data they already had).
@@ -963,7 +971,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls in this file: `isSafeStockGroupNameForFormula()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
 - **`postMasterCollection()`** _(async)_ — line 475
-  - Purpose: GET LEDGER / GROUP MASTERS   Flat master collections, the same shape as "Type": "StockItem" above. Confirmed live (read-only diagnostic, WE FOUR, 2026-09): 1,979 ledgers in 0.46 s and 70 groups in 30 ms, every record carrying a "<companyGuid>-<hex>" Guid. Minimal field sets only - no GSTIN, no balances. Masters only: no voucher data is requested.
+  - Purpose: GET LEDGER / GROUP MASTERS   Flat master collections, the same shape as "Type": "StockItem" above. Confirmed live (read-only diagnostic, live tenant A, 2026-09): 1,979 ledgers in 0.46 s and 70 groups in 30 ms, every record carrying a "<companyGuid>-<hex>" Guid. Minimal field sets only - no GSTIN, no balances. Masters only: no voucher data is requested.
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
 - **`getLedgerMasters()`** _(async)_ — line 504
   - Purpose: (no comment in code — see name and calls below)
@@ -975,34 +983,26 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Purpose: `voucherTypeNames` must be pre-resolved by voucherTypeClassifier.js - same generic classification the incremental sync worker and reconciliation use, not a hardcoded literal. Replaces the old "Child Of": "$$VchTypeSales" attribute (confirmed live to only match vouchers named exactly "Sales") with a single explicit AND/OR formula combining the date range with every resolved type name - same pattern as getSalesVouch...
   - Calls in this file: `requireVoucherTypeNames()`, `resolveDateBound()`, `formatTallyDate()`, `buildVoucherTypeNameFilterClause()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getSalesVouchersSinceAlterId()`** _(async)_ — line 690
-  - Purpose: GET SALES VOUCHERS SINCE ALTERID (incremental sync)   Unlike getSalesVouchers (date-range based, used by the manual /tally-live endpoint), this filters on Tally's $AlterID — a per-object counter that increases on every create AND modify, regardless of the voucher's own date. That's what makes it a correct incremental feed: editing a months-old voucher still surfaces here even though its $Date never changes. Confir...
+- **`buildSinceAlterIdFetcher()`** — line 722
+  - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `requireVoucherTypeNames()`, `buildAlterIdRangeClause()`, `buildVoucherTypeNameFilterClause()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getPurchaseVouchersSinceAlterId()`** _(async)_ — line 787
-  - Purpose: GET PURCHASE VOUCHERS SINCE ALTERID (incremental sync)   Mirrors getSalesVouchersSinceAlterId exactly, with the Purchase-class voucherTypeNames set instead - see that function's comment for the full rationale. Kept as its own self-contained function (not a shared builder with the Sales version) to match this file's existing style.
-  - Calls in this file: `requireVoucherTypeNames()`, `buildAlterIdRangeClause()`, `buildVoucherTypeNameFilterClause()`
-  - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getAdjustmentNoteVouchersSinceAlterId()`** _(async)_ — line 888
-  - Purpose: GET ADJUSTMENT NOTE VOUCHERS SINCE ALTERID (incremental sync)   Credit Note / Debit Note. Same shape as getSalesVouchersSinceAlterId, with two additions to the Native Method field list, proven live in the CN/DN diagnostic (docs/../generic-tumbling-magpie.md): inventoryentries' accountingallocations (which ledger an item's amount is booked to - what adjustmentNoteClassifier.js needs) and ledgerentries' billallocati...
-  - Calls in this file: `requireVoucherTypeNames()`, `buildAlterIdRangeClause()`, `buildVoucherTypeNameFilterClause()`
-  - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getPendingVoucherAlterIds()`** _(async)_ — line 990
+- **`getPendingVoucherAlterIds()`** _(async)_ — line 827
   - Purpose: GET PENDING ALTERIDS (batch planning for incremental sync)   Light probe used by the sync worker to size a batch BEFORE fetching full vouchers: same filter as the incremental fetch, but only VoucherTypeName + AlterID are requested - no inventoryentries/ledgerentries walk, which is what makes a full fetch of thousands of vouchers exceed the 30s timeout. Works for any voucher class (the caller passes that class's re...
   - Calls in this file: `requireVoucherTypeNames()`, `buildAlterIdRangeClause()`, `buildVoucherTypeNameFilterClause()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getVouchersByAlterIds()`** _(async)_ — line 1089
+- **`getVouchersByAlterIds()`** _(async)_ — line 926
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `requireVoucherTypeNames()`, `buildVoucherTypeNameFilterClause()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`buildAllGuidsRequestBody()`** — line 1218
+- **`buildAllGuidsRequestBody()`** — line 1055
   - Purpose: GET ALL SALES / PURCHASE VOUCHER GUIDS (reconciliation)   Lightest possible query for the reconciliation safety-net: no AlterID filter (deliberately - a deleted voucher never shows up regardless of AlterID, confirmed against a live TallyPrime instance, so filtering by AlterID here would defeat the purpose), and "Guid" is the only field explicitly requested in Native Method. Confirmed live that Tally still returns...
   - Calls in this file: `buildVoucherTypeNameFilterClause()`
-- **`getAllSalesVoucherGuids()`** _(async)_ — line 1252
+- **`getAllSalesVoucherGuids()`** _(async)_ — line 1089
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `requireVoucherTypeNames()`, `buildAllGuidsRequestBody()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
-- **`getAllPurchaseVoucherGuids()`** _(async)_ — line 1281
+- **`getAllPurchaseVoucherGuids()`** _(async)_ — line 1118
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `requireVoucherTypeNames()`, `buildAllGuidsRequestBody()`
   - Calls other files: `src/services/odbc/tallyUrl.js → resolveTallyUrl()`
@@ -1082,7 +1082,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/tally/ledgerMaster.js`
 **Used by:** `src/services/sync/tallySyncWorker.js`
 
-**Tested by:** `refresh-ledger-master.js`, `verify-ledger-master.js`
+**Tested by:** `verify-ledger-master.js`
 
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/tally/companyOwnership.js`, `src/services/parser/tallyParser.js`, `src/models/ledgerMaster.model.js`
 
@@ -1163,7 +1163,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/tally/stockItemMaster.js`
 **Used by:** `src/services/sync/tallySyncWorker.js`
 
-**Tested by:** `refresh-stock-item-master.js`, `verify-query-cache.js`, `verify-stock-item-gst.js`, `verify-stock-item-master.js`
+**Tested by:** `verify-query-cache.js`, `verify-stock-item-gst.js`, `verify-stock-item-master.js`
 
 **Imports:** `src/services/odbc/odbcService.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/stockItemGst.js`, `src/models/stockItemMaster.model.js`
 
@@ -1306,7 +1306,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/parser/tallyParser.js`
 **Used by:** `src/services/auth/tallyCompanyGuard.js`, `src/services/parser/adjustmentNoteParser.js`, `src/services/sync/reconciliation.js`, `src/services/sync/tallySyncWorker.js`, `src/services/sync/voucherLineBackfill.js`, `src/services/sync/voucherPersistence.js`, `src/services/sync/voucherRecovery.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/ledgerMaster.js`, `src/services/tally/voucherTypeClassifier.js`
 
-**Tested by:** `migrate-voucher-total-amount.js`, `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-ask-ai-basic-questions.js`, `verify-company-guid-match.js`, `verify-insight-tools.js`, `verify-insights.js`, `verify-purchase-mapper.js` (+8 more)
+**Tested by:** `verify-analysis-plan.js`, `verify-analysis-planner.js`, `verify-ask-ai-basic-questions.js`, `verify-company-guid-match.js`, `verify-insight-tools.js`, `verify-insights.js`, `verify-purchase-mapper.js`, `verify-reconciliation.js` (+7 more)
 
 **Imports:** `src/services/parser/gstFields.js`
 
@@ -1528,7 +1528,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/sync/tallySyncWorker.js`
 **Used by:** `server.js`
 
-**Tested by:** `run-adjustment-note-sync.js`, `verify-adjustment-note.js`, `verify-company-identity.js`, `verify-company-ownership.js`, `verify-sales-sync-worker.js`, `verify-security-audit.js`, `verify-sync-batching.js`, `verify-sync-worker-guard.js` (+2 more)
+**Tested by:** `run-adjustment-note-sync.js`, `verify-adjustment-note.js`, `verify-company-identity.js`, `verify-company-ownership.js`, `verify-sales-sync-worker.js`, `verify-security-audit.js`, `verify-sync-batching.js`, `verify-sync-pass-outcomes.js` (+3 more)
 
 **Imports:** `src/models/company.js`, `src/models/syncCheckpoint.model.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/sync/batchWindow.js`, `src/services/import/tallySalesImport.js`, `src/services/import/tallyPurchaseImport.js`, `src/services/sync/adjustmentNotePersistence.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/companyOwnership.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/ledgerMaster.js`, `src/services/tally/adjustmentNoteClassifier.js`
 
@@ -1547,31 +1547,60 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`releaseLock()`** _(async)_ — line 208
   - Purpose: (no comment in code — see name and calls below)
   - Calls other files: `src/models/syncCheckpoint.model.js → findOneAndUpdate()`
-- **`runSyncForCompanyModule()`** _(async)_ — line 242
+- **`emptyResult()`** — line 247
+  - Purpose: A result that processed nothing; `extra` carries what a failure adds (error, companyMismatch, rejected).
+- **`nothingChanged()`** — line 258
+  - Purpose: Nothing changed since the last checkpoint: the normal steady state, so most ticks end here.
+  - Calls in this file: `emptyResult()`
+- **`failedOutcome()`** — line 260
+  - Purpose: (no comment in code — see name and calls below)
+  - Calls in this file: `emptyResult()`
+- **`checkTallyCompany()`** _(async)_ — line 271
+  - Purpose: Step 1 - safety gate (same product rule as addCompany/manual Sales Sync): background sync must never import whatever company happens to be open in Tally into a DIFFERENT tenant. Checked live, every tick, for every company - never assumed just because a checkpoint exists for this tenant. A mismatch/no-company-open is routine and expected in a shared-Tally-instance, multi-company setup (only one company can be open...
+  - Calls in this file: `failedOutcome()`, `nothingChanged()`
+  - Calls other files: `src/services/auth/tallyCompanyGuard.js → verifyOpenTallyCompany()`
+- **`resolveVoucherTypeNames()`** _(async)_ — line 284
+  - Purpose: Step 2 - generic Sales/Purchase voucher-type discovery (replaces the old hardcoded $$VchTypeSales/$$VchTypePurchase). Resolved fresh (or from its own short-lived cache) per company, per tick - never a per-customer hardcoded name. A classification that isn't cleanly "ok" (fetch/parse failure, or a genuinely ambiguous/unconfigured company) fails this tick closed: it is recorded as a failure with an explicit NEEDS_CO...
+  - Calls in this file: `failedOutcome()`
+  - Calls other files: `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`
+- **`planBatch()`** _(async)_ — line 319
+  - Purpose: Step 3 - bound this tick's batch (see batchWindow.js). A light probe lists the pending AlterIDs; a backlog larger than `batchSize` is fetched as one slice (checkpoint, cutOff] and the rest drains on later ticks. A small backlog is fetched with no cap, exactly as before. If the probe itself fails, the tick fails closed - it never falls back to the unbounded request this exists to prevent - and the checkpoint stays...
+  - Calls other files: `src/services/import/tallySalesImport.js → extractVoucherCollection()`, `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → computeBatchWindow()`
+- **`fetchBatch()`** _(async)_ — line 362
+  - Purpose: Step 4 - the heavy fetch of the planned slice, parsed to a list of vouchers.
+  - Calls other files: `src/services/import/tallySalesImport.js → extractVoucherCollection()`
+- **`verifyBatch()`** — line 386
+  - Purpose: Step 5 - both checks run BEFORE anything is persisted or the checkpoint is considered; either one throws. - Company ownership: the whole batch must belong to this tenant's configured company (Tally answers for the SELECTED company, which the open-company guard above cannot pin down). One foreign/unverifiable voucher rejects the entire batch: nothing is written, the checkpoint stays put, and the failure is recorded...
+  - Calls other files: `src/services/tally/companyOwnership.js → assertBatchOwnership()`, `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → findMissingAlterIds()`
+- **`persistVouchers()`** _(async)_ — line 409
+  - Purpose: Step 6 - persist every voucher, counting what happened to each and tracking the highest AlterID seen.
+- **`syncOnePass()`** _(async)_ — line 449
+  - Purpose: The pass itself: runs the steps in order and returns the outcome (see the note above).
+  - Calls in this file: `checkTallyCompany()`, `resolveVoucherTypeNames()`, `planBatch()`, `nothingChanged()`, `fetchBatch()`, `verifyBatch()`, `persistVouchers()`
+- **`runSyncForCompanyModule()`** _(async)_ — line 525
   - Purpose: Runs one incremental sync pass for a single {company, sync module} combination. Never throws — failures are recorded on the checkpoint and returned in the result so the caller can log them and move on.
-  - Calls in this file: `ensureCheckpointExists()`, `acquireLock()`, `resolveTallyBaseUrl()`, `releaseLock()`
-  - Calls other files: `src/services/auth/tallyCompanyGuard.js → verifyOpenTallyCompany()`, `src/services/tally/voucherTypeClassifier.js → resolveVoucherTypeClassification()`, `src/services/import/tallySalesImport.js → extractVoucherCollection()`, `src/services/parser/tallyParser.js → parseTallyId()`, `src/services/sync/batchWindow.js → computeBatchWindow()`, `src/services/tally/companyOwnership.js → assertBatchOwnership()`, `src/services/sync/batchWindow.js → findMissingAlterIds()`
-- **`runMasterRefreshForCompany()`** _(async)_ — line 591
+  - Calls in this file: `ensureCheckpointExists()`, `acquireLock()`, `resolveTallyBaseUrl()`, `syncOnePass()`, `releaseLock()`, `emptyResult()`
+- **`runMasterRefreshForCompany()`** _(async)_ — line 590
   - Purpose: Refreshes one company's Stock Item and Ledger masters when they are due (see MASTER_REFRESH_MS). Never throws. - The open-company guard runs first (one light read): if another company is open or Tally is unreachable nothing is requested and the refresh stays due, so the next tick looks again. Both refreshes also verify the GUID ownership of everything Tally returns, and fail closed (they write nothing, and never c...
   - Calls in this file: `resolveTallyBaseUrl()`
-- **`logMasterRefresh()`** — line 633
+- **`logMasterRefresh()`** — line 632
   - Purpose: (no comment in code — see name and calls below)
-- **`runSyncForAllCompanies()`** _(async)_ — line 658
+- **`runSyncForAllCompanies()`** _(async)_ — line 657
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `logMasterRefresh()`, `runSyncForCompanyModule()`
   - Calls other files: `src/models/company.js → find()`
-- **`buildCronExpression()`** — line 737
+- **`buildCronExpression()`** — line 736
   - Purpose: (no comment in code — see name and calls below)
-- **`startTallySyncWorker()`** — line 745
+- **`startTallySyncWorker()`** — line 744
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `buildCronExpression()`, `runSyncForAllCompanies()`
-- **`stopTallySyncWorker()`** — line 776
+- **`stopTallySyncWorker()`** — line 775
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/sync/voucherLineBackfill.js`
 **Used by:** (nothing in the app requires it: entry file, or used only by tests)
 
-**Tested by:** `backfill-voucher-line-details.js`, `verify-voucher-line-details.js`
+**Tested by:** `verify-voucher-line-details.js`
 
 **Imports:** `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/odbc/odbcService.js`, `src/services/import/tallySalesImport.js`, `src/services/parser/tallyParser.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/tally/voucherTypeClassifier.js`, `src/services/tally/companyOwnership.js`, `src/services/sync/batchWindow.js`, `src/services/analytics/dateRanges.js`
 
@@ -1864,7 +1893,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/analytics/freshness.js`
 **Used by:** `src/controllers/syncStatusController.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/trustEnvelope.js`, `src/services/query/analysisPlan.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-sync-success-time.js`
+**Tested by:** `verify-sync-success-time.js`
 
 **Imports:** `src/models/syncCheckpoint.model.js`
 
@@ -2083,7 +2112,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/analytics/referenceDate.js`
 **Used by:** `src/controllers/analyticsController.js`, `src/controllers/reportController.js`, `src/services/analytics/insightTools.js`, `src/services/query/analysisPlan.js`, `src/services/query/execute.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-ai-telemetry.js`, `verify-comparison-period-capability.js`, `verify-cost-forensic.js`, `verify-dashboard-real-data.js`, `verify-growth-comparison-capability.js`, `verify-presentation.js`, `verify-query-chat.js` (+4 more)
+**Tested by:** `verify-ai-telemetry.js`, `verify-comparison-period-capability.js`, `verify-cost-forensic.js`, `verify-dashboard-real-data.js`, `verify-growth-comparison-capability.js`, `verify-presentation.js`, `verify-query-chat.js`, `verify-query-parity.js` (+3 more)
 
 **Imports:** `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/analytics/freshness.js`, `src/services/analytics/analyticsScope.js`, `src/services/analytics/dateRanges.js`
 
@@ -2217,7 +2246,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/aiPricing.js`
 **Used by:** `src/services/query/usageStore.js`
 
-**Tested by:** `eval-ai-cost-live.js`, `eval-ai-cost-report.js`, `verify-ai-cost-path.js`
+**Tested by:** `eval-ai-cost-live.js`, `verify-ai-cost-path.js`
 
 **Imports:** (none)
 
@@ -2236,7 +2265,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/analysisAnswer.js`
 **Used by:** `src/services/query/analysisPresentation.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-analysis-presentation.js`, `verify-decline-investigation.js`, `verify-evidence.js`, `verify-insights.js`, `verify-investigation-loop.js`, `verify-overall-direction.js`, `verify-plain-answer.js` (+1 more)
+**Tested by:** `verify-analysis-presentation.js`, `verify-decline-investigation.js`, `verify-evidence.js`, `verify-insights.js`, `verify-investigation-loop.js`, `verify-overall-direction.js`, `verify-plain-answer.js`, `verify-unavailable-concepts.js`
 
 **Imports:** `src/services/query/answerFormatter.js`, `src/services/query/semanticCatalog.js`, `src/services/query/evidence.js`, `src/services/query/plainAnswer.js`
 
@@ -2267,7 +2296,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/analysisPlan.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/investigation.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-analysis-plan.js`, `verify-investigation-loop.js`
+**Tested by:** `verify-analysis-plan.js`, `verify-investigation-loop.js`
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/answerFormatter.js`, `src/services/analytics/coverage.js`, `src/services/analytics/insightTools.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/freshness.js`, `src/services/query/entityResolver.js`, `src/services/query/answerCache.js`
 
@@ -2310,7 +2339,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/analysisPlanner.js`
 **Used by:** `src/services/query/queryChat.js`
 
-**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js` (+3 more)
+**Tested by:** `eval-ai-cost-live.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js`, `verify-planner-response-cache.js`, `verify-revenue-analysis-guard.js` (+1 more)
 
 **Imports:** `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/planner.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js`, `src/services/query/semanticCatalog.js`, `src/services/query/followUp.js`, `src/services/query/plannerResponseCache.js`
 
@@ -2387,7 +2416,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/answerCache.js`
 **Used by:** `src/services/query/analysisPlan.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-cache-baseline.js`, `verify-ai-telemetry.js`, `verify-analysis-plan.js`, `verify-cost-forensic.js`, `verify-planner-live-eval.js`, `verify-planner-response-cache.js`, `verify-product-return-analytics.js`, `verify-query-cache.js` (+3 more)
+**Tested by:** `verify-ai-telemetry.js`, `verify-analysis-plan.js`, `verify-cost-forensic.js`, `verify-planner-live-eval.js`, `verify-planner-response-cache.js`, `verify-product-return-analytics.js`, `verify-query-cache.js`, `verify-query-planner.js` (+2 more)
 
 **Imports:** `src/services/query/queryPlan.schema.js`, `src/services/query/semanticCatalog.js`, `src/services/query/dataVersion.js`, `src/services/query/execute.js`, `src/services/query/turnTelemetry.js`
 
@@ -2409,7 +2438,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/answerFormatter.js`
 **Used by:** `src/services/query/analysisAnswer.js`, `src/services/query/analysisPlan.js`, `src/services/query/analysisPresentation.js`, `src/services/query/basicAnalysis.js`, `src/services/query/evidence.js`, `src/services/query/groupComparison.js`, `src/services/query/presentation.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-calculation.js`, `verify-customer-count.js`, `verify-plain-query-answer.js`, `verify-presentation.js`, `verify-query-chat.js` (+3 more)
+**Tested by:** `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-calculation.js`, `verify-customer-count.js`, `verify-plain-query-answer.js`, `verify-presentation.js`, `verify-query-chat.js`, `verify-return-analytics.js` (+2 more)
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/analytics/coverage.js`
 
@@ -2688,9 +2717,9 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
   - Calls in this file: `defaultSources()`, `normalizeText()`, `searchedDims()`, `nameScore()`
 
 ## `src/services/query/evidence.js`
-**Used by:** `src/services/query/analysisAnswer.js`, `src/services/query/calculation.js`, `src/services/query/investigation.js`, `src/services/query/plainAnswer.js`, `src/services/query/presentation.js`
+**Used by:** `src/services/query/analysisAnswer.js`, `src/services/query/calculation.js`, `src/services/query/investigation.js`, `src/services/query/plainAnswer.js`, `src/services/query/presentation.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-findings-real.js`, `verify-evidence.js`, `verify-investigation-eval.js`, `verify-investigation-loop.js`, `verify-overall-direction.js`
+**Tested by:** `verify-evidence.js`, `verify-investigation-loop.js`, `verify-overall-direction.js`
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/answerFormatter.js`
 
@@ -2909,7 +2938,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/followUp.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-investigations.js`, `verify-analysis-followup.js`, `verify-ask-ai-ux-fixes.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-semantic-foundation.js`
+**Tested by:** `verify-analysis-followup.js`, `verify-analysis-not-run-followup.js`, `verify-ask-ai-ux-fixes.js`, `verify-followup-context.js`, `verify-group-comparison.js`, `verify-query-chat.js`, `verify-semantic-foundation.js`
 
 **Imports:** `src/services/query/queryPlan.schema.js`
 
@@ -3107,7 +3136,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/planner.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-ai-cost-live.js`, `eval-cache-baseline.js`, `eval-investigations.js`, `verify-ai-cost-path.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js` (+20 more)
+**Tested by:** `eval-ai-cost-live.js`, `verify-ai-cost-path.js`, `verify-ai-telemetry.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-ask-ai-ux-fixes.js`, `verify-calculation.js` (+18 more)
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/query/providerAttempts.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/followUp.js`, `src/services/query/plannerResponseCache.js`
 
@@ -3208,7 +3237,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/plannerResponseCache.js`
 **Used by:** `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-cache-baseline.js`, `verify-ai-cost-path.js`, `verify-cost-forensic.js`, `verify-planner-response-cache.js`, `harness.js`
+**Tested by:** `verify-ai-cost-path.js`, `verify-cost-forensic.js`, `verify-planner-response-cache.js`, `harness.js`
 
 **Imports:** `src/services/query/answerCache.js`
 
@@ -3309,9 +3338,9 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/queryChat.js`
 **Used by:** `src/controllers/chatController.js`
 
-**Tested by:** `eval-cache-baseline.js`, `eval-investigations.js`, `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-calculation.js` (+14 more)
+**Tested by:** `verify-ai-telemetry.js`, `verify-analysis-followup.js`, `verify-analysis-not-run-followup.js`, `verify-analysis-planner.js`, `verify-analysis-presentation.js`, `verify-ask-ai-basic-questions.js`, `verify-calculation.js`, `verify-decline-investigation.js` (+13 more)
 
-**Imports:** `src/services/query/validator.js`, `src/services/analytics/coverage.js`, `src/services/query/followUp.js`, `src/services/query/semanticCatalog.js`, `src/services/query/planner.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/entityResolver.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/calculation.js`, `src/services/query/turnTelemetry.js`, `src/services/query/groupComparison.js`, `src/services/query/answerCache.js`, `src/services/query/dataVersion.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/periodEngine.js`, `src/services/query/basicAnalysis.js`, `src/services/query/analysisPlanner.js`, `src/services/query/investigation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/analytics/insightTools.js`, `src/services/analytics/freshness.js`
+**Imports:** `src/services/query/validator.js`, `src/services/analytics/coverage.js`, `src/services/query/followUp.js`, `src/services/query/semanticCatalog.js`, `src/services/query/planner.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/entityResolver.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/calculation.js`, `src/services/query/turnTelemetry.js`, `src/services/query/groupComparison.js`, `src/services/query/answerCache.js`, `src/services/query/dataVersion.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/periodEngine.js`, `src/services/query/basicAnalysis.js`, `src/services/query/analysisPlanner.js`, `src/services/query/investigation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/analytics/insightTools.js`, `src/services/query/evidence.js`, `src/services/analytics/freshness.js`
 
 **Exports:** `tryAnswerWithQueryEngine`, `getTenantResolver`, `createTurnDates`, `chatTelemetry`
 
@@ -3354,31 +3383,31 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 - **`answerAnalysis()`** _(async)_ — line 215
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `baseResponse()`, `plannerFailureMessage()`, `getSharedExecutor()`, `countingExecute()`, `countingInsight()`, `completePeriodNote()`, `futureVouchersNote()`, `questionLanguage()`, `ASKS_PROFIT()`
-  - Calls other files: `src/services/query/analysisPlanner.js → planAnalysis()`, `src/services/query/basicAnalysis.js → basicShape()`, `src/services/query/investigation.js → investigate()`, `src/services/query/analysisAnswer.js → formatAnalysisAnswer()`, `src/services/query/basicAnalysis.js → salesVsPurchaseText()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatch()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatchText()`, `src/services/query/followUp.js → buildAnalysisState()`, `src/services/query/followUp.js → readQueryState()`, `src/services/query/analysisPresentation.js → buildAnalysisPresentation()`, `src/services/query/presentation.js → displayIntent()`
-- **`countExecution()`** — line 320
+  - Calls other files: `src/services/query/analysisPlanner.js → planAnalysis()`, `src/services/query/basicAnalysis.js → basicShape()`, `src/services/query/investigation.js → investigate()`, `src/services/query/analysisAnswer.js → formatAnalysisAnswer()`, `src/services/query/basicAnalysis.js → salesVsPurchaseText()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatch()`, `src/services/query/basicAnalysis.js → salesVsPurchaseMismatchText()`, `src/services/query/followUp.js → buildAnalysisState()`, `src/services/query/evidence.js → dataDayOf()`, `src/services/query/evidence.js → dayOf()`, `src/services/query/answerFormatter.js → isZero()`, `src/services/query/followUp.js → dataWindow()`, `src/services/analytics/coverage.js → fmtDay()`, `src/services/query/followUp.js → withPendingQuestion()`, `src/services/query/followUp.js → readQueryState()`, `src/services/query/analysisPresentation.js → buildAnalysisPresentation()`, `src/services/query/presentation.js → displayIntent()`
+- **`countExecution()`** — line 350
   - Purpose: (no comment in code — see name and calls below)
-- **`countingExecute()`** — line 324
+- **`countingExecute()`** — line 354
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `countExecution()`
-- **`countingInsight()`** — line 330
+- **`countingInsight()`** — line 360
   - Purpose: (no comment in code — see name and calls below)
-- **`recordExecution()`** — line 335
+- **`recordExecution()`** — line 365
   - Purpose: (no comment in code — see name and calls below)
-- **`tryAnswerWithQueryEngine()`** _(async)_ — line 361
+- **`tryAnswerWithQueryEngine()`** _(async)_ — line 391
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `answerTurn()`, `finishTurnMetrics()`
   - Calls other files: `src/services/query/followUp.js → readQueryState()`, `src/services/query/followUp.js → withPendingQuestion()`, `src/services/query/followUp.js → clarifiedQuestion()`
-- **`finishTurnMetrics()`** — line 394
+- **`finishTurnMetrics()`** — line 424
   - Purpose: Classifies the finished turn from what the turn itself reported (meta) - no re-derivation of routing.
-- **`answerTurn()`** _(async)_ — line 420
+- **`answerTurn()`** _(async)_ — line 450
   - Purpose: (no comment in code — see name and calls below)
   - Calls in this file: `turnPlannerClient()`, `getTenantResolver()`, `createTurnDates()`, `baseResponse()`, `NO_PLANNER_USAGE()`, `plannerFailureMessage()`, `answerAnalysis()`, `completePeriodNote()`, `futureVouchersNote()`, `countingExecute()`, `getSharedExecutor()`, `recordExecution()`, `questionLanguage()`, `withCalculation()`, `withPlain()`
   - Calls other files: `src/services/query/followUp.js → readQueryState()`, `src/services/query/followUp.js → clarifiedQuestion()`, `src/services/query/groupComparison.js → intentOf()`, `src/services/query/groupComparison.js → rankingOf()`, `src/services/query/planner.js → planQuestion()`, `src/services/query/followUp.js → dataWindow()`, `src/services/query/followUp.js → scopeOf()`, `src/services/query/basicAnalysis.js → analysisMode()`, `src/services/query/followUp.js → analysisScopeOf()`, `src/services/query/answerFormatter.js → formatNonAnswer()`, `src/services/query/groupComparison.js → topNOf()`, `src/services/query/groupComparison.js → sameRanking()`, `src/services/query/followUp.js → buildQueryState()`, `src/services/query/groupComparison.js → rankingPlan()`, `src/services/query/groupComparison.js → groupState()`, `src/services/query/groupComparison.js → comparisonPlan()`, `src/services/query/validator.js → validateQueryPlan()`, `src/services/analytics/coverage.js → assessCoverage()`, `src/services/query/groupComparison.js → formatGroupAnswer()`, `src/services/query/presentation.js → displayIntent()`, `src/services/query/answerFormatter.js → formatQueryAnswer()`, `src/services/query/plainAnswer.js → plainQuerySummary()`, `src/services/query/presentation.js → buildPresentation()`, `src/services/query/calculation.js → buildCalculation()`
-- **`questionLanguage()`** — line 650
+- **`questionLanguage()`** — line 680
   - Purpose: The question's language: the planner's structured field; without it, Devanagari script means Hindi, otherwise English.
-- **`withPlain()`** — line 654
+- **`withPlain()`** — line 684
   - Purpose: the view opens with the same plain sentences as the text (an analysis step's view never gets them)
-- **`withCalculation()`** — line 655
+- **`withCalculation()`** — line 685
   - Purpose: (no comment in code — see name and calls below)
 
 ## `src/services/query/queryPlan.schema.js`
@@ -3444,7 +3473,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/turnTelemetry.js`
 **Used by:** `src/services/query/answerCache.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-cache-baseline.js`, `verify-ai-telemetry.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-cache-telemetry.js`, `verify-chat-management.js`, `verify-planner-response-cache.js`, `verify-revenue-analysis-guard.js` (+1 more)
+**Tested by:** `verify-ai-telemetry.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-chat-management.js`, `verify-planner-response-cache.js`, `verify-revenue-analysis-guard.js`, `harness.js`
 
 **Imports:** `src/services/query/usageStore.js`
 
@@ -3485,7 +3514,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/usageStore.js`
 **Used by:** `src/services/query/turnTelemetry.js`
 
-**Tested by:** `eval-cache-baseline.js`, `verify-ai-cost-path.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `verify-cache-telemetry.js`, `harness.js`
+**Tested by:** `verify-ai-cost-path.js`, `verify-ai-usage-persist.js`, `verify-analysis-planner.js`, `harness.js`
 
 **Imports:** `src/services/query/aiPricing.js`, `src/models/aiTurnUsage.model.js`
 
@@ -3518,7 +3547,7 @@ Har file ke liye: kya karti hai, kaun use karta hai, kaun si functions hain, har
 ## `src/services/query/validator.js`
 **Used by:** `src/services/query/analysisPlan.js`, `src/services/query/analysisPlanner.js`, `src/services/query/compile.js`, `src/services/query/execute.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 
-**Tested by:** `eval-cache-baseline.js`, `eval-findings-real.js`, `verify-comparison-period-capability.js`, `verify-customer-count.js`, `verify-group-comparison.js`, `verify-growth-comparison-capability.js`, `verify-ledger-master.js`, `verify-month-boundary-dates.js` (+10 more)
+**Tested by:** `verify-comparison-period-capability.js`, `verify-customer-count.js`, `verify-group-comparison.js`, `verify-growth-comparison-capability.js`, `verify-ledger-master.js`, `verify-month-boundary-dates.js`, `verify-planner-digest.js`, `verify-planner-response-cache.js` (+8 more)
 
 **Imports:** `src/services/query/semanticCatalog.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`, `src/services/query/queryPlan.schema.js`
 
@@ -4917,13 +4946,13 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-ai-telemetry.js` (271 lines) — P1-1: per-turn AI/query telemetry (`tallypulse.ai.turn`). Fakes only: no MongoDB connection, no Anthropic, no Tally, no network. The controller tests stub the Chat model, the date context and freshness in require.cache, so nothing is read or written anywhere. Run: node verify-ai-telemetry.js _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/queryChat.js`, `src/services/analytics/referenceDate.js`, `src/services/query/entityResolver.js`, `src/services/query/answerCache.js` (+2 more)
 - `verify-ai-usage-persist.js` (171 lines) — P0 persisted AI usage telemetry. Offline: the writer is replaced by an in-memory fake (and the Mongoose model by a stub for the default-writer idempotency check) - no MongoDB, no Anthropic, no Tally, no network. Run: node verify-ai-usage-persist.js _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/models/aiTurnUsage.model.js`
 - `verify-analysis-followup.js` (165 lines) — Follow-up context after an ANALYSIS turn (Phase 2): the scope every executed query step shares is saved as the turn's queryContext (followUp.buildAnalysisState), re-read strictly (readQueryState) on the next turn, and given to the analysis planner (planAnalysis previousScope), whose per-step guards read it like a previous plan. The REAL controller (sendChatMessage), chat turn, planners' checks and executor run; the model replies are scripted, the engine is in memory and the Chat model's database _Uses:_ `src/services/query/followUp.js`, `src/services/query/analysisPlanner.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js`
-- `verify-analysis-plan.js` (221 lines) — Analysis plans (services/query/analysisPlan.js), Milestone 1: a general multi-step plan over the existing query engine and insight tools, run by a deterministic executor. No model, no chat wiring. The end-to-end case is a 3-step analysis plus one insight step on synthetic data with hand-computed values: s1 total sales, October vs September -> s2 customers by change (largest fall first, top 2) -> s3 product change for exactly s2's customers (an input binding) ; s4 discount by product in October ( _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js` (+3 more)
-- `verify-analysis-planner.js` (489 lines) — Analysis planner (Milestone 2): a question the query planner declines with `needs_analysis` gets an analysis plan from a second forced tool call, validated with the existing checks, then run by the analysis executor and answered with the measured results only. MOCKED model provider only: no network, no Anthropic call, no Tally. Covers: the generated prompt and tool schema and their budgets; output parsing and protocol checks; valid plans of different shapes (a decline explained by customers and  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlanner.js` (+8 more)
+- `verify-analysis-not-run-followup.js` (127 lines) — An analysis whose steps all CANNOT run because the period is outside the synced data (for example "this month" when the company's data ends in December of last year). Before: nothing was remembered, so the user's reply ("last complete month", or just a period) was planned as a brand-new question and answered with an unrelated total. Now the turn remembers the question and tells the user where the data ends, so the reply is planned TOGETHER with the original question. Offline: scripted planner re _Uses:_ `src/services/query/queryChat.js`, `src/services/query/followUp.js`
+- `verify-analysis-plan.js` (217 lines) — Analysis plans (services/query/analysisPlan.js), Milestone 1: a general multi-step plan over the existing query engine and insight tools, run by a deterministic executor. No model, no chat wiring. The end-to-end case is a 3-step analysis plus one insight step on synthetic data with hand-computed values: s1 total sales, October vs September -> s2 customers by change (largest fall first, top 2) -> s3 product change for exactly s2's customers (an input binding) ; s4 discount by product in October ( _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlan.js`, `src/services/analytics/insightTools.js` (+3 more)
+- `verify-analysis-planner.js` (485 lines) — Analysis planner (Milestone 2): a question the query planner declines with `needs_analysis` gets an analysis plan from a second forced tool call, validated with the existing checks, then run by the analysis executor and answered with the measured results only. MOCKED model provider only: no network, no Anthropic call, no Tally. Covers: the generated prompt and tool schema and their budgets; output parsing and protocol checks; valid plans of different shapes (a decline explained by customers and  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/analysisPlanner.js` (+8 more)
 - `verify-analysis-presentation.js` (213 lines) — Structured view of an analysis answer (services/query/analysisPresentation.js) and the display intent read from the question (presentation.displayIntent). Checks that: - an answered analysis gets a presentation (kind "analysis") with a headline, KPI cards, one featured visual, labelled findings, gaps, suggested next actions and every step - not only the long text; - the headline, the KPI cards, the featured chart and the table carry the SAME values (the engine's, formatted once); - a contributor _Uses:_ `src/services/query/analysisPresentation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/presentation.js`, `src/services/query/answerFormatter.js`, `src/services/query/queryChat.js` (+2 more)
 - `verify-analytics-scope.js` (265 lines) — Analytics data-layer verification (synthetic data only; no Claude, no Tally): - voucher identity (tenantId + tallyGuid, not voucherNo) - analytics scope (tenant + active-only filtering, fails closed) - trust envelope states (valid/zero/stale/failed/never-synced/error) - company-context authorization Every fixture is a clearly-labelled synthetic document (VERIFY-* voucher numbers, a synthetic Company/User) created and removed around each test, regardless of pass/fail. The one write under TENANT_A _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/purchase.model.js`, `src/models/sales.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
-- `verify-ask-ai-basic-questions.js` (296 lines) — The five basic business questions a reviewer asked Ask AI (2026-10-24), through the real chat turn (queryChat.tryAnswerWithQueryEngine): the query planner, ASK_AI_ANALYSIS modes, the analysis planner, the executor, the insight tools, freshness and the answer text. Questions 1, 2, 3 and 5 were refused ("needs several separate analyses") because ASK_AI_ANALYSIS was off; question 4 answered with a failed-Purchase-sync warning. ASK_AI_ANALYSIS unset now means on; basic and off are still checked. 1.  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+6 more)
+- `verify-ask-ai-basic-questions.js` (292 lines) — The five basic business questions a reviewer asked Ask AI (2026-10-24), through the real chat turn (queryChat.tryAnswerWithQueryEngine): the query planner, ASK_AI_ANALYSIS modes, the analysis planner, the executor, the insight tools, freshness and the answer text. Questions 1, 2, 3 and 5 were refused ("needs several separate analyses") because ASK_AI_ANALYSIS was off; question 4 answered with a failed-Purchase-sync warning. ASK_AI_ANALYSIS unset now means on; basic and off are still checked. 1.  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+6 more)
 - `verify-ask-ai-ux-fixes.js` (117 lines) — Ask AI follow-up fixes (offline: no database, no network, no real model; every name and figure is SYNTHETIC): - an empty answer's follow-up ("take the last synced data") is told where the data ends, and the year guard accepts that month - a long ranking says how many moved (100+ products fell), not just "biggest drops" - an analysis follow-up carries the previous ranking, so "these products" needs no question - one bounded retry when the analysis planner asks for what the scope already holds Run _Uses:_ `src/services/query/followUp.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`, `src/services/query/plainAnswer.js`, `src/services/query/presentation.js`
-- `verify-cache-telemetry.js` (66 lines) — Cache and AI-cost measurement (Phase 0): the per-turn counters are truthful, tenant-scoped and private. - reported model calls (claudeCalls / plannerCalls) = the scripted model's actual calls, in every turn, caches on or off; a planner-cache hit is counted as a hit, never as a call; - engine executions are counted by the answer cache's own status, for single queries AND every analysis step; engine computes = misses + bypasses; insight tool runs are counted; - the counters reach the persisted AiT _Uses:_ `src/services/query/usageStore.js`, `src/services/query/turnTelemetry.js`, `src/models/aiTurnUsage.model.js`
 - `verify-calculation.js` (169 lines) — The calculation record of a single-query answer (calculation.buildCalculation, attached to visualization.calculation by queryChat): what executed, with the engine's own values only. Checks the reported July/August example, both accounting bases, the % change rule of computeGrowth (zero previous), filters proven by the previous turn's scope, zero / missing totals, cut lists, incomplete periods, and that no number appears that the engine did not return. Every name is SYNTHETIC; the July/August tot _Uses:_ `src/services/query/calculation.js`, `src/services/analytics/salesAnalytics.js`, `src/services/query/answerFormatter.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 - `verify-chat-management.js` (435 lines) — Ask AI chat management + Stop (cancellation), at the real controller level. - STOP: a client disconnect (the browser's AbortController) before the planner, during the in-flight planner call, or right after the planner answered ends the turn: no further planner call, no save, telemetry clientAborted=true / httpStatus 499. The in-flight planner request receives the abort signal. A real SDK planner client pointed at a local stub (never api.anthropic.com) is aborted mid-request and makes exactly one _Uses:_ `src/services/query/planner.js`, `src/models/chat.model.js`, `src/config/db.js`, `src/controllers/chatController.js`, `src/services/query/turnTelemetry.js`
 - `verify-company-guid-match.js` (291 lines) — Company-GUID-match safety gate verification (2026-09-18). Product rule under test: adding a company to a TallyPulse account, and running Sales Sync, must both verify LIVE against Tally that the GUID being acted on is the company Tally actually has open right now - never trusted from the client, never inferred from company name alone. This uses the REAL live Tally instance (http://localhost:9000) and the REAL existing MongoDB company records already in this environment - not fabricated data - bec _Uses:_ `src/services/auth/tallyCompanyGuard.js`, `src/config/db.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/import/tallySalesImport.js` (+4 more)
@@ -4932,7 +4961,7 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-comparison-period-capability.js` (611 lines) — Comparison & period capability AUDIT - characterizes what TallyPulse can answer today about period comparisons and growth/decline. It changes no production code and asserts CURRENT behaviour (surprising-but-correct behaviour is documented; defects are reported as KNOWN DEFECT, not fixed). A. period x comparison resolution matrix at two anchors (pure) B. known period-engine defects, characterized (pure) C. growth semantics: what the DSL/validator can and cannot represent (pure) D. planner represe _Uses:_ `src/services/query/validator.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/planner.js`, `src/services/query/semanticCatalog.js`, `src/services/analytics/periodEngine.js` (+8 more)
 - `verify-cost-forensic.js` (192 lines) — Cost-path regression at the REAL exported chatController.js `sendChatMessage` HTTP-handler level (not tryAnswerWithQueryEngine in isolation). The planner is the only interpreter, so the contract is: - every question that passes the safety gate costs exactly ONE planner call (a scripted fake here); - conversation history never reaches Claude - only the previous STRUCTURED plan reaches the planner, never the chat text; - the answer cache saves the ENGINE (cacheKey equality, executor skipped), not  _Uses:_ `src/config/db.js`, `src/models/chat.model.js`, `src/services/query/planner.js`, `src/controllers/chatController.js`, `src/services/query/answerCache.js` (+6 more)
 - `verify-customer-count.js` (281 lines) — customerCount (Slice 3): distinct sales customers, counted only when the party name matches EXACTLY ONE live ledger of the tenant's own Ledger master and that ledger is a debtor (Sundry Debtors). NO Claude / Anthropic, no Tally, no network: synthetic tenants on the loopback test database only (the test-mode guard in connectDB refuses anything else). All synthetic data is removed at the end. The fixtures are built so that the RAW distinct-name count (before Ledger-master resolution) differs from  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/ledgerMaster.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/query/semanticCatalog.js` (+5 more)
-- `verify-dashboard-real-data.js` (186 lines) — Regression tests for the Dashboard/Analytics "no fabricated data" remediation: tenant-reference-date anchoring (referenceDate.js), the new monthly trend aggregations (getSalesTrend/getPurchaseTrend), and the new distinct-customer-count aggregation (getCustomerCounts). Every number is independently cross-checked against a raw Mongo aggregation computed a different way in this file, for both real tenants (WE FOUR, Nirmal) - never "trust the function under test to grade itself". Run: node verify-da _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/company.js`, `src/models/user.model.js` (+4 more)
+- `verify-dashboard-real-data.js` (186 lines) — Regression tests for the Dashboard/Analytics "no fabricated data" remediation: tenant-reference-date anchoring (referenceDate.js), the new monthly trend aggregations (getSalesTrend/getPurchaseTrend), and the new distinct-customer-count aggregation (getCustomerCounts). Every number is independently cross-checked against a raw Mongo aggregation computed a different way in this file, for both real tenants (live tenant A, live tenant B) - never "trust the function under test to grade itself". Run: node verify-da _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/company.js`, `src/models/user.model.js` (+4 more)
 - `verify-db-connection-guard.js` (237 lines) — DB-free tests for the connection guard in src/config/db.js. Nothing here connects to MongoDB: the guard is a pure decision function. Run: node verify-db-connection-guard.js _Uses:_ `src/config/db.js`
 - `verify-decline-investigation.js` (239 lines) — "Why did sales decline in August 2025?" - the bounded investigation connects the measured fall to its customer and product contributors and, when ONE product carries a material share of a fall its step ranked by that fall, to that product's purchase evidence (evidence.js rule 5, reached through the investigation's existing purchases_for_fall follow-up). The REAL investigation loop (investigate), executor, evidence and answer formatter run, and the chat turn once end to end; the engine is in memo _Uses:_ `src/services/query/investigation.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/query/queryChat.js`
 - `verify-entity-resolver.js` (224 lines) — Tenant-scoped entity resolver (services/query/entityResolver.js): the one component that confirms a typed customer / supplier / product / group name exists for THIS tenant. The planner re-verifies every name Claude used through it. Fully offline: injected sources / fake models only - no MongoDB, no Tally, no Anthropic, no network. (These checks used to live inside the router suite; the router is gone, the resolver is not.) Run: node verify-entity-resolver.js _Uses:_ `src/services/query/entityResolver.js`
@@ -4940,37 +4969,37 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-followup-context.js` (198 lines) — Follow-up context across an analysis turn that measured BOTH sales and purchases, then into a single-query follow-up and a deeper analysis. The regression: "Compare sales vs purchase product wise and customer wise of Aug 2025" followed by "customers jiske wajah se sale giri" was planned with no context (month to date vs last month, no records), because 1. followUp.buildAnalysisState saved NO state when the steps differed in entity (sales and purchase), and 2. the query planner was never given an _Uses:_ `src/services/query/followUp.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js`
 - `verify-group-comparison.js` (227 lines) — Top N versus the others (groupComparison.js) and its follow-ups, on synthetic data: "top 3 suppliers which give me best price" -> "Compare with others" -> "Compare top 3 suppliers with others" -> "Aug 2025". The REAL controller (sendChatMessage), chat turn, query planner checks, validator, follow-up state and presentation run; the model replies are scripted, the engine is in memory (per-month purchases by supplier, honouring period, sort, limit and the overall total) and the Chat model's databas _Uses:_ `src/services/query/groupComparison.js`, `src/services/query/followUp.js`, `src/services/query/validator.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js` (+1 more)
 - `verify-growth-comparison-capability.js` (438 lines) — Real-user growth & comparison semantics AUDIT (read-only). Written as a snapshot of the audit findings; updated by the Semantic Foundation checkpoint (P-SF, 2026-09-28): the defects it pinned (three "todays", % totals refused, no coverage model) are asserted FIXED. The month-end and new/lost facts in B are unchanged on purpose (product decisions, docs/SEMANTIC_FOUNDATION.md). There is no deterministic router: the planner interprets every question (verify-query-planner.js, verify-nlu-eval.js). Th _Uses:_ `src/services/query/validator.js`, `src/services/query/planner.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`, `src/services/analytics/referenceDate.js` (+6 more)
-- `verify-insight-tools.js` (198 lines) — Insight tools (services/analytics/insightTools.js): the validated registry over the existing insight functions. Proves: each tool returns the insight function's OWN result unchanged (compared with a direct call), plus a consistent evidence envelope (period, arguments, disclosures, coverage, limitations); strict argument validation (a tenant in the arguments is rejected); the tenant comes from the context only and never leaks across tenants; every aggregation gets an explicit maxTimeMS; timeouts, _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/analytics/insights.js` (+3 more)
-- `verify-insights.js` (672 lines) — Insights (services/analytics/insights.js): discount, product rates, supplier rates, indicative margin per product and per supplier, and the month-by-month product trend, and their REST handlers. Every figure is checked against an INDEPENDENT oracle: plain JavaScript loops over the same synthetic vouchers, written from the definitions in insights.js (not from its pipeline), with dates compared as YYYY-MM-DD strings. Also checked: cancelled vouchers and other tenants never count, both period edge  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/analytics/insights.js` (+7 more)
-- `verify-investigation-eval.js` (176 lines) — Self-test of the planted-cause investigation evaluation (eval/investigation/, eval-investigations.js). It proves the harness, not the product: the ground truth equals hand-derived figures; the grader reads numbers correctly (dates are not figures), passes a handwritten ideal answer on EVERY criterion (no criterion is impossible) and fails wrong answers (missed causes, a profit claim, another tenant's figures, an unhedged hypothesis, no context); and the offline ceiling run through the real chat  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+1 more)
+- `verify-insight-tools.js` (194 lines) — Insight tools (services/analytics/insightTools.js): the validated registry over the existing insight functions. Proves: each tool returns the insight function's OWN result unchanged (compared with a direct call), plus a consistent evidence envelope (period, arguments, disclosures, coverage, limitations); strict argument validation (a tenant in the arguments is rejected); the tenant comes from the context only and never leaks across tenants; every aggregation gets an explicit maxTimeMS; timeouts, _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/tenantDataVersion.model.js`, `src/services/analytics/insights.js` (+3 more)
+- `verify-insights.js` (668 lines) — Insights (services/analytics/insights.js): discount, product rates, supplier rates, indicative margin per product and per supplier, and the month-by-month product trend, and their REST handlers. Every figure is checked against an INDEPENDENT oracle: plain JavaScript loops over the same synthetic vouchers, written from the definitions in insights.js (not from its pipeline), with dates compared as YYYY-MM-DD strings. Also checked: cancelled vouchers and other tenants never count, both period edge  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/analytics/insights.js` (+7 more)
 - `verify-investigation-loop.js` (280 lines) — Bounded investigation loop (services/query/investigation.js), first slice. The REAL loop and the REAL executeAnalysisPlan (plan parser, query validator, name re-resolution, freshness and coverage gates) run against an in-memory engine stub that answers like the query engine (rows ordered and cut by the plan's sort and limit, totals over every row). Checks: a breakdown ordered against its change triggers ONE validated follow-up that re-orders it toward the change; the answer then names the larges _Uses:_ `src/services/query/investigation.js`, `src/services/query/analysisPlan.js`, `src/services/query/analysisAnswer.js`, `src/services/query/queryChat.js`, `src/services/query/evidence.js`
 - `verify-ledger-master.js` (314 lines) — LedgerMaster phase: Tally Ledger/Group master sync + "new customer/supplier" (= Tally ledger CreatedDate inside the period, and traded in it). A. parsing + party role from the group chain (pure) B. refreshLedgerMasters: ownership rejection, persistence, unchanged skip, rename, removal, mass-removal guard, tenant isolation (Mongo) C. schema / validator rules for the new_in_period filter (pure) E. executor end-to-end on synthetic Mongo data (engine vs hand-computed oracle), disclosures, missing ma _Uses:_ `src/config/db.js`, `src/models/ledgerMaster.model.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/tally/ledgerMaster.js` (+3 more)
-- `verify-migrate-voucher-total-amount.js` (215 lines) — Migration tests for migrate-voucher-total-amount.js, against a fully isolated synthetic fixture - NEVER real WE FOUR/Nirmal data. Invokes the actual CLI (child process) exactly as an operator would, so argument parsing, dry-run gating, and the --export requirement are all exercised for real, not bypassed. Run: node verify-migrate-voucher-total-amount.js _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`
 - `verify-month-boundary-dates.js` (179 lines) — Month-boundary date regression: "previous month" and every other month/year shift must land in the right calendar month on EVERY anchor day - including 29-31 Mar, 31 May/Jul/Oct/Dec, 31 Jan, 29-30 Apr, 31 Aug and 29 Feb, where a plain `new Date(y, m - 1, day)` rolls over into the wrong month. Checked on every surface that resolves periods: dateRanges (shared helpers) -> periodEngine -> Query DSL validator (planner/engine) REST analytics/report API (dateRanges.resolveRequestPeriod / resolveReques _Uses:_ `src/services/analytics/dateRanges.js`, `src/services/analytics/periodEngine.js`, `src/services/query/validator.js`
 - `verify-multi-company.js` (256 lines) — Multi-company-per-account verification, over the real HTTP routes, with the "Connect Tally" flow (no GUID typed anywhere). Product rules under test: - one TallyPulse account (email) can hold several companies; connecting one never needs a second email - the company connected is whichever one TallyPrime has open - detected by the backend, never supplied by the client - the first company needs only the session, further ones re-check the password - switching between the account's own companies need _Uses:_ `src/config/db.js`, `src/models/user.model.js`, `src/models/company.js`, `src/models/userCompanyAccess.model.js`, `src/routes/authRoutes.js` (+1 more)
 - `verify-nlu-eval.js` (539 lines) — NLU evaluation harness: measures how well TallyPulse understands natural-language questions, against eval/nlu-corpus.json (synthetic names, expected plans in the existing queryPlan v1 contract). The planner is the only interpreter (there is no deterministic router), so the evaluation is of the planner. node verify-nlu-eval.js FREE: corpus self-check + scoring self-tests with fake providers (period mutations, a one-field-at-a-time mutation test of the comparator, the UTC pin, and the 380-row buck _Uses:_ `src/services/query/planner.js`, `src/services/query/queryPlan.schema.js`
+- `verify-odbc-company-response.js` (60 lines) — GET /api/odbc/company (odbcController.testTallyConnection): the response carries the connection state and the detected company NAME, and never Tally's raw company report (any logged-in user could otherwise read which companies the shared Tally has open). An unreachable Tally is still an error response, as before. Offline: the two Tally-facing modules are replaced by stubs. Run: node verify-odbc-company-response.js _Uses:_ `src/controllers/odbcController.js`
 - `verify-overall-direction.js` (102 lines) — The overall result governs the answer (evidence.overallOf): the measured total's direction is stated first, in words, and when the plan's own breakdowns look the other way (ranked by / filtered to falls while the total rose, or the reverse) the answer says the comparison does not show the opposite. Customer/product declines and zero sales stay secondary findings. Grounded fixture: the reported June -> July 2025 comparison - sales invoice amount ₹40,85,714.10 -> ₹57,16,599.12 (+₹16,30,885.02, +39 _Uses:_ `src/services/query/evidence.js`, `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/query/queryChat.js`
-- `verify-period-engine.js` (235 lines) — Regression tests for periodEngine.js - the new, deterministic, LLM-independent date-period resolver (Part 1 of the Stock Group analytics foundation). Every expected value below was independently computed (printed via a throwaway script, cross-checked by hand against the calendar) BEFORE being hardcoded here - never generated by calling the function under test and trusting its own output. All comparisons use .toISOString(). The engine resolves calendar days in the server's local timezone, and the _Uses:_ `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`
+- `verify-period-engine.js` (230 lines) — Regression tests for periodEngine.js - the new, deterministic, LLM-independent date-period resolver (Part 1 of the Stock Group analytics foundation). Every expected value below was independently computed (printed via a throwaway script, cross-checked by hand against the calendar) BEFORE being hardcoded here - never generated by calling the function under test and trusting its own output. All comparisons use .toISOString(). The engine resolves calendar days in the server's local timezone, and the _Uses:_ `src/services/analytics/periodEngine.js`, `src/services/analytics/dateRanges.js`
 - `verify-plain-answer.js` (128 lines) — The plain-language opening of an analysis answer (plainAnswer.js): the same verified facts as the detailed findings, in the question's language (en / hinglish / hi, from the analysis planner's structured `language`), short and in business words - without changing a figure or turning a possibility into a fact. Grounded fixture (reported): Ashok Traders sales ₹4,77,389.87 (Jul 2025) -> ₹1,34,075.39 (Aug 2025), -₹3,43,314.48 (71.9%); RANGEELA TEMPRA CLR 36ML sales ₹1,45,463.04 -> none recorded; its _Uses:_ `src/services/query/analysisAnswer.js`, `src/services/query/analysisPresentation.js`, `src/services/query/plainAnswer.js`, `src/services/query/queryChat.js`
 - `verify-plain-query-answer.js` (168 lines) — The plain-language opening of a SINGLE-query answer (plainAnswer.plainQuerySummary, wired in queryChat): a few short sentences in the question's language (en / hinglish / hi - the query planner's optional `language` field, else Devanagari script -> hi, else en), built only from the engine result the detailed text formats. The detailed text (exact figures, basis, notes) follows unchanged; no figure is derived (rounding only). Every name and figure here is SYNTHETIC. Run: node verify-plain-query-a _Uses:_ `src/services/query/plainAnswer.js`, `src/services/query/answerFormatter.js`, `src/services/query/presentation.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`
 - `verify-planner-digest.js` (351 lines) — The planner prompt's catalog digest (planner.js buildCatalogDigest): it must be GENERATED from semanticCatalog.js, carry the meaning the model needs to choose the right metric (each summed metric's own catalog description: the tax-inclusive voucher total vs the pre-tax item value, with its grain), state the validator rules the schema cannot express (including that voucher-grain metrics cannot be grouped by product), list what cannot be answered, and stay small. Offline and free: no model is call _Uses:_ `src/services/query/planner.js`, `src/services/query/semanticCatalog.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`
 - `verify-planner-live-eval.js` (447 lines) — Phase 1G - CONTROLLED LIVE PLANNER EVALUATION (manual; makes real Anthropic calls). For each representative Sales/Purchase question (the planner interprets every question; there is no router), this script: 1. asks the real Claude planner (exactly one call per question, no repair), 2. compares Claude's plan SEMANTICALLY against an independently written expectation, 3. executes the validated plan through the real engine + answer cache, 4. compares the final answer with an independent oracle (raw M _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/query/planner.js` (+4 more)
 - `verify-planner-response-cache.js` (286 lines) — Planner response cache (plannerResponseCache.js): a remembered model REPLY for an identical model request, per tenant. Offline, scripted models only (no network, no database, no paid call). Checks: hits/misses/bypasses, tenant isolation, the key (model, temperature, system, tools, tool_choice, max_tokens, messages), what is never stored (errors, timeouts, aborts, malformed / unexpected / truncated replies), bounds (per tenant, total, bytes, TTL, deterministic eviction), truthful usage (a hit is  _Uses:_ `src/services/query/plannerResponseCache.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js` (+2 more)
 - `verify-presentation.js` (222 lines) — Presentation model (services/query/presentation.js): a deterministic description of how an ENGINE RESULT is shown (KPI / ranking / trend / comparison / table / empty). Proves that: - every figure in the model is a value the engine returned, formatted exactly like the text answer - nothing is computed except the marked, derived "Avg invoice" (amount / invoices of two returned values) - the text answer is byte-for-byte what formatQueryAnswer produces (presentation never changes it) - clarification _Uses:_ `src/services/query/presentation.js`, `src/services/query/answerFormatter.js`, `src/services/query/plainAnswer.js`, `src/services/query/queryChat.js`, `src/services/query/planner.js` (+2 more)
-- `verify-product-return-analytics.js` (218 lines) — Product-Level Return Analytics: which products are returned (quantity and pre-tax value), reusing the existing sales_return/purchase_return entities, the generic "product" dimension (raw inventory.itemName, no StockItemMaster merge - same identity convention as sales/purchase), and the generic groupBy+sort+limit ranking machinery. No second DSL, no second classifier. ACCOUNTING BASIS (established from real WE FOUR data before writing any code - see docs/PROJECT_CONTEXT.md): inventory.quantity is _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/answerCache.js`, `src/services/query/compile.js` (+1 more)
+- `verify-product-return-analytics.js` (218 lines) — Product-Level Return Analytics: which products are returned (quantity and pre-tax value), reusing the existing sales_return/purchase_return entities, the generic "product" dimension (raw inventory.itemName, no StockItemMaster merge - same identity convention as sales/purchase), and the generic groupBy+sort+limit ranking machinery. No second DSL, no second classifier. ACCOUNTING BASIS (established from live tenant A data before writing any code - see docs/PROJECT_CONTEXT.md): inventory.quantity is _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/answerCache.js`, `src/services/query/compile.js` (+1 more)
+- `verify-proxy-and-chat-limits.js` (110 lines) — Two production safeguards, tested on a real Express app over a loopback socket (no database, no network beyond 127.0.0.1): 1. TRUST_PROXY (httpSecurity.parseTrustProxy + app.set("trust proxy")): behind a proxy every client reaches the app from the proxy's address, so a per-address limit is one bucket for everybody. With the proxy count set, X-Forwarded-For gives each client its own bucket; with it unset (a direct connection) the header is ignored, so a client cannot choose its own address. 2. ch _Uses:_ `src/middleware/httpSecurity.js`, `src/middleware/rateLimit.js`, `src/routes/chatRoutes.js`
 - `verify-purchase-mapper.js` (170 lines) — Tally Purchase voucher -> Purchase document: parser (tallyParser.parseTallyVoucher) -> mapper (purchaseMapper.mapTallyPurchase) -> the Purchase schema. The same path processSinglePurchaseVoucher (voucherPersistence.js) runs before every Purchase write, for the sync worker, recovery and the import. Every expected amount below is worked out by hand from the fixture's own numbers (see the comment next to each), never read back from the mapper. Contract (docs/PROJECT_CONTEXT.md, "Stored signs"; tall _Uses:_ `src/services/parser/tallyParser.js`, `src/services/mapper/purchaseMapper.js`, `src/models/purchase.model.js`
 - `verify-query-cache.js` (576 lines) — Phase 1E verification: answer cache + TenantDataVersion. Sections A-B are deterministic (no database). Sections C-F use MongoDB with clearly synthetic tenants (removed at the end) and a local stub standing in for Tally; they never touch real business data, Tally, or Anthropic. A. cache behaviour (fake executor/version) B. tenant isolation + fail-closed rules of the cache C. TenantDataVersion bumps on every write kind (model plugin) D. invalidation through the REAL write paths: sync, cancel/delet _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/tenantDataVersion.model.js` (+9 more)
 - `verify-query-chat.js` (909 lines) — Production chat wiring: question (+ the previous structured plan) -> planner -> validator -> cache -> engine. There is no deterministic router: the planner is the only interpreter and every turn that passes the safety gate costs exactly one planner call, and every turn ends in an honest answer (a figure, a clarification, a refusal or a fixed failure message) - there is no other chat path. NO Anthropic call and no network: the planner client is a scripted fake and fetch/http are poisoned for the  _Uses:_ `src/config/db.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js`, `src/services/analytics/referenceDate.js`, `src/services/analytics/coverage.js` (+10 more)
 - `verify-query-dsl.js` (566 lines) — Phase 1A verification: Sales/Purchase semantic catalog + strict Query DSL schema. Fully deterministic - NO database, NO Tally, NO Anthropic call. (It require()s existing analytics modules only to guard the catalog against drifting from production constants/functions; requiring them loads Mongoose models but never connects.) Run: node verify-query-dsl.js _Uses:_ `src/services/query/semanticCatalog.js`, `src/services/query/queryPlan.schema.js`, `src/services/analytics/periodEngine.js`, `src/services/analytics/salesAnalytics.js`, `src/services/analytics/purchaseAnalytics.js` (+1 more)
-- `verify-query-engine.js` (985 lines) — Phase 1B verification: validator + compiler + executor for the Sales/Purchase Query DSL. NO Claude / Anthropic anywhere. Uses MongoDB with two clearly-labelled SYNTHETIC tenants (TEST-TENANT-A/B-query-engine) whose expected values are hand-computed, plus a small real-data smoke check on WE FOUR (independent aggregation). All synthetic data is removed at the end, pass or fail. This is NOT the parity suite (Phase 1C). Run: node verify-query-engine.js (SHOW_COMPILED=1 prints example pipelines) _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+6 more)
-- `verify-query-parity-synthetic.js` (222 lines) — The PARITY SUITE (verify-query-parity.js) on synthetic data, so it runs in CI. verify-query-parity.js compares the generic Query Engine with the existing analytics (salesAnalytics, purchaseAnalytics, stockGroupAnalytics) and with independently written JS oracles. Its comparisons are data-driven (customer/product names, periods and rankings all come from the tenant's own vouchers), but its real-data run needs the WE FOUR tenant, so it is NOT RUN in CI. This suite seeds two synthetic tenants into  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+5 more)
-- `verify-query-parity.js` (976 lines) — Phase 1C - PARITY SUITE: generic Query Engine vs the existing analytics. READ-ONLY against real data (WE FOUR = the large tenant, Nirmal = a small second tenant). Writes nothing. No Claude/Anthropic calls. Oracle policy (from the semantic catalog's PARITY_ORACLES): existing - the current analytics function is the ground truth (salesAnalytics / purchaseAnalytics / stockGroupAnalytics). independent - no existing function covers the shape, so the oracle is an INDEPENDENTLY written JavaScript comput _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+8 more)
+- `verify-query-engine.js` (985 lines) — Phase 1B verification: validator + compiler + executor for the Sales/Purchase Query DSL. NO Claude / Anthropic anywhere. Uses MongoDB with two clearly-labelled SYNTHETIC tenants (TEST-TENANT-A/B-query-engine) whose expected values are hand-computed, plus a small real-data smoke check on live tenant A (independent aggregation). All synthetic data is removed at the end, pass or fail. This is NOT the parity suite (Phase 1C). Run: node verify-query-engine.js (SHOW_COMPILED=1 prints example pipelines) _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+6 more)
+- `verify-query-parity-synthetic.js` (222 lines) — The PARITY SUITE (verify-query-parity.js) on synthetic data, so it runs in CI. verify-query-parity.js compares the generic Query Engine with the existing analytics (salesAnalytics, purchaseAnalytics, stockGroupAnalytics) and with independently written JS oracles. Its comparisons are data-driven (customer/product names, periods and rankings all come from the tenant's own vouchers), but its real-data run needs the live tenant A, so it is NOT RUN in CI. This suite seeds two synthetic tenants into  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+5 more)
+- `verify-query-parity.js` (976 lines) — Phase 1C - PARITY SUITE: generic Query Engine vs the existing analytics. READ-ONLY against real data (live tenant A = the large tenant, live tenant B = a small second tenant). Writes nothing. No Claude/Anthropic calls. Oracle policy (from the semantic catalog's PARITY_ORACLES): existing - the current analytics function is the ground truth (salesAnalytics / purchaseAnalytics / stockGroupAnalytics). independent - no existing function covers the shape, so the oracle is an INDEPENDENTLY written JavaScript comput _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js` (+8 more)
 - `verify-query-planner.js` (1238 lines) — Phase 1F verification: Claude planner (question -> Query DSL). EVERY Claude interaction here is a scripted FAKE client. No Anthropic call, no network, no Tally. Sections A-M are deterministic; section N is read-only against MongoDB (real tenant, real engine + cache, fake Claude). Run: node verify-query-planner.js _Uses:_ `src/services/query/planner.js`, `src/services/query/entityResolver.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/semanticCatalog.js` (+6 more)
 - `verify-reconciliation-history.js` (353 lines) — Historical-deletion behavior of the EXISTING reconciliation (reconciliation.js + reconciliationWorker.js), end to end. Scenario: a voucher synced a month ago is later deleted in Tally. The incremental AlterID checkpoint is far ahead, so incremental sync never sees the deletion. Reconciliation must catch it: Tally current GUID registry -> compare with Mongo active GUIDs -> missing -> mark deleted (never physically removed) -> analytics excludes it without touching the incremental SyncCheckpoint.  _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/reconciliationCheckpoint.model.js` (+8 more)
 - `verify-reconciliation-perf-and-failure.js` (340 lines) — Reconciliation performance + Mongo-failure verification. Two things verify-reconciliation.js does NOT cover: 1. Behavior at a realistic voucher volume (a few thousand active vouchers) - confirms the GUID diff stays a single Mongo find + single bulk updateMany (no N+1) and completes in a reasonable time. 2. What happens when MongoDB itself fails mid-reconciliation, AFTER a successful Tally GUID fetch (e.g. write blip) - does it fail safely, leave state uncorrupted, and allow the next run to retry _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/reconciliationCheckpoint.model.js`, `src/services/sync/reconciliation.js`, `src/services/sync/reconciliationWorker.js` (+1 more)
 - `verify-reconciliation.js` (482 lines) — Reconciliation safety-net verification. Test categories (2026-09-18 revision - see below for why): LIVE TALLY INTEGRATION (testRealDeletionDetection, testAnalyticsExcludesReconciledVouchers): genuinely need a reachable Tally, because they exercise reconcileVoucherType against the REAL current Sales/Purchase guid set. Previously these hardcoded two specific historical voucher numbers (Sales SA/49/2025-26, Purchase SA/54/2025-26) as "known to be deleted" fixtures. That broke silently: this dev ten _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/reconciliationCheckpoint.model.js` (+8 more)
 - `verify-reports.js` (290 lines) — Regression tests for the Reports module (Product Report, Customer Report, and the CSV export endpoints for all four report types). Sales Report and Purchase Report have no dedicated backend logic to test here - they reuse getSalesSummary/getPurchaseSummary (already covered by verify-dashboard-real-data.js) and the voucher-listing endpoints (already covered by verify-voucher-pagination.js). This file covers exactly what's new: reportAnalytics.js and reportController.js. Every number is independen _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/company.js`, `src/models/user.model.js` (+2 more)
-- `verify-return-analytics.js` (235 lines) — Return Analytics Phase 1: query engine, chat integration (freshness + coverage, both fixed in this phase), tenant security, answer cache, and a real-data oracle check against WE FOUR / Nirmal (read-only). Complements verify-return-query.js (engine basics) and verify-adjustment-note.js (sync pipeline). This suite covers trend, comparison, the queryChat freshness/coverage entity-label fixes, cache-hit behaviour, and a forged tenant/company rejection. Phrasing -> plan is the planner's job (verify-q _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/entityResolver.js`, `src/services/query/execute.js`, `src/services/query/queryChat.js` (+5 more)
+- `verify-return-analytics.js` (235 lines) — Return Analytics Phase 1: query engine, chat integration (freshness + coverage, both fixed in this phase), tenant security, answer cache, and a real-data oracle check against live tenant A / live tenant B (read-only). Complements verify-return-query.js (engine basics) and verify-adjustment-note.js (sync pipeline). This suite covers trend, comparison, the queryChat freshness/coverage entity-label fixes, cache-hit behaviour, and a forged tenant/company rejection. Phrasing -> plan is the planner's job (verify-q _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/entityResolver.js`, `src/services/query/execute.js`, `src/services/query/queryChat.js` (+5 more)
 - `verify-return-query.js` (101 lines) — Sales/purchase return query capability (LedgerMaster phase follow-on): the sales_return/purchase_return catalog entities end-to-end against real synthetic AdjustmentNote documents (engine vs a hand-computed oracle). (Phrasing -> plan is the planner's job; see verify-query-planner.js.) Complements verify-adjustment-note.js (sync pipeline) and verify-query-engine.js/verify-query-dsl.js (unaffected regression, already re-run for this phase). Synthetic tenant only. Run: node verify-return-query.js _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/semanticCatalog.js`
 - `verify-return-ranking.js` (159 lines) — Return Analytics: Top-N customer/supplier ranking by sales/purchase return amount (execute.js/compile.js unchanged - groupBy+sort+limit, already generic). Complements verify-return-analytics.js (totals/trend/comparison) and verify-return-query.js. This suite is the ranking-specific checklist: top 1/5/10, no-N default, both directions, date filtering, tenant isolation, zero vs missing coverage, deterministic ties and cache hits. (Phrasing -> plan is the planner's job; see verify-query-planner.js. _Uses:_ `src/config/db.js`, `src/models/adjustmentNote.model.js`, `src/services/query/execute.js`, `src/services/query/answerCache.js`
 - `verify-revenue-analysis-guard.js` (103 lines) — The revenue basis inside an ANALYSIS (analysisPlanner.revenueGuard). "Revenue" means sales + lineAmount (pre-tax item value). An analysis is judged as a whole: it needs one revenue step, may carry supporting steps (quantity, counts, breakdowns, sales-side insight tools) under their own labels, and must never show a tax-inclusive voucher total or a non-sales entity beside "revenue". Offline: no database, no network, no model; every name and figure is SYNTHETIC. Run: node verify-revenue-analysis-g _Uses:_ `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/turnTelemetry.js`
@@ -4981,45 +5010,36 @@ Ye sab `backend/` ke root me (aur `backend/eval/`) hain. `verify-*.js` offline t
 - `verify-security-audit.js` (577 lines) — TallyPulse security audit - executable probes (no production code is changed). Each probe states the SECURE behaviour it expects and reports either [SECURE] the application behaved securely, or [VULNERABLE] the application did NOT (this is an audit finding, not a test bug - the run does not fail the process unless --strict). It backs the evidence in docs/TallyPulse-Security-Audit.md (probe ids SEC-xx). Safe by construction: an in-process copy of the API (same routers/middleware as server.js, no  _Uses:_ `src/config/db.js`, `src/models/user.model.js`, `src/models/company.js`, `src/models/userCompanyAccess.model.js`, `src/models/sales.model.js` (+23 more)
 - `verify-self-heal.js` (444 lines) — Data/checkpoint self-heal (selfHeal.js, wired into reconciliationWorker.js). Scenario: the incremental SyncCheckpoint is far ahead, but MongoDB lost vouchers Tally still has (manual delete, restore...). The normal sync will never fetch them again. After a SUCCESSFUL reconciliation pass the worker compares Tally's voucher GUIDs with the tenant's MongoDB GUIDs (identities, never counts) and repairs the difference through the existing recovery service - bounded, on a cooldown, never touching SyncCh _Uses:_ `src/config/db.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/reconciliationCheckpoint.model.js`, `src/services/sync/selfHeal.js` (+4 more)
 - `verify-semantic-foundation.js` (682 lines) — Semantic Foundation & Context (P-SF) - focused deterministic suite. There is no deterministic router: the planner interprets every question. This suite pins what the product does with a correct interpretation (the plan fixtures below), independent of the language that produced it: A. ONE tenant reference date per turn: the rule, future-dated vouchers (rule kept + disclosed), memoisation, and the SAME period boundaries through the engine and the planner B. relative periods: engine boundaries vs a _Uses:_ `src/services/query/validator.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/entityResolver.js`, `src/services/query/planner.js`, `src/services/query/queryChat.js` (+13 more)
-- `verify-stock-group-analytics.js` (474 lines) — Regression tests for stockGroupAnalytics.js - deterministic Top-10 Stock Group sales analytics (Sale.inventory -> StockItemMaster -> stockGroupName, no LLM anywhere). Structure: A. Synthetic-tenant tests (1-19 from the task spec) - isolated, controlled fixtures, cleaned up before and after. B. Real WE FOUR verification - independent MongoDB aggregations written SEPARATELY from stockGroupAnalytics.js's own code (never "call the function, then compare its output to itself"). No Anthropic/Claude ca _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js`, `src/services/analytics/stockGroupAnalytics.js` (+2 more)
-- `verify-stock-item-gst.js` (822 lines) — Stock Item GST data, end to end. Two parts, one run: PART 1 - parsing and rules (no MongoDB, no Tally, no network): the Tally request, parsing of the observed raw field names and nested arrays, whitespace / control-character / numeric normalisation, the merge rules (idempotence, corrections, partial / malformed / empty / hollow responses), voucher-line GST, and the guarantee that no tax figure is derived from it. PART 2 - persistence and sync (MongoDB, injected Tally-shaped fetchers): the full d _Uses:_ `src/config/db.js`, `src/services/parser/gstFields.js`, `src/services/parser/tallyParser.js`, `src/services/mapper/salesMapper.js`, `src/services/mapper/purchaseMapper.js` (+11 more)
-- `verify-stock-item-master.js` (303 lines) — Regression tests for the Stock Item -> Stock Group master layer (Part 2 of the Stock Group analytics foundation): - stockItemMaster.js's parsing (reuses voucherTypeClassifier's parseVoucherTypeMasterList - proven to work on this exact shape against a real, live TallyPrime instance, see the investigation report) - Stock Group extraction from Tally's own $Parent - missing-Parent / malformed-record handling - company GUID ownership validation (validateMasterOwnership, reused unchanged from companyO _Uses:_ `src/config/db.js`, `src/models/stockItemMaster.model.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/companyOwnership.js`, `src/services/query/dataVersion.js`
+- `verify-stock-group-analytics.js` (469 lines) — Regression tests for stockGroupAnalytics.js - deterministic Top-10 Stock Group sales analytics (Sale.inventory -> StockItemMaster -> stockGroupName, no LLM anywhere). Structure: A. Synthetic-tenant tests (1-19 from the task spec) - isolated, controlled fixtures, cleaned up before and after. B. Live tenant A verification - independent MongoDB aggregations written SEPARATELY from stockGroupAnalytics.js's own code (never "call the function, then compare its output to itself"). No Anthropic/Claude ca _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/stockItemMaster.model.js`, `src/models/company.js`, `src/services/analytics/stockGroupAnalytics.js` (+2 more)
+- `verify-stock-item-gst.js` (818 lines) — Stock Item GST data, end to end. Two parts, one run: PART 1 - parsing and rules (no MongoDB, no Tally, no network): the Tally request, parsing of the observed raw field names and nested arrays, whitespace / control-character / numeric normalisation, the merge rules (idempotence, corrections, partial / malformed / empty / hollow responses), voucher-line GST, and the guarantee that no tax figure is derived from it. PART 2 - persistence and sync (MongoDB, injected Tally-shaped fetchers): the full d _Uses:_ `src/config/db.js`, `src/services/parser/gstFields.js`, `src/services/parser/tallyParser.js`, `src/services/mapper/salesMapper.js`, `src/services/mapper/purchaseMapper.js` (+11 more)
+- `verify-stock-item-master.js` (298 lines) — Regression tests for the Stock Item -> Stock Group master layer (Part 2 of the Stock Group analytics foundation): - stockItemMaster.js's parsing (reuses voucherTypeClassifier's parseVoucherTypeMasterList - proven to work on this exact shape against a real, live TallyPrime instance, see the investigation report) - Stock Group extraction from Tally's own $Parent - missing-Parent / malformed-record handling - company GUID ownership validation (validateMasterOwnership, reused unchanged from companyO _Uses:_ `src/config/db.js`, `src/models/stockItemMaster.model.js`, `src/services/tally/stockItemMaster.js`, `src/services/tally/companyOwnership.js`, `src/services/query/dataVersion.js`
 - `verify-sync-batching.js` (610 lines) — Bounded incremental sync batches (batchWindow.js + tallySyncWorker.js + odbcService AlterID window). Problem this guards against: a large backlog made the worker request EVERY pending voucher (with inventory/ledger detail) in one Tally call, which timed out, never advanced the checkpoint, and repeated every tick, keeping Tally busy. Each tick must now request a bounded slice, advance the checkpoint only after the whole slice persists, and drain the rest over later ticks. Fully offline and determ _Uses:_ `src/config/db.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/sync/batchWindow.js`, `src/services/sync/tallySyncWorker.js` (+4 more)
+- `verify-sync-pass-outcomes.js` (136 lines) — runSyncForCompanyModule: what ONE sync pass returns and what it leaves on the checkpoint, for every way a pass can end. The pass has many exits (company guard, classification, probe, fetch, ownership, completeness, persist, advance) and each one releases the lock with its own status/error/advance. This pins all of them, so the function can be split into smaller steps (one release in one place) without changing any outcome. For each case it records the returned result and the checkpoint after the _Uses:_ `src/config/db.js`, `src/models/syncCheckpoint.model.js`, `src/services/sync/tallySyncWorker.js`
 - `verify-sync-success-time.js` (26 lines) — A failed sync attempt must never look like a successful one: freshness and the data coverage read the SUCCESS time (lastSuccessAt), not the attempt time (lastSyncedAt). Offline: pure function + the model, no database needed. _Uses:_ `src/services/analytics/freshness.js`, `src/models/syncCheckpoint.model.js`
 - `verify-sync-worker-guard.js` (151 lines) — Background incremental sync worker: company-GUID guard verification (2026-09-18). Product rule under test: the automatic Sales/Purchase sync worker (tallySyncWorker.js), which iterates EVERY active company on a timer against the one shared Tally URL, must never import the currently-open company's vouchers into a DIFFERENT tenant. Uses the REAL live Tally instance and a REAL throwaway Company document (not mocked) so the guard is proven against Tally's actual current state. Run: node verify-sync- _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js` (+4 more)
 - `verify-tally-parser-voucher-total.js` (304 lines) — Parser unit tests for the corrected header.voucherTotalAmount formula (financial-data-correctness fix, tallyParser.js computePartyLedgerTotal / parseTallyVoucher). Pure unit tests - no MongoDB, no Tally, no network. Run: node verify-tally-parser-voucher-total.js _Uses:_ `src/services/parser/tallyParser.js`
+- `verify-tally-since-alterid-requests.js` (98 lines) — Golden test of the three "vouchers since AlterID" Tally requests (odbcService.getSalesVouchersSinceAlterId, getPurchaseVouchersSinceAlterId, getAdjustmentNoteVouchersSinceAlterId). The sync worker depends on the exact request text Tally receives, so this records, for each function and input, the URL, the full request body and the headers/timeout that axios.post is called with (as a SHA-256 of the canonical JSON), plus the error log label and the missing-types error text. It exists so the three n _Uses:_ `src/services/odbc/odbcService.js`
 - `verify-timezone-boundaries.js` (205 lines) — Period boundaries vs stored voucher dates must not depend on the server's time zone. The contract being verified (docs/PROJECT_CONTEXT.md, "Date boundaries"): - a voucher's date is stored as UTC midnight of its Tally calendar date (parseTallyDate), whatever the server's zone; - "today" and every period are calendar days of the server's calendar (periodEngine builds them from local dates); - so for a given calendar reference day, the SAME business dates must fall inside "Aug 1-31", "this month",  _Uses:_ `src/services/analytics/dateRanges.js`, `src/services/query/validator.js`, `src/services/query/compile.js`, `src/services/analytics/analyticsScope.js`, `src/services/analytics/referenceDate.js` (+2 more)
 - `verify-unavailable-concepts.js` (107 lines) — Location and people concepts the data does not record (semanticCatalog `partial` unsupported entries) and how a question that asks for one of them ALONGSIDE something measurable is answered: the analysis planner declares the catalog ids in `unavailable` (validated against the catalog), the measurable part runs company-wide, and the answer states each reason first with an explicit company-wide scope - never a store or place figure. Offline: scripted model replies, the real planners' checks, the r _Uses:_ `src/services/query/semanticCatalog.js`, `src/services/query/analysisPlanner.js`, `src/services/query/planner.js`, `src/services/query/queryPlan.schema.js`, `src/services/query/analysisAnswer.js` (+1 more)
 - `verify-voucher-lifecycle.js` (702 lines) — Voucher lifecycle hardening test matrix (Tests A-M from the task spec). Test categories in this file (2026-09-18 revision - see below for why): UNIT/SYNTHETIC (A, B, C, D, E, F, G, K, M, CONC): call processSingleVoucher/processSinglePurchaseVoucher DIRECTLY with hand-built voucher objects shaped like real Tally JSONEx output. These never touch Tally, never call verifyOpenTallyCompany, and never go through runSyncForCompanyModule - they exercise persistence/ analytics logic only, scoped under TEN _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/services/import/tallySalesImport.js` (+8 more)
-- `verify-voucher-line-details.js` (500 lines) — Voucher item-line discount and computed GST amounts, end to end. Two parts, one run: PART 1 - requests, parsing and mapping (no MongoDB, no Tally, no network: axios.post is blocked except for a capturing stub): the sync and recovery requests ask for the computed GST group; the discount percentage and the derived discount amount (every rule, a 2,000-line property test, hostile values); the computed GST amounts; the reconciliation seen live; and that no financial field moves. PART 2 - the back-fil _Uses:_ `src/config/db.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/parser/gstFields.js`, `src/services/mapper/salesMapper.js` (+5 more)
-- `verify-voucher-pagination.js` (246 lines) — Regression tests for the paginated/searchable voucher-list endpoints (GET /api/vouchers/sales, GET /api/vouchers/purchases) added as part of the frontend production-readiness work. Two layers: A. Direct controller calls (mock req/res, no HTTP/JWT) against REAL synced data for both real tenants (WE FOUR, Nirmal) - pagination math, search correctness, date filtering, tenant isolation, all independently cross-checked against raw Mongo aggregations. B. A real HTTP round-trip (against a live `node se _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/user.model.js`, `src/controllers/voucherController.js`
+- `verify-voucher-line-details.js` (496 lines) — Voucher item-line discount and computed GST amounts, end to end. Two parts, one run: PART 1 - requests, parsing and mapping (no MongoDB, no Tally, no network: axios.post is blocked except for a capturing stub): the sync and recovery requests ask for the computed GST group; the discount percentage and the derived discount amount (every rule, a 2,000-line property test, hostile values); the computed GST amounts; the reconciliation seen live; and that no financial field moves. PART 2 - the back-fil _Uses:_ `src/config/db.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/parser/gstFields.js`, `src/services/mapper/salesMapper.js` (+5 more)
+- `verify-voucher-pagination.js` (246 lines) — Regression tests for the paginated/searchable voucher-list endpoints (GET /api/vouchers/sales, GET /api/vouchers/purchases) added as part of the frontend production-readiness work. Two layers: A. Direct controller calls (mock req/res, no HTTP/JWT) against REAL synced data for both real tenants (live tenant A, live tenant B) - pagination math, search correctness, date filtering, tenant isolation, all independently cross-checked against raw Mongo aggregations. B. A real HTTP round-trip (against a live `node se _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/user.model.js`, `src/controllers/voucherController.js`
 - `verify-voucher-recovery.js` (432 lines) — Missing-data recovery (voucherRecovery.js + odbcService recovery queries + POST /api/sync/recovery contract helpers). Scenario: Tally still has vouchers whose MongoDB documents are gone while the incremental checkpoint has already moved past them. Recovery must find exactly those, re-import them through the existing pipeline, never duplicate, never touch the checkpoint, and fail safe. Fully offline and deterministic - NO live Tally: a local stub answers the company-GUID guard and the VoucherType _Uses:_ `src/config/db.js`, `src/models/purchase.model.js`, `src/models/company.js`, `src/controllers/syncRecoveryController.js`, `src/models/syncCheckpoint.model.js` (+5 more)
 - `verify-voucher-type-classification.js` (863 lines) — Generic Sales/Purchase voucher-type classification verification (2026-09-18). Replaces the old hardcoded "Child Of": "$$VchTypeSales"/"$$VchTypePurchase" sync queries. Confirmed live (see the investigation this implements) that "Child Of" on the "Vouchers:VoucherType" collection only matches vouchers whose OWN VoucherTypeName is an exact match - it never walks the voucher-type parent hierarchy. voucherTypeClassifier.js instead walks each voucher type's own parent chain to its self-parented root  _Uses:_ `src/services/tally/voucherTypeClassifier.js`, `src/services/odbc/odbcService.js`, `src/services/parser/tallyParser.js`, `src/services/auth/tallyCompanyGuard.js`, `src/services/import/tallySalesImport.js`
 
 ## Evaluations and corpora (`eval-*`, `backend/eval/`)
 
 - `eval-ai-cost-live.js` (132 lines) — LIVE provider verification of the AI cost path (paid, small, capped). It answers what no offline test can: does the provider's prompt cache actually write and read for TallyPulse's requests, and what do real turns cost? ANTHROPIC_API_KEY=<your key> node eval-ai-cost-live.js --confirm-spend [--max-usd=0.50] [--ttl-probe] Guards (all enforced before the first paid call): - refuses without --confirm-spend; prints the plan and the worst-case spend first; - the key must already be in the process envi _Uses:_ `src/services/query/aiPricing.js`, `src/services/query/planner.js`, `src/services/query/analysisPlanner.js`
-- `eval-ai-cost-report.js` (70 lines) — Read-only cost report from the persisted per-turn usage records (AiTurnUsage): what the AI flow cost and whether the prompt cache and the planner response cache paid. ONE aggregation, aggregates only - no document, prompt, answer, tenant id or request id is printed, and nothing is written. MONGODB_URI=mongodb://127.0.0.1:27017/tallypulse_test node eval-ai-cost-report.js [--since=2026-10-01] (a non-loopback URI, e.g. production Atlas, is refused unless --confirm-read-only-aggregate is also given) _Uses:_ `src/services/query/aiPricing.js`
-- `eval-cache-baseline.js` (179 lines) — Cache and AI-cost baseline (Phase 0, measurement only): one fixed, scripted conversation run through the REAL chat turn (queryChat.tryAnswerWithQueryEngine), twice - with the planner response cache and the answer cache OFF, then ON - and the per-turn counters the turn itself reports (telemetry event -> AiTurnUsage record): model calls, planner-cache hits/misses/bypasses, engine executions by answer-cache status, insight runs. Offline and deterministic: a scripted model (no network, no paid call) _Uses:_ `src/services/query/queryChat.js`, `src/services/query/plannerResponseCache.js`, `src/services/query/answerCache.js`, `src/services/query/validator.js`, `src/services/query/turnTelemetry.js` (+3 more)
-- `eval-findings-real.js` (619 lines) — REAL-DATA VALIDATION of the analysis findings (services/query/evidence.js), READ-ONLY. Fixed, scripted analysis plans (no model) run through the real executeAnalysisPlan and formatAnalysisAnswer on ONE real company, and every figure is checked against an INDEPENDENTLY written aggregate (its own date bounds, grouping and sums; no engine code). Acceptance criteria: A1 numbers - figures in findings equal the reference aggregates to the paisa; breakdowns add up to their change A2 incomplete - a peri _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js` (+7 more)
-- `eval-investigations.js` (211 lines) — Planted-cause investigation evaluation (manual; never part of Ask AI). Seeds the synthetic company of eval/investigation/scenarios.js (known, planted causes) into a LOCAL test database, asks each scenario's questions through the real chat turn (queryChat.tryAnswerWithQueryEngine: planner -> analysis plan -> validator -> engine / insight tools -> answer), grades every answer with eval/investigation/grader.js and writes a report to eval/results/ (git-ignored). The data is removed at the end. Modes _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/models/syncCheckpoint.model.js`, `src/models/tenantDataVersion.model.js` (+4 more)
 - `eval/cost/harness.js` (132 lines) — AI cost-path harness: drives the REAL chat controller (sendChatMessage) -> queryChat -> the shared planner response cache -> the REAL planner client and Anthropic SDK -> an HTTP endpoint. The endpoint is either a local stand-in (createStub: free, deterministic, records the exact wire payload - application behaviour only, NEVER provider evidence) or the real provider (live runs, see eval-ai-cost-live.js). Only the DATA side is injected (engine execution, freshness, date context, name resolution)  _Uses:_ `src/services/query/turnTelemetry.js`, `src/services/query/usageStore.js`, `src/services/query/queryChat.js`, `src/models/chat.model.js`, `src/controllers/chatController.js` (+1 more)
 - `eval/cost/run-baseline.js` (16 lines) — Prints what the ORIGINAL code does for Tests A-I and the SDK-retry check, through the real chat controller, against a local stand-in endpoint (no provider, no spend). Run: node eval/cost/run-baseline.js [--json=<file>]
 - `eval/cost/scenarios.js` (125 lines) — The cost-path scenarios (Tests A-I of the AI cost audit), run through the real controller by harness.js. A scenario returns plain observations: what the HTTP endpoint ACTUALLY received (stub.calls = every request the SDK sent, including SDK-internal retries) next to what telemetry REPORTED for the same turn. Nothing is asserted here.
 - `eval/cost/stub-server.js` (22 lines) — A local stand-in for the provider, for DRY-RUNNING eval-ai-cost-live.js (it spends nothing). `--simulate-cache` makes it behave like a 5-minute prompt cache (first request of a prefix writes, later ones read) - a SIMULATION to exercise the live script's arithmetic, never evidence about the real provider. Run: node eval/cost/stub-server.js [--simulate-cache] (prints its URL)
 - `eval/evalTimezone.js` (33 lines) — The NLU evaluation's time zone: UTC, set explicitly. The scorer resolves relative periods ("previous month", "this FY") and explicit custom ranges to concrete dates and compares those dates. Both resolutions use the machine's LOCAL time zone, so on a machine west of UTC the same two plans - a relative period and the custom range that means the same days - resolve to different dates and one is scored wrong (observed under America/New_York). CI happens to run in UTC; the evaluator must not depend
 - `eval/investigation/grader.js` (103 lines) — Deterministic grader for investigation answers (evaluation only). No model is involved: every criterion is a check on the answer text (or, for "context", on what the chat turn carried forward), so the same answer always gets the same grade. Criterion kinds: mentions - the text contains one of anyOf (string: case-insensitive substring; RegExp: tested as is) number - the text contains the number (Indian or plain digit grouping, ₹ optional, sign ignored) within tolerance discloses - the text matche
-- `eval/investigation/scenarios.js` (285 lines) — Planted-cause investigation scenarios (evaluation only; nothing under src/ requires this file). One synthetic company, anchored to the FOUR complete calendar months before the run date (M1 oldest .. M4 = the previous month), so undated questions ("where are orange sales declining?") have data in the periods the assistant would choose. The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked in verify-investigation-eval.js): - Apple: stable for
+- `eval/investigation/scenarios.js` (284 lines) — Planted-cause investigation scenarios (evaluation only; nothing under src/ requires this file). One synthetic company, anchored to the FOUR complete calendar months before the run date (M1 oldest .. M4 = the previous month), so undated questions ("where are orange sales declining?") have data in the periods the assistant would choose. The causes are planted on purpose and every expected figure is computed from the plan below (and hand-checked): - Apple: stable for M1-M3, then in M4 two customers
 - `eval/nluModelRunner.js` (285 lines) — Library behind verify-nlu-eval.js: runs the corpus rows through the production planner (planQuestion, unchanged) behind the planner's client seam, scores every answer with the shared semantic scorer, and aggregates the measurements. NLU only: nothing here touches a database, Tally or real business data - the corpus is synthetic. _Uses:_ `src/services/query/planner.js`
 - `eval/nluScoring.js` (333 lines) — The NLU scoring used by every evaluation of the planner (verify-nlu-eval.js): the corpus, the semantic plan comparator and the outcome scoring. One implementation, so Claude and every other model are judged by exactly the same rules. Plans are compared SEMANTICALLY: both go through the real validator (relative periods resolve against the corpus reference date, defaults are applied) and are compared field by field - never as JSON text. A plan that validates and compiles but means something else i _Uses:_ `src/services/query/queryPlan.schema.js`, `src/services/query/validator.js`, `src/services/query/compile.js`, `src/services/query/semanticCatalog.js`, `src/services/query/entityResolver.js`
 
 ## Operator and migration scripts
 
-- `backfill-voucher-line-details.js` (96 lines) — Back-fill the discount and the computed GST amounts of vouchers that are already stored. Why this exists: the voucher parser used to drop the item-line discount percentage (Tally's `discount` field) and ignore the computed GST group, so every voucher synced before that fix has discount 0/0 and no `gst.amounts`. The incremental sync will not re-read them (their AlterID did not change). This reads them once more from Tally, by explicit AlterID, and sets ONLY: inventory[].discountPercentage, invent _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/sync/voucherLineBackfill.js`
-- `drop-stale-indexes.js` (64 lines) — Drop stale MongoDB indexes from the sales collection _Uses:_ `src/config/db.js`
-- `list-indexes.js` (73 lines) — List all MongoDB indexes on the sales collection _Uses:_ `src/config/db.js`, `src/models/sales.model.js`
-- `migrate-voucher-identity.js` (263 lines) — Voucher identity migration: tenantId + voucherNo -> tenantId + tallyGuid WHY --- Tally voucher numbers are a manual/business field, not a stable identity. Two distinct voucher masters (different GUID, different AlterID) can legitimately carry the same VoucherNumber - confirmed empirically against a real TallyPrime instance (see PURCHASE_SYNC notes / conversation history). Worse: this company's numbering series is shared ACROSS voucher types (a real Purchase voucher in this database is numbered " _Uses:_ `src/config/db.js`
-- `migrate-voucher-total-amount.js` (290 lines) — header.voucherTotalAmount backfill: inventory-subtotal -> party-ledger total WHY --- tallyParser.js previously derived header.voucherTotalAmount from the pre-tax inventory subtotal whenever a voucher had inventory, silently excluding GST/freight/rounding. Fixed in tallyParser.js (computePartyLedgerTotal) for vouchers synced FROM NOW ON. This script corrects documents that were already stored under the old, wrong formula - see the financial-data-correctness audit for the full investigation and ev _Uses:_ `src/config/db.js`, `src/models/sales.model.js`, `src/models/purchase.model.js`, `src/services/parser/tallyParser.js`
-- `refresh-ledger-master.js` (70 lines) — On-demand Tally Ledger master refresh (feeds "new customer/supplier"). Writes only to the LedgerMaster collection - never Sale, Purchase or SyncCheckpoint. Reads two Tally master collections (Group, Ledger), one at a time. Safe to re-run: idempotent upsert keyed by the ledger GUID, and a no-op when Tally's list is unchanged (pass --force to rewrite anyway). The selected Tally company must be this tenant's: a foreign company's masters fail the GUID ownership check and nothing is written. USAGE no _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/tally/ledgerMaster.js`
-- `refresh-stock-item-master.js` (84 lines) — On-demand Stock Item -> Stock Group master refresh. NOT a migration and NOT the incremental voucher sync: this writes only to the new, previously-empty StockItemMaster collection - it never reads or writes Sale, Purchase, or SyncCheckpoint, and never contacts Tally for voucher/transactional data. Safe to re-run at any time (idempotent upsert, keyed by {tenantId, tallyGuid}). There is no scheduled worker for this yet, by design (see the Stock Item master investigation report) - this script is the _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/tally/stockItemMaster.js`
 - `run-adjustment-note-sync.js` (62 lines) — One-off / manual Credit Note + Debit Note sync for a single tenant. Reuses the EXACT same code path as the background worker (runSyncForCompanyModule + CREDIT_NOTE_SYNC_MODULE/DEBIT_NOTE_SYNC_MODULE from tallySyncWorker.js) - same ownership guard, same completeness check, same checkpoint semantics, same minimal-field Tally request. Not a parallel implementation. USAGE node run-adjustment-note-sync.js --tenant <tenantId> _Uses:_ `src/config/db.js`, `src/models/company.js`, `src/services/sync/tallySyncWorker.js`
