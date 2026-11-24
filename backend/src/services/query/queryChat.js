@@ -80,17 +80,27 @@ function turnPlannerClient(deps, tenantId, tm) {
   return cache.wrap(base, { tenantId, settings: plannerRequestSettings, counters: tm.plannerResponseCache });
 }
 
-// Per-tenant entity resolver. Its name lists are dropped whenever that tenant's data version moves
-// (same signal the answer cache uses), plus a TTL as a backstop.
+// Per-tenant entity resolver, kept across questions. When that tenant's data version moves (same signal the answer cache uses),
+// and when the TTL backstop runs out, its name lists are marked STALE rather than thrown away: a known name still answers at once and
+// the lists reload in the background; a name not in a stale list waits for the fresh list first (see entityResolver).
 const resolvers = new Map();
 let bumpHooked = false;
 function getTenantResolver(tenantId, now = Date.now()) {
   if (!bumpHooked) {
     bumpHooked = true;
-    require("./dataVersion").onBump((key) => (key === "*" ? resolvers.clear() : resolvers.delete(key)));
+    require("./dataVersion").onBump((key) => {
+      if (key === "*") for (const e of resolvers.values()) e.resolver.markStale();
+      else if (resolvers.has(key)) resolvers.get(key).resolver.markStale();
+    });
   }
   const hit = resolvers.get(tenantId);
-  if (hit && hit.expires > now) return hit.resolver;
+  if (hit) {
+    if (hit.expires <= now) {
+      hit.resolver.markStale();
+      hit.expires = now + RESOLVER_TTL_MS;
+    }
+    return hit.resolver;
+  }
   const resolver = createEntityResolver({ tenantId });
   resolvers.set(tenantId, { resolver, expires: now + RESOLVER_TTL_MS });
   return resolver;

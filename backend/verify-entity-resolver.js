@@ -215,6 +215,131 @@ const find = (r, text, hintDim = null, entity = null) => r({ entity, hintDim, te
     check("a failed read while suggesting is reported as unavailable, never as 'no suggestions'", code === ENTITY_RESOLVER_UNAVAILABLE);
   }
 
+  section("F. lists are kept; a data change marks them stale instead of dropping them (stale-while-revalidate)");
+  {
+    const DIMS = ["customer", "supplier", "product", "productGroup"];
+    const gate = () => {
+      let open;
+      const p = new Promise((r) => {
+        open = r;
+      });
+      return { p, open };
+    };
+    const mkCounting = (data, delayMs = 0) => {
+      const loads = { customer: 0, supplier: 0, product: 0, productGroup: 0 };
+      const starts = [];
+      const sources = Object.fromEntries(
+        DIMS.map((d) => [
+          d,
+          async () => {
+            loads[d] += 1;
+            starts.push(Date.now());
+            if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+            return data[d] ? [...data[d]] : [];
+          },
+        ])
+      );
+      return { r: createEntityResolver({ tenantId: "T-SWR", sources }), loads, starts, data };
+    };
+
+    // cold load: the lists a question needs load at the same time (the slowest, not the sum)
+    const cold = mkCounting({ customer: ["Acme Co"], supplier: ["Sup One"], product: ["Widget"], productGroup: ["Tools"] }, 60);
+    const t0 = Date.now();
+    await find(cold.r, "Acme Co");
+    const took = Date.now() - t0;
+    const spread = Math.max(...cold.starts) - Math.min(...cold.starts);
+    check("a cold question loads its four lists in parallel (about one delay, not four)", cold.loads.customer === 1 && cold.loads.supplier === 1 && spread < 40 && took < 200, `took ${took} ms, spread ${spread} ms`);
+    await find(cold.r, "Acme Co");
+    check("the lists are kept: the next question reads nothing", cold.loads.customer === 1);
+    check("state: loaded and fresh", DIMS.every((d) => cold.r.state()[d].loaded && !cold.r.state()[d].stale));
+
+    // stale: a name already known answers at once, the reload runs in the background
+    const swr = mkCounting({ customer: ["Acme Co"] });
+    await find(swr.r, "Acme Co", "customer");
+    swr.r.markStale();
+    check("markStale marks loaded lists stale and drops nothing", swr.r.state().customer.stale === true && swr.r.state().customer.loaded === true);
+    swr.data.customer = ["Acme Co", "Brand New Traders"];
+    const known = await find(swr.r, "Acme Co", "customer");
+    check("a known name answers from the stale list", known.length === 1 && known[0].value === "Acme Co");
+    await new Promise((r) => setTimeout(r, 20));
+    check("...and the list was reloaded in the background (now fresh, one more read)", swr.loads.customer === 2 && swr.r.state().customer.stale === false);
+
+    // a name that is NOT in the stale list waits for the fresh list: a new customer is never reported unknown
+    const fresh = mkCounting({ customer: ["Acme Co"] });
+    await find(fresh.r, "Acme Co", "customer");
+    fresh.r.markStale();
+    fresh.data.customer = ["Acme Co", "Brand New Traders"];
+    const isNew = await find(fresh.r, "Brand New Traders", "customer");
+    check("a name missing from a stale list waits for the fresh list and is found", isNew.length === 1 && isNew[0].value === "Brand New Traders");
+    fresh.r.markStale();
+    const ghost = await find(fresh.r, "Ghost Traders", "customer");
+    check("a name nobody has is still 'no match' after the fresh list was checked", ghost.length === 0);
+
+    // a stale-list refresh that fails keeps serving the old list; a name it cannot find is an outage, not 'not found'
+    let failNow = false;
+    const flakyLoads = { n: 0 };
+    const flaky = createEntityResolver({
+      tenantId: "T-SWR-F",
+      sources: {
+        customer: async () => {
+          flakyLoads.n += 1;
+          if (failNow) throw new Error("db down");
+          return ["Acme Co"];
+        },
+        supplier: async () => [],
+        product: async () => [],
+        productGroup: async () => [],
+      },
+    });
+    await find(flaky, "Acme Co", "customer");
+    flaky.markStale();
+    failNow = true;
+    const stillKnown = await find(flaky, "Acme Co", "customer");
+    await new Promise((r) => setTimeout(r, 20));
+    check("a failed background refresh keeps the old list serving known names and stays stale", stillKnown.length === 1 && flaky.state().customer.stale === true && flakyLoads.n === 2);
+    let outage = null;
+    try {
+      await find(flaky, "Other Co", "customer");
+    } catch (e) {
+      outage = e;
+    }
+    check("a name not in a stale list whose refresh fails is an outage, never 'not found'", !!outage && outage.code === ENTITY_RESOLVER_UNAVAILABLE);
+    failNow = false;
+    check("after recovery the fresh list is loaded again", (await find(flaky, "Acme Co", "customer")).length === 1 && flaky.state().customer.stale === false);
+
+    // a reload that began BEFORE a later change must not make the list look fresh
+    const slow = gate();
+    let call = 0;
+    const racing = createEntityResolver({
+      tenantId: "T-SWR-R",
+      sources: {
+        customer: async () => {
+          call += 1;
+          if (call === 2) await slow.p;
+          return ["Acme Co"];
+        },
+        supplier: async () => [],
+        product: async () => [],
+        productGroup: async () => [],
+      },
+    });
+    await find(racing, "Acme Co", "customer");
+    racing.markStale();
+    await find(racing, "Acme Co", "customer"); // starts reload #2 (held open)
+    racing.markStale(); // the data changed again while it was running
+    slow.open();
+    await new Promise((r) => setTimeout(r, 20));
+    check("a reload that started before the latest change leaves the list stale", racing.state().customer.stale === true);
+
+    // tenant isolation: two resolvers never share lists or staleness
+    const a = mkCounting({ customer: ["Only A"] });
+    const b = mkCounting({ customer: ["Only B"] });
+    await find(a.r, "Only A", "customer");
+    await find(b.r, "Only B", "customer");
+    a.r.markStale();
+    check("marking one tenant's resolver stale does not touch another's", b.r.state().customer.stale === false && (await find(b.r, "Only A", "customer")).length === 0);
+  }
+
   console.log(`\nverify-entity-resolver: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

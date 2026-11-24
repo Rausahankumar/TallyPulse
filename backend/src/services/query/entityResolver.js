@@ -91,37 +91,106 @@ function nameScore(typedWords, storedWords) {
 /**
  * @param {{tenantId: *, sources?: object}} opts  `sources` is injectable for tests
  *        ({dim: async () => string[]}).
+ *
+ * The name lists are kept for the life of the resolver (the chat keeps one per tenant). When the tenant's data changes the lists
+ * are only MARKED STALE (markStale), not dropped: a name found in a stale list is still a real stored name, so it answers at once
+ * while the list reloads in the background; a name NOT found in a stale list waits for the fresh list before "no match" is said, so
+ * a customer created a minute ago is never reported as unknown. Lists of the dimensions a question needs load in parallel.
  */
 function createEntityResolver({ tenantId, sources } = {}) {
   if (!tenantId) throw new Error("createEntityResolver: tenantId is required");
   const src = sources || defaultSources(tenantId);
-  const cache = new Map();
+  const cache = new Map(); // dim -> { map: Map | null, loading: Promise | null, stale: boolean, gen: number }
 
-  // A failed load is NEVER cached: the entry is evicted so the next question retries the read, and the
-  // failure surfaces as ENTITY_RESOLVER_UNAVAILABLE - never as "no match" (an empty list is only ever a
-  // list the source really returned).
-  async function index(dim) {
-    if (!cache.has(dim)) {
-      const loading = (async () => {
-        const names = await src[dim]();
-        if (!Array.isArray(names)) throw new Error(`entity source "${dim}" did not return a list`);
-        const map = new Map();
-        for (const n of names) {
-          if (typeof n !== "string" || !n.trim()) continue;
-          const key = normalizeText(n);
-          if (key && !map.has(key)) map.set(key, n);
-        }
-        return map;
-      })().catch((error) => {
-        if (cache.get(dim) === loading) cache.delete(dim);
-        const err = new Error(`Entity lookup is temporarily unavailable (${dim}).`);
-        err.code = ENTITY_RESOLVER_UNAVAILABLE;
-        err.cause = error;
-        throw err;
-      });
-      cache.set(dim, loading);
+  async function load(dim) {
+    const names = await src[dim]();
+    if (!Array.isArray(names)) throw new Error(`entity source "${dim}" did not return a list`);
+    const map = new Map();
+    for (const n of names) {
+      if (typeof n !== "string" || !n.trim()) continue;
+      const key = normalizeText(n);
+      if (key && !map.has(key)) map.set(key, n);
     }
-    return cache.get(dim);
+    return map;
+  }
+
+  // One load per dimension at a time. A failed load is NEVER cached: nothing is stored, the next question retries the read, and the
+  // failure surfaces as ENTITY_RESOLVER_UNAVAILABLE - never as "no match" (an empty list is only ever a list the source really
+  // returned). A load that started before the latest markStale does not make the list fresh (gen).
+  function refresh(entry, dim) {
+    if (!entry.loading) {
+      const gen = entry.gen;
+      const loading = load(dim).then(
+        (map) => {
+          entry.map = map;
+          entry.stale = entry.gen !== gen;
+          if (entry.loading === loading) entry.loading = null;
+          return map;
+        },
+        (error) => {
+          if (entry.loading === loading) entry.loading = null;
+          const err = new Error(`Entity lookup is temporarily unavailable (${dim}).`);
+          err.code = ENTITY_RESOLVER_UNAVAILABLE;
+          err.cause = error;
+          throw err;
+        }
+      );
+      entry.loading = loading;
+    }
+    return entry.loading;
+  }
+
+  function index(dim, { allowStale = false } = {}) {
+    let entry = cache.get(dim);
+    if (!entry) {
+      entry = { map: null, loading: null, stale: false, gen: 0 };
+      cache.set(dim, entry);
+    }
+    // resolves { map, servedStale }: servedStale says the list handed back may be out of date (decided HERE, when it is handed back:
+    // the background reload can finish a moment later and must not make an answer from the old list look like one from the new)
+    if (!entry.map) return refresh(entry, dim).then((map) => ({ map, servedStale: false })); // first load: nothing to serve yet
+    if (!entry.stale) return Promise.resolve({ map: entry.map, servedStale: false });
+    if (allowStale) {
+      refresh(entry, dim).catch(() => {}); // background; a failure keeps the old list (still stale, retried next time)
+      return Promise.resolve({ map: entry.map, servedStale: true });
+    }
+    return refresh(entry, dim).then((map) => ({ map, servedStale: false }));
+  }
+
+  /** The tenant's data changed: every list is reloaded before it is next trusted for a "no match". */
+  function markStale() {
+    for (const entry of cache.values()) {
+      entry.gen += 1;
+      if (entry.map) entry.stale = true;
+    }
+  }
+
+  async function lookup(key, dims, allowStale) {
+    const got = await Promise.all(dims.map((d) => index(d, { allowStale }))); // parallel: the slowest list, not the sum
+    const maps = got.map((g) => g.map);
+    const servedStale = got.some((g) => g.servedStale);
+    const matches = [];
+    dims.forEach((dim, i) => {
+      const found = maps[i].get(key);
+      if (found) matches.push({ dim, value: found });
+    });
+    // Demo fix: people type the first word(s) of a stored name ("Dhingra" for "DHINGRA GENERAL STORE"). Only when
+    // NO exact match exists, a typed name that is the leading whole word(s) of EXACTLY ONE stored name (across the
+    // allowed kinds) resolves to it, flagged `partial` so the caller can say so. Two or more candidates -> no match.
+    if (!matches.length && key.split(" ")[0].length >= PREFIX_MIN_FIRST_WORD) {
+      const prefix = `${key} `;
+      const hits = [];
+      for (let i = 0; i < dims.length && hits.length <= 1; i += 1) {
+        for (const [k, v] of maps[i]) {
+          if (k.startsWith(prefix)) {
+            hits.push({ dim: dims[i], value: v });
+            if (hits.length > 1) break;
+          }
+        }
+      }
+      if (hits.length === 1) matches.push({ ...hits[0], partial: true });
+    }
+    return { matches, servedStale };
   }
 
   async function resolveEntity({ entity, hintDim, text }) {
@@ -129,29 +198,10 @@ function createEntityResolver({ tenantId, sources } = {}) {
     if (!key) return { matches: [] };
     let dims = searchedDims(entity);
     if (hintDim) dims = dims.filter((d) => d === hintDim);
-    const matches = [];
-    for (const dim of dims) {
-      const found = (await index(dim)).get(key);
-      if (found) matches.push({ dim, value: found });
-    }
-    // Demo fix: people type the first word(s) of a stored name ("Dhingra" for "DHINGRA GENERAL STORE"). Only when
-    // NO exact match exists, a typed name that is the leading whole word(s) of EXACTLY ONE stored name (across the
-    // allowed kinds) resolves to it, flagged `partial` so the caller can say so. Two or more candidates -> no match.
-    if (!matches.length && key.split(" ")[0].length >= PREFIX_MIN_FIRST_WORD) {
-      const prefix = `${key} `;
-      const hits = [];
-      for (const dim of dims) {
-        for (const [k, v] of await index(dim)) {
-          if (k.startsWith(prefix)) {
-            hits.push({ dim, value: v });
-            if (hits.length > 1) break;
-          }
-        }
-        if (hits.length > 1) break;
-      }
-      if (hits.length === 1) matches.push({ ...hits[0], partial: true });
-    }
-    return { matches };
+    let found = await lookup(key, dims, true);
+    // nothing found in a list that may be out of date: wait for the fresh one before saying so
+    if (!found.matches.length && found.servedStale) found = await lookup(key, dims, false);
+    return { matches: found.matches };
   }
 
   // "Did you mean": the closest stored names (at most SUGGEST_MAX) for a name that did not resolve. Same tenant data and the same
@@ -161,18 +211,22 @@ function createEntityResolver({ tenantId, sources } = {}) {
     if (!typed.length) return [];
     let dims = searchedDims(entity);
     if (hintDim) dims = dims.filter((d) => d === hintDim);
+    const maps = (await Promise.all(dims.map((d) => index(d)))).map((g) => g.map);
     const scored = [];
-    for (const dim of dims) {
-      for (const [key, value] of await index(dim)) {
+    dims.forEach((dim, i) => {
+      for (const [key, value] of maps[i]) {
         const score = nameScore(typed, key.split(" "));
         if (score >= SUGGEST_MIN_SCORE) scored.push({ dim, value, score });
       }
-    }
+    });
     scored.sort((x, y) => y.score - x.score || x.value.length - y.value.length || (x.value < y.value ? -1 : 1));
     return scored.slice(0, SUGGEST_MAX).map(({ dim, value }) => ({ dim, value }));
   }
 
   resolveEntity.suggest = suggest;
+  resolveEntity.markStale = markStale;
+  // read-only view for tests and diagnostics: which lists are loaded and which are waiting to be reloaded
+  resolveEntity.state = () => Object.fromEntries([...cache].map(([dim, e]) => [dim, { loaded: !!e.map, stale: e.stale }]));
   return resolveEntity;
 }
 

@@ -441,7 +441,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   }
 
   // ============================================================ G. resolver cache
-  section("G. per-tenant resolver cache is invalidated by data-version bumps");
+  section("G. per-tenant resolver is kept; data-version bumps mark its lists stale");
   {
     const dataVersion = require("./src/services/query/dataVersion");
     const TenantDataVersion = require("./src/models/tenantDataVersion.model");
@@ -452,14 +452,24 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     check("same tenant, same resolver within the TTL", r1 === r2);
     const other = getTenantResolver("verify-chat-synthetic-tenant-2");
     check("different tenants never share a resolver", other !== r1);
+    // load the lists once (synthetic tenants hold no vouchers: empty lists), so there is something to mark stale
+    await r1({ text: "nobody" });
+    await other({ text: "nobody" });
+    const fresh = (r) => Object.values(r.state()).every((d) => d.loaded && !d.stale);
+    check("lists are loaded and fresh before any change", fresh(r1) && fresh(other));
     await dataVersion.bumpTenantVersion(T);
     const r3 = getTenantResolver(T);
-    check("a data-version bump for the tenant drops its resolver (fresh name lists)", r3 !== r1);
-    check("...and leaves the other tenant's resolver alone", getTenantResolver("verify-chat-synthetic-tenant-2") === other);
+    check("a data-version bump for the tenant keeps its resolver and marks its lists stale", r3 === r1 && Object.values(r1.state()).every((d) => d.stale));
+    check("...and leaves the other tenant's resolver alone", getTenantResolver("verify-chat-synthetic-tenant-2") === other && fresh(other));
+    await r1({ text: "nobody" });
+    await new Promise((r) => setTimeout(r, 50));
+    check("the next question reloads the stale lists (fresh again)", fresh(r1));
     await dataVersion.bumpTenantVersion("*");
-    check("a global bump drops every resolver", getTenantResolver(T) !== r3 && getTenantResolver("verify-chat-synthetic-tenant-2") !== other);
+    check("a global bump marks every resolver's lists stale", Object.values(r1.state()).every((d) => d.stale) && Object.values(other.state()).every((d) => d.stale));
+    await r1({ text: "nobody" });
+    await new Promise((r) => setTimeout(r, 50));
     const live = getTenantResolver(T);
-    check("expired resolvers are rebuilt", getTenantResolver(T, Date.now() + 10 * 60 * 1000) !== live);
+    check("an expired resolver is kept and its lists are marked stale (the TTL is a backstop for writes this process did not see)", getTenantResolver(T, Date.now() + 10 * 60 * 1000) === live && Object.values(live.state()).every((d) => d.stale));
     await TenantDataVersion.deleteMany({ tenantId: /^verify-chat-synthetic/ });
     await mongoose.disconnect().catch(() => {});
   }
