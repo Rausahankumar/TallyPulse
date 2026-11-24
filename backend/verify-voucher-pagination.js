@@ -5,7 +5,7 @@
  *
  * Two layers:
  *   A. Direct controller calls (mock req/res, no HTTP/JWT) against REAL
- *      synced data for both real tenants (WE FOUR, Nirmal) - pagination
+ *      synced data for both real tenants (live tenant A, live tenant B) - pagination
  *      math, search correctness, date filtering, tenant isolation, all
  *      independently cross-checked against raw Mongo aggregations.
  *   B. A real HTTP round-trip (against a live `node server.js`) using a

@@ -1,6 +1,7 @@
 const express = require("express");
 const auth = require("../middleware/auth");
 const { activeCompanyContext } = require("../services/auth/companyContext");
+const { chatLimiters } = require("../middleware/rateLimit");
 const {
   sendChatMessage,
   listChats,
@@ -17,8 +18,9 @@ const router = express.Router();
 router.use(auth, activeCompanyContext);
 
 router.get("/", listChats);
-router.post("/message", sendChatMessage);
-router.post("/:chatId/message", sendChatMessage);
+// The two routes that send a question (each is a paid model call) are rate-limited per user, after auth so the user is known.
+router.post("/message", ...chatLimiters, sendChatMessage);
+router.post("/:chatId/message", ...chatLimiters, sendChatMessage);
 router.get("/:chatId", getChat);
 router.patch("/:chatId", renameChat);
 router.delete("/:chatId", deleteChat);

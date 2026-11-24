@@ -6,7 +6,7 @@
  * verify-query-parity.js compares the generic Query Engine with the existing analytics (salesAnalytics,
  * purchaseAnalytics, stockGroupAnalytics) and with independently written JS oracles. Its comparisons are data-driven
  * (customer/product names, periods and rankings all come from the tenant's own vouchers), but its real-data run needs
- * the WE FOUR tenant, so it is NOT RUN in CI. This suite seeds two synthetic tenants into the isolated test database
+ * the live tenant A, so it is NOT RUN in CI. This suite seeds two synthetic tenants into the isolated test database
  * and runs the SAME runParity() - every parity, ranking and assertion case unchanged - on them:
  *   - a large tenant (extended run): 140 Sales + 90 Purchase vouchers over Apr-Oct 2025, mapped and unmapped items,
  *     ~4% cancelled vouchers (must be excluded), purchase item amounts stored negative (Tally's sign), and four vouchers
@@ -18,7 +18,7 @@
  * leave ambiguous lines out of the sale value (disclosed as uncertain). Changing either is a deliberate semantic change.
  * The reference date is the tenant's latest voucher, so the relative periods are deterministic.
  *
- * What this does NOT prove: that the engine matches real WE FOUR data shapes. The real-data run of
+ * What this does NOT prove: that the engine matches live tenant A data shapes. The real-data run of
  * verify-query-parity.js stays as it is, for local runs against real data.
  *
  * Synthetic data only, isolated test database only (src/config/db.js refuses anything but a loopback

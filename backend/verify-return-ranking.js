@@ -8,7 +8,7 @@
  * isolation, zero vs missing coverage, deterministic ties and cache hits.
  * (Phrasing -> plan is the planner's job; see verify-query-planner.js.)
  *
- * SYNTHETIC fixtures for B-C; SECTION D reads real WE FOUR/Nirmal data
+ * SYNTHETIC fixtures for B-C; SECTION D reads live tenants A and B data
  * READ-ONLY - no writes, no Tally calls, no Claude calls.
  *
  * Run: node verify-return-ranking.js
@@ -16,6 +16,7 @@
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
@@ -111,40 +112,40 @@ async function cleanup() {
     let c3 = await cache.run({ ...rankPlan, limit: 10 }, { tenantId: T1 }, cacheDeps);
     check("a different N is a different cache key -> miss", c3.cache.status === "miss" && execCalls === 2);
 
-    // ============================================================ D. REAL DATA (read-only, WE FOUR + Nirmal)
+    // ============================================================ D. REAL DATA (read-only, live tenant A + live tenant B)
     section("D. REAL DATA oracle (read-only, no writes, no Tally, no Claude)");
-    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: "6ab21418959e173f9b3f367f" })) > 0;
-    if (!REAL_PRESENT) console.log("  SKIPPED - the real WE FOUR/Nirmal tenants are not present in this database");
+    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: REAL.A.tenantId })) > 0;
+    if (!REAL_PRESENT) console.log("  SKIPPED - the live tenants A and B are not present in this database");
     else {
-    const WE_FOUR = "6ab21418959e173f9b3f367f";
-    const NIRMAL = "6ab21fe0959e173f9b3f3682";
+    const TENANT_A = REAL.A.tenantId;
+    const TENANT_B = REAL.B.tenantId;
     const ALL_TIME = { kind: "all_time" };
 
-    const top5CustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 5 }]);
-    const top5CustomerEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: WE_FOUR });
+    const top5CustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 5 }]);
+    const top5CustomerEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: TENANT_A });
     const engineTop5 = top5CustomerEngine.ok ? top5CustomerEngine.rows.map((r) => [r.key.customer, Math.round(r.values.returnAmount * 100) / 100]) : null;
     const oracleTop5 = top5CustomerOracle.map((r) => [r._id, Math.round(r.amt * 100) / 100]);
-    check("D1 WE FOUR top-5 customers by sales returns = independent Mongo oracle", top5CustomerEngine.ok && same(engineTop5, oracleTop5), JSON.stringify({ engine: engineTop5, oracle: oracleTop5 }));
+    check("D1 live tenant A top-5 customers by sales returns = independent Mongo oracle", top5CustomerEngine.ok && same(engineTop5, oracleTop5), JSON.stringify({ engine: engineTop5, oracle: oracleTop5 }));
 
-    const top3SupplierOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "purchase_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 3 }]);
-    const top3SupplierEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 3 }, { tenantId: WE_FOUR });
+    const top3SupplierOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "purchase_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 3 }]);
+    const top3SupplierEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 3 }, { tenantId: TENANT_A });
     const engineTop3 = top3SupplierEngine.ok ? top3SupplierEngine.rows.map((r) => [r.key.supplier, Math.round(r.values.returnAmount * 100) / 100]) : null;
     const oracleTop3 = top3SupplierOracle.map((r) => [r._id, Math.round(r.amt * 100) / 100]);
-    check("D2 WE FOUR top-3 suppliers by purchase returns = independent Mongo oracle", top3SupplierEngine.ok && same(engineTop3, oracleTop3), JSON.stringify({ engine: engineTop3, oracle: oracleTop3 }));
+    check("D2 live tenant A top-3 suppliers by purchase returns = independent Mongo oracle", top3SupplierEngine.ok && same(engineTop3, oracleTop3), JSON.stringify({ engine: engineTop3, oracle: oracleTop3 }));
 
     // No N stated: the plan leaves plan.limit unset, and validator.js applies the product's own
     // existing default (LIMITS.defaultLimit = 10, truncated: true) - not "return everything". Confirmed
     // against real data: the same 10 rows an independent oracle limited to 10 would return.
-    const top10CustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 10 }]);
-    const noLimitEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: WE_FOUR });
+    const top10CustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1, _id: 1 } }, { $limit: 10 }]);
+    const noLimitEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }] }, { tenantId: TENANT_A });
     const noLimitRows = noLimitEngine.ok ? noLimitEngine.rows.map((r) => [r.key.customer, Math.round(r.values.returnAmount * 100) / 100]) : null;
     const oracleTop10 = top10CustomerOracle.map((r) => [r._id, Math.round(r.amt * 100) / 100]);
     check("D3 no-N ranking (real data) applies the product's existing default limit (10), truncated=true, matches an independent top-10 oracle", noLimitEngine.ok && noLimitEngine.truncated === true && noLimitEngine.rows.length === 10 && same(noLimitRows, oracleTop10), JSON.stringify({ engine: noLimitRows, oracle: oracleTop10, truncated: noLimitEngine.truncated }));
 
-    const nirmalRanking = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: NIRMAL });
-    check("D4 Nirmal top-5 sales-return customers = genuine empty ranking (no Credit Notes exist)", nirmalRanking.ok && nirmalRanking.rows.length === 0);
-    const nirmalPurchRanking = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: NIRMAL });
-    check("D5 Nirmal top-5 purchase-return suppliers = genuine empty ranking", nirmalPurchRanking.ok && nirmalPurchRanking.rows.length === 0);
+    const tenantBRanking = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: TENANT_B });
+    check("D4 live tenant B top-5 sales-return customers = genuine empty ranking (no Credit Notes exist)", tenantBRanking.ok && tenantBRanking.rows.length === 0);
+    const tenantBPurchRanking = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 5 }, { tenantId: TENANT_B });
+    check("D5 live tenant B top-5 purchase-return suppliers = genuine empty ranking", tenantBPurchRanking.ok && tenantBPurchRanking.rows.length === 0);
     }
   } catch (error) {
     fail += 1;

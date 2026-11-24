@@ -129,6 +129,34 @@ const connectCompanyLimiter = createRateLimiter({
   keyFn: (req) => (req.user && req.user.id ? `connect|${req.user.id}` : null),
 });
 
+// The chat route calls the paid model once or more per question, so it is limited per SIGNED-IN USER (not per address: behind a
+// proxy or an office network many users share one). A per-minute limit stops a runaway script or a held-down send button; a
+// per-day limit caps what one account can spend. Every question counts (nothing is refunded). Defaults can be changed with
+// CHAT_MAX_PER_MINUTE and CHAT_MAX_PER_DAY (positive whole numbers; anything else keeps the default). Counters are in memory, so
+// they are per server process and reset on a restart: fine for one instance, see docs/PROJECT_CONTEXT.md.
+const positiveInt = (value, fallback) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+const chatUserKey = (prefix) => (req) => (req.user && req.user.id ? `${prefix}|${req.user.id}` : null);
+
+const chatLimiters = [
+  createRateLimiter({
+    name: "chat (per user, per minute)",
+    windowMs: 60 * 1000,
+    max: positiveInt(process.env.CHAT_MAX_PER_MINUTE, 10),
+    keyFn: chatUserKey("chat-min"),
+    message: "You are asking questions too quickly. Please wait a moment and try again.",
+  }),
+  createRateLimiter({
+    name: "chat (per user, per day)",
+    windowMs: 24 * ONE_HOUR,
+    max: positiveInt(process.env.CHAT_MAX_PER_DAY, 300),
+    keyFn: chatUserKey("chat-day"),
+    message: "You have reached today's question limit. Please try again tomorrow.",
+  }),
+];
+
 // For tests: forget every counter.
 function resetAllRateLimiters() {
   for (const limiter of registry) limiter.reset();
@@ -139,5 +167,6 @@ module.exports = {
   loginLimiters,
   registerLimiter,
   connectCompanyLimiter,
+  chatLimiters,
   resetAllRateLimiters,
 };

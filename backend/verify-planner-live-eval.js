@@ -21,11 +21,12 @@
  * Run:  node verify-planner-live-eval.js           (live: ~18 planner calls)
  *       node verify-planner-live-eval.js --dry     (self-check only, no Anthropic call)
  *       node verify-planner-live-eval.js --out=path.json
- * Read-only against MongoDB. Never modifies data. Tenant = WE FOUR (the large real tenant).
+ * Read-only against MongoDB. Never modifies data. Tenant = live tenant A (the large real tenant).
  */
 
 require("dotenv").config({ quiet: true });
 const fs = require("fs");
+const REAL = require("./test/realTenants");
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
@@ -329,8 +330,8 @@ function cmpChange(res, cur, prev, metric, key, pred) {
   const started = Date.now();
   const report = { startedAt: new Date().toISOString(), dry: DRY, model: process.env.ANTHROPIC_PLANNER_MODEL || process.env.ANTHROPIC_MODEL || "(planner default)", tz: TZ, cases: [], totals: {} };
   try {
-    const we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === "WE FOUR");
-    if (!we) throw new Error("WE FOUR not found");
+    const we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === REAL.A.name);
+    if (!we) throw new Error("live tenant A not found");
     const t = we.tenantId;
     const resolver = createEntityResolver({ tenantId: t });
 
@@ -341,7 +342,7 @@ function cmpChange(res, cur, prev, metric, key, pred) {
     const cases = buildCases({ t, topCustomer });
     const cache = createAnswerCache();
     const run = (plan) => cache.run(plan, { tenantId: t }, { execute: executeQuery, getVersion: getTenantVersion });
-    console.log(`Tenant: WE FOUR | timezone: ${TZ} | customer for Q12: "${topCustomer}" | mode: ${DRY ? "DRY (no Anthropic calls)" : "LIVE"}`);
+    console.log(`Tenant: live tenant A | timezone: ${TZ} | customer for Q12: "${topCustomer}" | mode: ${DRY ? "DRY (no Anthropic calls)" : "LIVE"}`);
 
     // ---------- harness self-check (no credits): golden plans pass comparator and oracle
     console.log("\n--- harness self-check ---");

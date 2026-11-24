@@ -16,7 +16,9 @@ const {
 const testTallyConnection = async (req, res) => {
   try {
 
-    const data = await getCompanyInfo();
+    // Kept only as the reachability probe (an unreachable Tally is a 500 here, as before). Its raw company report is NOT
+    // returned: any logged-in user could read which companies the shared Tally has open (audit P08).
+    await getCompanyInfo();
 
     // The authoritative answer to "which company is TallyPulse talking to?":
     // the only open company, or - when several are open - the one Tally has
@@ -39,7 +41,6 @@ const testTallyConnection = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Tally API connection successful",
-      data,
       detected
     });
 

@@ -38,13 +38,9 @@ const { CATALOG } = require("./src/services/query/semanticCatalog");
 const { SCOPE_HINT } = require("./src/services/query/answerFormatter");
 const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
 
-let pass = 0;
-let fail = 0;
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 const TA = "TEST-TENANT-A-analysis-planner";
 const TB = "TEST-TENANT-B-analysis-planner";
@@ -476,9 +472,9 @@ async function main() {
   } finally {
     await cleanup();
   }
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 }
 
 main().catch(async (err) => {

@@ -6,7 +6,7 @@
  *
  * Uses MongoDB with two clearly-labelled SYNTHETIC tenants
  * (TEST-TENANT-A/B-query-engine) whose expected values are hand-computed,
- * plus a small real-data smoke check on WE FOUR (independent aggregation).
+ * plus a small real-data smoke check on live tenant A (independent aggregation).
  * All synthetic data is removed at the end, pass or fail.
  *
  * This is NOT the parity suite (Phase 1C).
@@ -16,6 +16,7 @@
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 
 const Sale = require("./src/models/sales.model");
@@ -907,7 +908,7 @@ const EXAMPLES = [
     }
 
     // ================================================================
-    section("8. Reference date with no date passed (synthetic tenant A) + real-data smoke (WE FOUR) - independent aggregation, NOT the parity suite");
+    section("8. Reference date with no date passed (synthetic tenant A) + real-data smoke (live tenant A) - independent aggregation, NOT the parity suite");
     // ================================================================
     {
       // The reference-date rule needs no real data, so it runs on the synthetic tenant A (seeded above) and is checked in CI too.
@@ -921,9 +922,9 @@ const EXAMPLES = [
       check("relative period resolves via the reporting reference date (current quarter to date, comparison range echoed)", quarter.ok && quarter.assumptions.some((a) => a.code === "period_anchored_to_latest_data") && !!quarter.comparison.from);
       check("the reference date is today, not the tenant's latest voucher (current quarter ends today)", ymdLocal(new Date(quarter.period.to)) === ymdLocal(today), quarter.period.to);
 
-      const we = await Company.findOne({ companyName: "WE FOUR" }).lean();
+      const we = await Company.findOne({ companyName: REAL.A.name }).lean();
       if (!we) {
-        console.log("  SKIPPED - the three real-data checks need the real WE FOUR tenant, which is not present in this database (they run only where it exists)");
+        console.log("  SKIPPED - the three real-data checks need the live tenant A, which is not present in this database (they run only where it exists)");
       } else {
         const tid = we.tenantId;
         const sc = { tenantId: tid, voucherStatus: "active" };

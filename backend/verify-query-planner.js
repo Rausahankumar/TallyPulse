@@ -12,6 +12,7 @@
 
 require("dotenv").config();
 const fs = require("fs");
+const REAL = require("./test/realTenants");
 const path = require("path");
 
 const { planQuestion, createAnthropicPlannerClient, getPlannerPrompt, PLANNER_TOOL_NAME, PLANNER_MAX_TOKENS, PLANNER_MAX_QUESTION_CHARS } = require("./src/services/query/planner");
@@ -36,7 +37,7 @@ const eq = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 
 // ---- tenant-scoped fake name lists (resolver), and a scripted fake Claude
 const NAMES = {
-  customer: ["Dhingra General Store", "Nirmal FMCG Traders Ltd"],
+  customer: ["Dhingra General Store", "Globex Traders Ltd"],
   supplier: ["Acme Foods Pvt Ltd"],
   product: ["Maggi Noodles", "Parle-G 100g"],
   productGroup: ["Snacks", "Noodles"],
@@ -258,8 +259,8 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     check("eq_ci name is replaced by the stored canonical spelling", r.status === "supported" && r.plan.filters[0].value === "Dhingra General Store", JSON.stringify(r.plan && r.plan.filters));
     r = await planQuestion("sales from nobody", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "eq_ci", value: "Invented Customer Ltd" })), resolveEntity: resolver });
     check("invented customer -> planner_entity_not_resolved, no plan", r.status === "planner_failed" && r.code === "planner_entity_not_resolved" && !r.plan);
-    r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["dhingra general store", "Nirmal FMCG Traders Ltd"] })), resolveEntity: resolver });
-    check("in_ci: every value canonicalised", r.status === "supported" && eq(r.plan.filters[0].value, ["Dhingra General Store", "Nirmal FMCG Traders Ltd"]));
+    r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["dhingra general store", "Globex Traders Ltd"] })), resolveEntity: resolver });
+    check("in_ci: every value canonicalised", r.status === "supported" && eq(r.plan.filters[0].value, ["Dhingra General Store", "Globex Traders Ltd"]));
     r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["Dhingra General Store", "Ghost Traders"] })), resolveEntity: resolver });
     check("in_ci: one invented value refuses the whole plan", r.status === "planner_failed" && r.code === "planner_entity_not_resolved");
     r = await planQuestion("what did we buy from acme", { claudeClient: fakeClaude(withFilter({ dim: "supplier", op: "eq_ci", value: "acme foods pvt ltd" }, "purchase")), resolveEntity: resolver });
@@ -1131,10 +1132,10 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     const { getTenantVersion } = require("./src/services/query/dataVersion");
     const { executeQuery } = require("./src/services/query/execute");
     const companies = await Company.find({ isActive: true }).lean();
-    let we = companies.find((c) => c.companyName === "WE FOUR");
+    let we = companies.find((c) => c.companyName === REAL.A.name);
     let other = companies.find((c) => c.tenantId !== (we && we.tenantId));
     if (!we) {
-      // No WE FOUR here (always the case in the isolated CI database): run the same checks on two small synthetic tenants,
+      // No live tenant A here (always the case in the isolated CI database): run the same checks on two small synthetic tenants,
       // seeded here and removed in `finally`. connectDB() above already passed the test-mode guard (loopback test database
       // only). Tenant A's most frequent customer has a mixed-case name (canonicalisation), both tenants share one customer
       // name, and one customer exists only in tenant B (cross-tenant refusal).
@@ -1169,7 +1170,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       ]);
       we = { tenantId: SYN_A };
       other = { tenantId: SYN_B };
-      console.log("    no WE FOUR tenant in this database: running section N on two synthetic tenants (seeded here, removed afterwards)");
+      console.log("    no live tenant A in this database: running section N on two synthetic tenants (seeded here, removed afterwards)");
     }
     const realResolver = createEntityResolver({ tenantId: we.tenantId });
     const cache = createAnswerCache();
@@ -1212,7 +1213,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       } else check("second tenant has a tenant-unique customer for the isolation check", false, "none found");
     } else check("second tenant exists for the isolation check", false);
   } catch (e) {
-    if (e && e.skip) console.log("  SKIPPED - section N needs the real WE FOUR tenant, which is not present in this database");
+    if (e && e.skip) console.log("  SKIPPED - section N needs the live tenant A, which is not present in this database");
     else {
       console.error(e);
       check("section N ran", false, e.message);

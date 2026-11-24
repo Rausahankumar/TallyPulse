@@ -6,7 +6,7 @@
  * the generic groupBy+sort+limit ranking machinery. No second DSL, no
  * second classifier.
  *
- * ACCOUNTING BASIS (established from real WE FOUR data before writing any
+ * ACCOUNTING BASIS (established from live tenant A data before writing any
  * code - see docs/PROJECT_CONTEXT.md): inventory.quantity is always
  * positive on both sides (reliable). inventory.amount is Tally's own signed
  * entry - always <=0 on a sales_return line, always >=0 on a purchase_return
@@ -18,7 +18,7 @@
  *
  * Sections: SEMANTICS (sign/aggregation on synthetic data matching the real
  * shape), ENGINE (independent oracle, never the implementation's
- * own aggregation), SECURITY, CACHE, and a real WE FOUR/Nirmal read-only
+ * own aggregation), SECURITY, CACHE, and a live tenants A and B read-only
  * validation.
  *
  * Run: node verify-product-return-analytics.js
@@ -26,6 +26,7 @@
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
@@ -145,66 +146,66 @@ async function cleanup() {
     let c5 = await cache.run({ ...prodPlan, metrics: ["returnQuantity"], period: { kind: "custom", from: "2026-08-01", to: "2026-08-31" }, limit: 10 }, { tenantId: T1 }, cacheDeps);
     check("changed period -> different key, miss", c5.cache.status === "miss" && execCalls === 4);
 
-    // ============================================================ F. REAL DATA (read-only, WE FOUR + Nirmal)
+    // ============================================================ F. REAL DATA (read-only, live tenant A + live tenant B)
     section("F. REAL DATA oracle (read-only, no writes, no Tally, no Claude)");
-    const WE_FOUR = "6ab21418959e173f9b3f367f";
-    const NIRMAL = "6ab21fe0959e173f9b3f3682";
+    const TENANT_A = REAL.A.tenantId;
+    const TENANT_B = REAL.B.tenantId;
     const ALL_TIME = { kind: "all_time" };
 
     // Independent oracle for confirmed sign semantics on REAL data.
     const realSignStats = await AdjustmentNote.aggregate([
-      { $match: { tenantId: WE_FOUR, classification: { $in: ["sales_return", "purchase_return"] }, voucherStatus: "active" } },
+      { $match: { tenantId: TENANT_A, classification: { $in: ["sales_return", "purchase_return"] }, voucherStatus: "active" } },
       { $unwind: "$inventory" },
       { $group: { _id: { classification: "$classification", sign: { $cond: [{ $gte: ["$inventory.amount", 0] }, "nonneg", "neg"] } }, n: { $sum: 1 } } },
     ]);
     check("F1 real data confirms the assumed sign convention (sales_return<=0, purchase_return>=0) still holds", realSignStats.every((s) => (s._id.classification === "sales_return" ? s._id.sign === "neg" || s._id.sign === "nonneg" : true)), JSON.stringify(realSignStats));
 
     const topProductsOracle = await AdjustmentNote.aggregate([
-      { $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } },
+      { $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } },
       { $unwind: "$inventory" },
       { $group: { _id: "$inventory.itemName", amt: { $sum: { $abs: "$inventory.amount" } }, qty: { $sum: "$inventory.quantity" } } },
       { $sort: { amt: -1, _id: 1 } },
       { $limit: 5 },
     ]);
-    const topProductsEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }], limit: 5 }, { tenantId: WE_FOUR });
+    const topProductsEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }], limit: 5 }, { tenantId: TENANT_A });
     const engineTop = topProductsEngine.ok ? topProductsEngine.rows.map((r) => [r.key.product, Math.round(r.values.returnLineAmount * 100) / 100]) : null;
     const oracleTop = topProductsOracle.map((r) => [r._id, Math.round(r.amt * 100) / 100]);
-    check("F2 WE FOUR top-5 returned products by value = independent Mongo oracle (unwind + abs, built separately from the implementation)", topProductsEngine.ok && same(engineTop, oracleTop), JSON.stringify({ engine: engineTop, oracle: oracleTop }));
+    check("F2 live tenant A top-5 returned products by value = independent Mongo oracle (unwind + abs, built separately from the implementation)", topProductsEngine.ok && same(engineTop, oracleTop), JSON.stringify({ engine: engineTop, oracle: oracleTop }));
 
     if (topProductsOracle[0]) {
       const oneProduct = topProductsOracle[0]._id;
       const oneOracle = await AdjustmentNote.aggregate([
-        { $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } },
+        { $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } },
         { $unwind: "$inventory" },
         { $match: { "inventory.itemName": oneProduct } },
         { $group: { _id: null, amt: { $sum: { $abs: "$inventory.amount" } }, qty: { $sum: "$inventory.quantity" } } },
       ]);
-      const oneEngineAmt = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount"], filters: [{ dim: "product", op: "eq_ci", value: oneProduct }] }, { tenantId: WE_FOUR });
-      const oneEngineQty = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnQuantity"], filters: [{ dim: "product", op: "eq_ci", value: oneProduct }] }, { tenantId: WE_FOUR });
-      check(`F3 WE FOUR one specific product ("${oneProduct}") amount = independent oracle`, oneEngineAmt.ok && Math.abs(oneEngineAmt.totals.values.returnLineAmount - oneOracle[0].amt) < 0.01, JSON.stringify({ engine: oneEngineAmt.totals, oracle: oneOracle[0] }));
-      check(`F4 WE FOUR one specific product ("${oneProduct}") quantity = independent oracle`, oneEngineQty.ok && oneEngineQty.totals.values.returnQuantity === oneOracle[0].qty, JSON.stringify({ engine: oneEngineQty.totals, oracle: oneOracle[0] }));
+      const oneEngineAmt = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount"], filters: [{ dim: "product", op: "eq_ci", value: oneProduct }] }, { tenantId: TENANT_A });
+      const oneEngineQty = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnQuantity"], filters: [{ dim: "product", op: "eq_ci", value: oneProduct }] }, { tenantId: TENANT_A });
+      check(`F3 live tenant A one specific product ("${oneProduct}") amount = independent oracle`, oneEngineAmt.ok && Math.abs(oneEngineAmt.totals.values.returnLineAmount - oneOracle[0].amt) < 0.01, JSON.stringify({ engine: oneEngineAmt.totals, oracle: oneOracle[0] }));
+      check(`F4 live tenant A one specific product ("${oneProduct}") quantity = independent oracle`, oneEngineQty.ok && oneEngineQty.totals.values.returnQuantity === oneOracle[0].qty, JSON.stringify({ engine: oneEngineQty.totals, oracle: oneOracle[0] }));
     }
 
     const topQtyOracle = await AdjustmentNote.aggregate([
-      { $match: { tenantId: WE_FOUR, classification: "purchase_return", voucherStatus: "active" } },
+      { $match: { tenantId: TENANT_A, classification: "purchase_return", voucherStatus: "active" } },
       { $unwind: "$inventory" },
       { $group: { _id: "$inventory.itemName", qty: { $sum: "$inventory.quantity" } } },
       { $sort: { qty: -1, _id: 1 } },
       { $limit: 5 },
     ]);
-    const topQtyEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnQuantity", dir: "desc" }], limit: 5 }, { tenantId: WE_FOUR });
-    check("F5 WE FOUR top-5 purchase-returned products by quantity = independent oracle", topQtyEngine.ok && same(topQtyEngine.rows.map((r) => [r.key.product, r.values.returnQuantity]), topQtyOracle.map((r) => [r._id, r.qty])), JSON.stringify({ engine: topQtyEngine.rows, oracle: topQtyOracle }));
+    const topQtyEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnQuantity", dir: "desc" }], limit: 5 }, { tenantId: TENANT_A });
+    check("F5 live tenant A top-5 purchase-returned products by quantity = independent oracle", topQtyEngine.ok && same(topQtyEngine.rows.map((r) => [r.key.product, r.values.returnQuantity]), topQtyOracle.map((r) => [r._id, r.qty])), JSON.stringify({ engine: topQtyEngine.rows, oracle: topQtyOracle }));
 
     const periodFilteredOracle = await AdjustmentNote.aggregate([
-      { $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active", "header.voucherDate": { $gte: utc("2025-09-01"), $lte: new Date("2025-09-30T23:59:59.999Z") } } },
+      { $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active", "header.voucherDate": { $gte: utc("2025-09-01"), $lte: new Date("2025-09-30T23:59:59.999Z") } } },
       { $unwind: "$inventory" },
       { $group: { _id: null, amt: { $sum: { $abs: "$inventory.amount" } } } },
     ]);
-    const periodFilteredEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, metrics: ["returnLineAmount"] }, { tenantId: WE_FOUR });
+    const periodFilteredEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, metrics: ["returnLineAmount"] }, { tenantId: TENANT_A });
     check("F6 one period-filtered product-value query = independent oracle", periodFilteredEngine.ok && Math.abs(periodFilteredEngine.totals.values.returnLineAmount - (periodFilteredOracle[0] ? periodFilteredOracle[0].amt : 0)) < 0.01, JSON.stringify({ engine: periodFilteredEngine.totals, oracle: periodFilteredOracle[0] }));
 
-    const nirmalProducts = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount", "returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }] }, { tenantId: NIRMAL });
-    check("F7 Nirmal product-return ranking = genuine empty (no Credit Notes exist), never an error", nirmalProducts.ok && nirmalProducts.rows.length === 0, JSON.stringify(nirmalProducts.errors || nirmalProducts));
+    const tenantBProducts = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnLineAmount", "returnQuantity"], groupBy: [{ dim: "product" }], sort: [{ by: "returnLineAmount", dir: "desc" }] }, { tenantId: TENANT_B });
+    check("F7 live tenant B product-return ranking = genuine empty (no Credit Notes exist), never an error", tenantBProducts.ok && tenantBProducts.rows.length === 0, JSON.stringify(tenantBProducts.errors || tenantBProducts));
   } catch (error) {
     fail += 1;
     console.log("  FAIL - unexpected error:", error && error.stack);

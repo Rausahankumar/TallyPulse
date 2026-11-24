@@ -7,7 +7,7 @@ const { validateMasterOwnership } = require("./companyOwnership");
 //
 // Problem this replaces: the old sync hardcoded "Child Of": "$$VchTypeSales"
 // / "$$VchTypePurchase". Confirmed live against a real customized company
-// ("We Four") that this only ever matches vouchers whose OWN
+// ("live tenant A") that this only ever matches vouchers whose OWN
 // VoucherTypeName is literally "Sales"/"Purchase" - it does not walk the
 // voucher-type parent hierarchy at all. A company that records real sales
 // under several distinct voucher-type names (e.g. "Invoice",

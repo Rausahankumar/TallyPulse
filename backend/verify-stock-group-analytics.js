@@ -6,19 +6,20 @@
  * Structure:
  *   A. Synthetic-tenant tests (1-19 from the task spec) - isolated,
  *      controlled fixtures, cleaned up before and after.
- *   B. Real WE FOUR verification - independent MongoDB aggregations
+ *   B. Live tenant A verification - independent MongoDB aggregations
  *      written SEPARATELY from stockGroupAnalytics.js's own code (never
  *      "call the function, then compare its output to itself").
  *
  * No Anthropic/Claude calls. No production data modified (all synthetic
  * writes are to clearly-fake tenant ids, deleted before and after; the
- * real WE FOUR section is read-only).
+ * live tenant A section is read-only).
  *
  * Run: node verify-stock-group-analytics.js
  */
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 const Sale = require("./src/models/sales.model");
 const StockItemMaster = require("./src/models/stockItemMaster.model");
@@ -27,14 +28,9 @@ const stockGroupAnalytics = require("./src/services/analytics/stockGroupAnalytic
 const periodEngine = require("./src/services/analytics/periodEngine");
 const { getTenantReferenceDate } = require("./src/services/analytics/referenceDate");
 
-let pass = 0;
-let fail = 0;
-
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 function approx(a, b, epsilon = 0.001) {
   return Math.abs(a - b) < epsilon;
@@ -46,7 +42,7 @@ function approx(a, b, epsilon = 0.001) {
 
 const TENANT_A = "TEST-TENANT-A-stockgroup-verify";
 const TENANT_B = "TEST-TENANT-B-stockgroup-verify";
-// Section B's stand-in when no real WE FOUR data is present (e.g. CI) - seeded only then, never otherwise.
+// Section B's stand-in when no live tenant A data is present (e.g. CI) - seeded only then, never otherwise.
 const TENANT_C = "TEST-TENANT-C-stockgroup-verify";
 
 let voucherSeq = 0;
@@ -282,7 +278,7 @@ async function runSyntheticTests() {
 }
 
 // --------------------------------------------------
-// B. Real WE FOUR verification - INDEPENDENT aggregation, written
+// B. Live tenant A verification - INDEPENDENT aggregation, written
 // separately from stockGroupAnalytics.js. Never compares the function's
 // own output to itself.
 // --------------------------------------------------
@@ -331,9 +327,9 @@ async function independentStockGroupAggregation(tenantId, from, to) {
   };
 }
 
-// Stand-in for WE FOUR when its data is absent. Latest voucher 2025-08-20, so (FY quarters, Apr start):
+// Stand-in for live tenant A when its data is absent. Latest voucher 2025-08-20, so (FY quarters, Apr start):
 //   current  = 2025-07-01 .. 2025-08-20   previous = 2025-04-01 .. 2025-05-20   YoY = 2024-07-01 .. 2024-08-20
-// Hand-computed expectations are asserted in runRealWeFourVerification on top of the independent-aggregation checks.
+// Hand-computed expectations are asserted in runRealTenantAVerification on top of the independent-aggregation checks.
 async function seedSyntheticSectionB() {
   await StockItemMaster.insertMany([
     { tenantId: TENANT_C, itemName: "SItem1", stockGroupName: "SG-Red", tallyGuid: "guidC-1", syncedAt: new Date() },
@@ -363,18 +359,18 @@ async function seedSyntheticSectionB() {
   ]);
 }
 
-async function runRealWeFourVerification() {
-  console.log("\n=== B. Real WE FOUR verification (independent aggregation) ===");
+async function runRealTenantAVerification() {
+  console.log("\n=== B. Live tenant A verification (independent aggregation) ===");
 
-  // Real WE FOUR data is used whenever it is present; only otherwise do the same checks run on synthetic tenant C.
+  // Live tenant A data is used whenever it is present; only otherwise do the same checks run on synthetic tenant C.
   let tenantId = null;
-  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  if (!weFour) {
-    console.log("INFO | real-we-four - no WE FOUR company found in this database; running section B on synthetic tenant C");
-  } else if ((await StockItemMaster.countDocuments({ tenantId: weFour.tenantId })) === 0) {
-    console.log("INFO | real-we-four - StockItemMaster is empty for WE FOUR (run refresh-stock-item-master.js first); running section B on synthetic tenant C");
+  const tenantA = await Company.findOne({ companyName: REAL.A.name }).lean();
+  if (!tenantA) {
+    console.log("INFO | real-tenant-a - no live tenant A company found in this database; running section B on synthetic tenant C");
+  } else if ((await StockItemMaster.countDocuments({ tenantId: tenantA.tenantId })) === 0) {
+    console.log("INFO | real-tenant-a - StockItemMaster is empty for live tenant A; running section B on synthetic tenant C");
   } else {
-    tenantId = weFour.tenantId;
+    tenantId = tenantA.tenantId;
   }
   const synthetic = tenantId === null;
   if (synthetic) {
@@ -437,7 +433,7 @@ async function runRealWeFourVerification() {
       [[3000, 1500, 50, 0, 4500, null], [2000, 1000, 50, 4000, -1000, -25], [0, 2500, null, 0, 2500, null]]);
   }
 
-  console.log(`\n--- ${synthetic ? "Synthetic tenant C" : "Real WE FOUR"} Top 10 Stock Groups (current quarter) ---`);
+  console.log(`\n--- ${synthetic ? "Synthetic tenant C" : "Live tenant A"} Top 10 Stock Groups (current quarter) ---`);
   actual.items.forEach((g, i) => {
     console.log(`  ${i + 1}. ${g.stockGroupName} — ₹${g.salesAmount.toFixed(2)} (qty ${g.salesQuantity}) | MoM: ${g.momGrowthPercentage === null ? "N/A" : g.momGrowthPercentage.toFixed(1) + "%"} | YoY: ${g.yoyGrowthPercentage === null ? "N/A" : g.yoyGrowthPercentage.toFixed(1) + "%"}`);
   });
@@ -456,14 +452,14 @@ async function main() {
   try {
     await seedFixtures();
     await runSyntheticTests();
-    await runRealWeFourVerification();
+    await runRealTenantAVerification();
   } finally {
     await cleanup();
   }
 
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 }
 
 main().catch(async (err) => {

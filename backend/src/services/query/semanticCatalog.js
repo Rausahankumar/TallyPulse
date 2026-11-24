@@ -293,7 +293,7 @@ const METRICS = {
     description: "Number of active Credit/Debit Notes classified as a return.",
     disclosures: [],
   },
-  // Product-level return metrics. Confirmed against real WE FOUR data (1,277 sampled active return lines):
+  // Product-level return metrics. Confirmed against live tenant A data (1,277 sampled active return lines):
   // quantity is always positive on both sides; inventory.amount is Tally's own signed entry (negative on
   // every sales_return line, positive on every purchase_return line - the item's inward/outward accounting
   // sign, not a data error), so returnLineAmount sums the ABSOLUTE value (`abs: true`, compile.js) to read as

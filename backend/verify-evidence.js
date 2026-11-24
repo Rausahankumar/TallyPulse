@@ -197,7 +197,7 @@ const numberAt = (text, re) => { const m = re.exec(text); return m ? Number(m[1]
   check("eval-orange-explanation", "orange (price cut): driver-price, quantity-flat and both rates pass on the findings, fail on the steps alone", passed(o.withFindings) === 4 && passed(o.stepsOnly) === 0, JSON.stringify(o.withFindings.results.filter((r) => !r.pass)));
 }
 
-// ---------------------------------------------------------------- 10. live WE FOUR transcript regressions (data through 8 Dec 2025)
+// ---------------------------------------------------------------- 10. live tenant A transcript regressions (data through 8 Dec 2025)
 {
   const custom = (y1, m1, d1, y2, m2, d2) => ({ kind: "custom", from: iso(y1, m1, d1), to: iso(y2, m2, d2, true), label: "custom" });
   const MAY_DEC = custom(2025, 5, 1, 2025, 12, 31);
@@ -254,7 +254,7 @@ const numberAt = (text, re) => { const m = re.exec(text); return m ? Number(m[1]
   check("live-pairs-no-bridge", "a missing month is never bridged: Jun vs May and Sep vs Aug only, and the hole is a gap", JSON.stringify(hp) === JSON.stringify(["Jun 2025 ₹90.00 vs May 2025", "Sep 2025 ₹70.00 vs Aug 2025"]) && holes.gaps.some((g) => /no row for the month before Aug 2025/.test(g.text)), texts(holes) + JSON.stringify(holes.gaps));
 }
 
-// ---------------------------------------------------------------- 11. live WE FOUR Q4 / Q5 / Q6: several breakdowns, sort directions, limits
+// ---------------------------------------------------------------- 11. live tenant A Q4 / Q5 / Q6: several breakdowns, sort directions, limits
 {
   const TOTAL = [1521542.68, 5623866.46]; // Dec vs Nov invoice totals: -41,02,323.78
   const up = () => compared("sales", "customer", "invoiceAmount", [["A&T", 74785, 3589], ["Madhav", 47047, 5045]], { total: TOTAL, truncated: true, dir: "desc" });

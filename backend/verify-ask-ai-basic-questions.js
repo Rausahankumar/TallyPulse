@@ -46,13 +46,9 @@ const { tryAnswerWithQueryEngine } = require("./src/services/query/queryChat");
 const { analysisMode, analysisModeUnrecognised, basicShape, salesVsPurchaseMismatch } = require("./src/services/query/basicAnalysis");
 const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
 
-let pass = 0;
-let fail = 0;
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 const T1 = "TEST-TENANT-1-basic-questions";
 const T2 = "TEST-TENANT-2-basic-questions";
@@ -164,7 +160,7 @@ async function main() {
     const now = new Date();
     for (const [tenantId, companyGuid] of [[T1, GUID1], [T2, GUID2]]) {
       await SyncCheckpoint.create({ tenantId, companyGuid, voucherType: "Sales", lastAlterId: 100, lastRunStatus: "success", lastSyncedAt: now, isRunning: false, lockedAt: null });
-      await SyncCheckpoint.create({ tenantId, companyGuid, voucherType: "Purchase", lastAlterId: 100, lastRunStatus: "failed", lastSyncedAt: new Date("2025-09-02T10:00:00.000Z"), isRunning: false, lockedAt: null });
+      await SyncCheckpoint.create({ tenantId, companyGuid, voucherType: "Purchase", lastAlterId: 100, lastRunStatus: "failed", lastSyncedAt: new Date("2025-09-02T10:00:00.000Z"), lastSuccessAt: new Date("2025-09-02T10:00:00.000Z"), isRunning: false, lockedAt: null });
     }
 
     console.log("\n=== 1. \"discount percentage of aug 2025\" ===");
@@ -284,8 +280,8 @@ async function main() {
     await cleanup();
     await mongoose.disconnect();
   }
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
-  process.exitCode = fail ? 1 : 0;
+  console.log(t.summary());
+  process.exitCode = t.fail ? 1 : 0;
 }
 
 main().catch(async (e) => {

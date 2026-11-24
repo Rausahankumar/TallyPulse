@@ -33,13 +33,9 @@ const SyncCheckpoint = require("./src/models/syncCheckpoint.model");
 const insights = require("./src/services/analytics/insights");
 const controller = require("./src/controllers/analyticsController");
 
-let pass = 0;
-let fail = 0;
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const { deriveDiscountAmount } = require("./src/services/parser/tallyParser");
 // A fixture line: [item, ACTUAL quantity, rate, amount, discount % Tally states, billed quantity Tally sent]. Stored exactly as the sync
@@ -659,9 +655,9 @@ async function main() {
   } finally {
     await cleanup();
   }
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 }
 
 main().catch(async (err) => {

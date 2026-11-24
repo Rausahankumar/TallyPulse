@@ -22,14 +22,9 @@ process.env.TZ = "Asia/Kolkata"; // before anything reads the clock; see the hea
 
 const periodEngine = require("./src/services/analytics/periodEngine");
 
-let pass = 0;
-let fail = 0;
-
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 function iso(period) {
   return {
@@ -230,5 +225,5 @@ console.log("\n=== Unknown period kind ===");
   check("unknown-kind-throws", "an unrecognized period kind throws rather than silently returning something", threw, true);
 }
 
-console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
-process.exit(fail > 0 ? 1 : 0);
+console.log(t.summary());
+process.exit(t.fail > 0 ? 1 : 0);

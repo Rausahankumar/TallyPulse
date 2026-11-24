@@ -49,13 +49,13 @@ const short = (v) => { const s = typeof v === "string" ? v : JSON.stringify(v); 
 // ------------------------------------------------------------------ stub TallyPrime
 // THREE companies open at once; Tally answers for the SELECTED one only.
 const P = "verify-sec-";
-const NIR = `${P}nirmal-guid`;
-const WF = `${P}wefour-guid`;
-const IC = `${P}intellicart-guid`;
+const NIR = `${P}globex-guid`;
+const WF = `${P}acme-guid`;
+const IC = `${P}initech-guid`;
 const OPEN = [
-  { name: "Intelli-Cart", guid: IC },
-  { name: "Nirmal", guid: NIR },
-  { name: "WE FOUR", guid: WF },
+  { name: "Initech Retail", guid: IC },
+  { name: "Globex", guid: NIR },
+  { name: "ACME STORES", guid: WF },
 ];
 let selected = NIR;          // which company Tally currently answers for
 let rowsFor = null;          // override: whose vouchers a voucher query returns (default = selected)
@@ -438,13 +438,13 @@ async function main() {
   resetAllRateLimiters();
 
   // ==================================================================== 6. TALLY COMPANY ISOLATION - three companies open
-  out("\n6. TALLY ISOLATION - Nirmal, WE FOUR and Intelli-Cart all open; Nirmal selected");
+  out("\n6. TALLY ISOLATION - Globex, ACME STORES and Initech Retail all open; Globex selected");
   const mkTenant = async (guid, name) => { const c = await mkCompany(guid, name, `${P}tenant-${name.toLowerCase().replace(/\W/g, "")}`); return { c, company: { tenantId: c.tenantId, companyGuid: guid, tallyConnection: { baseUrl: stub.url } } }; };
-  const T = { NIR: await mkTenant(NIR, "Nirmal"), WF: await mkTenant(WF, "WeFour"), IC: await mkTenant(IC, "IntelliCart") };
+  const T = { NIR: await mkTenant(NIR, "Globex"), WF: await mkTenant(WF, "AcmeStores"), IC: await mkTenant(IC, "InitechRetail") };
   selected = NIR; rowsFor = null; clearVoucherTypeClassificationCache();
   const guardResults = {};
   for (const [k, g] of Object.entries({ NIR, WF, IC })) guardResults[k] = (await verifyOpenTallyCompany(g)).ok;
-  out(`  [INFO]       SEC-TALLY-0 the open-company guard alone passes for all three tenants while only Nirmal is selected (${JSON.stringify(guardResults)}) - so it cannot be the isolation control; the ownership guard is`);
+  out(`  [INFO]       SEC-TALLY-0 the open-company guard alone passes for all three tenants while only Globex is selected (${JSON.stringify(guardResults)}) - so it cannot be the isolation control; the ownership guard is`);
 
   // /api/odbc/sales returns raw vouchers of the company Tally has SELECTED: only that company's owner may read it
   const nirUser = await mkUser("nirowner"); await link(nirUser, T.NIR.c);
@@ -452,8 +452,8 @@ async function main() {
   const salesWf = await http_.get("/api/odbc/sales", A(tokenFor(wfUser, T.WF.c)));
   const salesNir = await http_.get("/api/odbc/sales", A(tokenFor(nirUser, T.NIR.c)));
   const noCompanyTok = await http_.get("/api/odbc/sales", A(jwt.sign({ id: String(nirUser._id) }, SECRET, { expiresIn: "1h" })));
-  probe("SEC-AUTH-11", "/api/odbc/sales refuses a signed-in user whose company is NOT the one Tally has selected (403, no vouchers)", salesWf.status === 403 && !JSON.stringify(salesWf.data).includes("Audit Customer"), `WE FOUR user while Nirmal is selected -> ${salesWf.status}`);
-  probe("SEC-AUTH-12", "/api/odbc/sales still works for the owner of the selected company, and refuses a company-less token", salesNir.status === 200 && noCompanyTok.status === 401, `Nirmal owner -> ${salesNir.status}, company-less token -> ${noCompanyTok.status}`);
+  probe("SEC-AUTH-11", "/api/odbc/sales refuses a signed-in user whose company is NOT the one Tally has selected (403, no vouchers)", salesWf.status === 403 && !JSON.stringify(salesWf.data).includes("Audit Customer"), `ACME STORES user while Globex is selected -> ${salesWf.status}`);
+  probe("SEC-AUTH-12", "/api/odbc/sales still works for the owner of the selected company, and refuses a company-less token", salesNir.status === 200 && noCompanyTok.status === 401, `Globex owner -> ${salesNir.status}, company-less token -> ${noCompanyTok.status}`);
 
   const idOf = (i) => (0x3d6 + i).toString(16).padStart(8, "0");
   const raw = (co, i) => ({ vouchernumber: `SEC-${i}`, date: "20260905", partyname: "Audit Vendor", vouchertypename: "Purchase", guid: `${co}-${idOf(i)}`, alterid: String(100 + i),
@@ -467,13 +467,13 @@ async function main() {
   const docs = (t) => Purchase.countDocuments({ tenantId: t.company.tenantId });
   const ck = async (t, g) => (await SyncCheckpoint.findOne({ tenantId: t.company.tenantId, companyGuid: g, voucherType: "Purchase" }).lean()).lastAlterId;
 
-  // direction 1: Nirmal selected, WE FOUR / Intelli-Cart tenants are handed Nirmal's vouchers
+  // direction 1: Globex selected, ACME STORES / Initech Retail tenants are handed Globex's vouchers
   for (const k of ["NIR", "WF", "IC"]) await setCk(T[k], { NIR, WF, IC }[k]);
   const g1 = { NIR, WF, IC };
   const r = {};
   for (const k of ["NIR", "WF", "IC"]) { clearVoucherTypeClassificationCache(); r[k] = await runSyncForCompanyModule(T[k].company, syncMod(NIR), { intervalSeconds: 60, batchSize: 100 }); }
-  probe("SEC-TALLY-1", "sync: the selected company (Nirmal) receives its own vouchers (control)", r.NIR.created === 3 && (await docs(T.NIR)) === 3, short(r.NIR));
-  probe("SEC-TALLY-2", "sync: WE FOUR and Intelli-Cart tenants refuse Nirmal's vouchers - 0 writes, checkpoint unchanged",
+  probe("SEC-TALLY-1", "sync: the selected company (Globex) receives its own vouchers (control)", r.NIR.created === 3 && (await docs(T.NIR)) === 3, short(r.NIR));
+  probe("SEC-TALLY-2", "sync: ACME STORES and Initech Retail tenants refuse Globex's vouchers - 0 writes, checkpoint unchanged",
     (await docs(T.WF)) === 0 && (await docs(T.IC)) === 0 && (await ck(T.WF, WF)) === 50 && (await ck(T.IC, IC)) === 50, `WF docs=${await docs(T.WF)} ckpt=${await ck(T.WF, WF)}; IC docs=${await docs(T.IC)} ckpt=${await ck(T.IC, IC)}`);
 
   // the voucher guard itself (masters pre-cached while the tenant's own company was selected, then selection moves)
@@ -482,17 +482,17 @@ async function main() {
   selected = NIR;
   const rc = {};
   for (const k of ["WF", "IC"]) rc[k] = await runSyncForCompanyModule(T[k].company, syncMod(NIR), { intervalSeconds: 60, batchSize: 100 });
-  probe("SEC-TALLY-3", "sync (masters cached earlier, selection then moves to Nirmal): the VOUCHER ownership check refuses the batch", rc.WF.companyMismatch === true && rc.IC.companyMismatch === true && (await docs(T.WF)) === 0 && (await docs(T.IC)) === 0, short(rc));
+  probe("SEC-TALLY-3", "sync (masters cached earlier, selection then moves to Globex): the VOUCHER ownership check refuses the batch", rc.WF.companyMismatch === true && rc.IC.companyMismatch === true && (await docs(T.WF)) === 0 && (await docs(T.IC)) === 0, short(rc));
 
   // recovery
   const recDeps = (rows) => ({ fetchRegistry: async () => ({ data: { collection: rows } }), fetchByAlterIds: async () => ({ data: { collection: [1, 2, 3].map((i) => raw(NIR, i)) } }) });
   selected = WF; clearVoucherTypeClassificationCache(); await resolveVoucherTypeClassification({ companyGuid: WF });
   const rec = await recoverMissingVouchers({ company: T.WF.company, voucherType: "Purchase", apply: true, deps: recDeps(rowsOf(NIR, [1, 2, 3])) });
-  probe("SEC-TALLY-4", "recovery: Nirmal's vouchers never become 'missing' for WE FOUR and are never imported", rec.status === "aborted" && (await docs(T.WF)) === 0, `status ${rec.status} ${rec.reasonCode}`);
+  probe("SEC-TALLY-4", "recovery: Globex's vouchers never become 'missing' for ACME STORES and are never imported", rec.status === "aborted" && (await docs(T.WF)) === 0, `status ${rec.status} ${rec.reasonCode}`);
   const recSelf = await recoverMissingVouchers({ company: T.WF.company, voucherType: "Purchase", apply: true, deps: recDeps(rowsOf(WF, [1, 2, 3])) });
   probe("SEC-TALLY-5", "recovery: a clean registry whose fetched batch is contaminated is rejected, 0 written", recSelf.batches.failed === 1 && (await docs(T.WF)) === 0, `batches ${JSON.stringify(recSelf.batches)}`);
   const ckAfterRec = await ck(T.WF, WF);
-  probe("SEC-TALLY-6", "recovery never touches SyncCheckpoint", ckAfterRec === 50, `WE FOUR checkpoint ${ckAfterRec}`);
+  probe("SEC-TALLY-6", "recovery never touches SyncCheckpoint", ckAfterRec === 50, `ACME STORES checkpoint ${ckAfterRec}`);
 
   // reconciliation
   for (const i of [1, 2, 3, 4]) await processSinglePurchaseVoucher(raw(IC, i), T.IC.company.tenantId);
@@ -505,16 +505,16 @@ async function main() {
   // manual import
   selected = NIR; clearVoucherTypeClassificationCache();
   let mi1 = null; try { await importTallySalesFromTally({ companyGuId: WF }); } catch (e) { mi1 = e.message; }
-  probe("SEC-TALLY-9", "manual import: WE FOUR importing while Nirmal is selected is refused (masters mismatch), 0 sales written", !!mi1 && /Company mismatch/.test(mi1) && (await Sale.countDocuments({ tenantId: T.WF.company.tenantId })) === 0, short(mi1));
-  selected = WF; flipAfterMasters = NIR; clearVoucherTypeClassificationCache(); // TOCTOU: masters answered for WE FOUR, vouchers then for Nirmal
+  probe("SEC-TALLY-9", "manual import: ACME STORES importing while Globex is selected is refused (masters mismatch), 0 sales written", !!mi1 && /Company mismatch/.test(mi1) && (await Sale.countDocuments({ tenantId: T.WF.company.tenantId })) === 0, short(mi1));
+  selected = WF; flipAfterMasters = NIR; clearVoucherTypeClassificationCache(); // TOCTOU: masters answered for ACME STORES, vouchers then for Globex
   let mi2 = null; try { await importTallySalesFromTally({ companyGuId: WF }); } catch (e) { mi2 = e.message; }
-  probe("SEC-TALLY-10", "manual import TOCTOU: masters answered for WE FOUR, then the selection moves - the voucher check still refuses, 0 sales written", !!mi2 && /Company mismatch/.test(mi2) && (await Sale.countDocuments({ tenantId: T.WF.company.tenantId })) === 0, short(mi2));
+  probe("SEC-TALLY-10", "manual import TOCTOU: masters answered for ACME STORES, then the selection moves - the voucher check still refuses, 0 sales written", !!mi2 && /Company mismatch/.test(mi2) && (await Sale.countDocuments({ tenantId: T.WF.company.tenantId })) === 0, short(mi2));
 
   // reverse direction (do not assume it is safe)
   selected = WF; rowsFor = null; clearVoucherTypeClassificationCache();
   await setCk(T.NIR, NIR); await Purchase.deleteMany({ tenantId: T.NIR.company.tenantId });
   const rev = await runSyncForCompanyModule(T.NIR.company, syncMod(WF), { intervalSeconds: 60, batchSize: 100 });
-  probe("SEC-TALLY-11", "REVERSE direction: WE FOUR selected, Nirmal's tenant is refused (0 writes, checkpoint unchanged)", (await docs(T.NIR)) === 0 && (await ck(T.NIR, NIR)) === 50, short(rev));
+  probe("SEC-TALLY-11", "REVERSE direction: ACME STORES selected, Globex's tenant is refused (0 writes, checkpoint unchanged)", (await docs(T.NIR)) === 0 && (await ck(T.NIR, NIR)) === 50, short(rev));
 
   // master-data cache isolation
   clearVoucherTypeClassificationCache(); selected = NIR;

@@ -1,13 +1,13 @@
 /**
  * Return Analytics Phase 1: query engine, chat integration (freshness + coverage, both fixed in this phase),
- * tenant security, answer cache, and a real-data oracle check against WE FOUR / Nirmal (read-only).
+ * tenant security, answer cache, and a real-data oracle check against live tenant A / live tenant B (read-only).
  *
  * Complements verify-return-query.js (engine basics) and verify-adjustment-note.js (sync pipeline). This suite
  * covers trend, comparison, the queryChat freshness/coverage entity-label fixes, cache-hit behaviour, and a
  * forged tenant/company rejection. Phrasing -> plan is the planner's job (verify-query-planner.js); the chat
  * section here feeds queryChat the plan a correct interpretation produces through a scripted planner client.
  *
- * SYNTHETIC fixtures for sections B-F; SECTION G reads real WE FOUR/Nirmal data (already synced and validated in
+ * SYNTHETIC fixtures for sections B-F; SECTION G reads live tenants A and B data (already synced and validated in
  * a prior session) READ-ONLY - no writes, no Tally calls, no Claude calls.
  *
  * Run: node verify-return-analytics.js
@@ -15,6 +15,7 @@
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 
 const AdjustmentNote = require("./src/models/adjustmentNote.model");
@@ -175,13 +176,13 @@ async function cleanup() {
     const formatted = formatQueryAnswer({ plan: fq, result: fres });
     check("F1 answer states the metric, resolved dates and the ₹ figure", /Return amount:\s*₹180\.00/.test(formatted.text) && /2026/.test(formatted.text), formatted.text);
 
-    // ============================================================ G. REAL DATA (read-only, WE FOUR + Nirmal)
+    // ============================================================ G. REAL DATA (read-only, live tenant A + live tenant B)
     section("G. REAL DATA oracle (read-only, no writes, no Tally, no Claude)");
-    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: "6ab21418959e173f9b3f367f" })) > 0;
-    if (!REAL_PRESENT) console.log("  SKIPPED - the real WE FOUR/Nirmal tenants are not present in this database");
+    const REAL_PRESENT = (await AdjustmentNote.countDocuments({ tenantId: REAL.A.tenantId })) > 0;
+    if (!REAL_PRESENT) console.log("  SKIPPED - the live tenants A and B are not present in this database");
     else {
-    const WE_FOUR = "6ab21418959e173f9b3f367f";
-    const NIRMAL = "6ab21fe0959e173f9b3f3682";
+    const TENANT_A = REAL.A.tenantId;
+    const TENANT_B = REAL.B.tenantId;
     const ALL_TIME = { kind: "all_time" };
 
     const oracleAgg = async (tenantId, classification) => {
@@ -189,38 +190,38 @@ async function cleanup() {
       return rows[0] ? { amt: Math.round(rows[0].amt * 100) / 100, n: rows[0].n } : { amt: 0, n: 0 };
     };
 
-    const weFourSalesOracle = await oracleAgg(WE_FOUR, "sales_return");
-    let weFourSalesEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: WE_FOUR });
-    check("G1 WE FOUR sales_return amount/count = independent Mongo oracle", weFourSalesEngine.ok && weFourSalesEngine.totals.values.returnAmount === weFourSalesOracle.amt && weFourSalesEngine.totals.values.returnCount === weFourSalesOracle.n, JSON.stringify({ engine: weFourSalesEngine.totals, oracle: weFourSalesOracle }));
+    const tenantASalesOracle = await oracleAgg(TENANT_A, "sales_return");
+    let tenantASalesEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: TENANT_A });
+    check("G1 live tenant A sales_return amount/count = independent Mongo oracle", tenantASalesEngine.ok && tenantASalesEngine.totals.values.returnAmount === tenantASalesOracle.amt && tenantASalesEngine.totals.values.returnCount === tenantASalesOracle.n, JSON.stringify({ engine: tenantASalesEngine.totals, oracle: tenantASalesOracle }));
 
-    const weFourPurchOracle = await oracleAgg(WE_FOUR, "purchase_return");
-    let weFourPurchEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: WE_FOUR });
-    check("G2 WE FOUR purchase_return amount/count = independent Mongo oracle", weFourPurchEngine.ok && weFourPurchEngine.totals.values.returnAmount === weFourPurchOracle.amt && weFourPurchEngine.totals.values.returnCount === weFourPurchOracle.n, JSON.stringify({ engine: weFourPurchEngine.totals, oracle: weFourPurchOracle }));
+    const tenantAPurchOracle = await oracleAgg(TENANT_A, "purchase_return");
+    let tenantAPurchEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: TENANT_A });
+    check("G2 live tenant A purchase_return amount/count = independent Mongo oracle", tenantAPurchEngine.ok && tenantAPurchEngine.totals.values.returnAmount === tenantAPurchOracle.amt && tenantAPurchEngine.totals.values.returnCount === tenantAPurchOracle.n, JSON.stringify({ engine: tenantAPurchEngine.totals, oracle: tenantAPurchOracle }));
 
-    const topCustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1 } }, { $limit: 1 }]);
-    const topCustomerEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 1 }, { tenantId: WE_FOUR });
-    check("G3 WE FOUR top customer by sales returns = independent oracle", topCustomerEngine.ok && topCustomerEngine.rows[0] && topCustomerEngine.rows[0].key.customer === topCustomerOracle[0]._id && Math.abs(topCustomerEngine.rows[0].values.returnAmount - topCustomerOracle[0].amt) < 0.01, JSON.stringify({ engine: topCustomerEngine.rows && topCustomerEngine.rows[0], oracle: topCustomerOracle[0] }));
+    const topCustomerOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1 } }, { $limit: 1 }]);
+    const topCustomerEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "customer" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 1 }, { tenantId: TENANT_A });
+    check("G3 live tenant A top customer by sales returns = independent oracle", topCustomerEngine.ok && topCustomerEngine.rows[0] && topCustomerEngine.rows[0].key.customer === topCustomerOracle[0]._id && Math.abs(topCustomerEngine.rows[0].values.returnAmount - topCustomerOracle[0].amt) < 0.01, JSON.stringify({ engine: topCustomerEngine.rows && topCustomerEngine.rows[0], oracle: topCustomerOracle[0] }));
 
-    const topSupplierOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "purchase_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1 } }, { $limit: 1 }]);
-    const topSupplierEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 1 }, { tenantId: WE_FOUR });
-    check("G4 WE FOUR top supplier by purchase returns = independent oracle", topSupplierEngine.ok && topSupplierEngine.rows[0] && topSupplierEngine.rows[0].key.supplier === topSupplierOracle[0]._id, JSON.stringify({ engine: topSupplierEngine.rows && topSupplierEngine.rows[0], oracle: topSupplierOracle[0] }));
+    const topSupplierOracle = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "purchase_return", voucherStatus: "active" } }, { $group: { _id: "$header.partyName", amt: { $sum: "$header.voucherTotalAmount" } } }, { $sort: { amt: -1 } }, { $limit: 1 }]);
+    const topSupplierEngine = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "supplier" }], sort: [{ by: "returnAmount", dir: "desc" }], limit: 1 }, { tenantId: TENANT_A });
+    check("G4 live tenant A top supplier by purchase returns = independent oracle", topSupplierEngine.ok && topSupplierEngine.rows[0] && topSupplierEngine.rows[0].key.supplier === topSupplierOracle[0]._id, JSON.stringify({ engine: topSupplierEngine.rows && topSupplierEngine.rows[0], oracle: topSupplierOracle[0] }));
 
-    const cmpEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, compare: { mode: "custom", period: { kind: "custom", from: "2025-08-01", to: "2025-08-31" } }, metrics: ["returnAmount"] }, { tenantId: WE_FOUR });
-    const cmpOracleCur = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active", "header.voucherDate": { $gte: utc("2025-09-01"), $lte: new Date("2025-09-30T23:59:59.999Z") } } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
+    const cmpEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: { kind: "custom", from: "2025-09-01", to: "2025-09-30" }, compare: { mode: "custom", period: { kind: "custom", from: "2025-08-01", to: "2025-08-31" } }, metrics: ["returnAmount"] }, { tenantId: TENANT_A });
+    const cmpOracleCur = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active", "header.voucherDate": { $gte: utc("2025-09-01"), $lte: new Date("2025-09-30T23:59:59.999Z") } } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
     check("G5 a real comparison result matches an independent Mongo aggregation for the subject period", cmpEngine.ok && Math.abs(cmpEngine.totals.values.returnAmount - (cmpOracleCur[0] ? cmpOracleCur[0].amt : 0)) < 0.01, JSON.stringify({ engine: cmpEngine.totals, oracle: cmpOracleCur[0] }));
 
-    const trendEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "date", bucket: "month" }] }, { tenantId: WE_FOUR });
-    const trendOracleSum = await AdjustmentNote.aggregate([{ $match: { tenantId: WE_FOUR, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
+    const trendEngine = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount"], groupBy: [{ dim: "date", bucket: "month" }] }, { tenantId: TENANT_A });
+    const trendOracleSum = await AdjustmentNote.aggregate([{ $match: { tenantId: TENANT_A, classification: "sales_return", voucherStatus: "active" } }, { $group: { _id: null, amt: { $sum: "$header.voucherTotalAmount" } } }]);
     const trendEngineSum = trendEngine.ok ? Math.round(trendEngine.rows.reduce((s, r) => s + r.values.returnAmount, 0) * 100) / 100 : null;
     check("G6 monthly trend rows sum to the same total as the oracle", trendEngine.ok && trendOracleSum[0] && trendEngineSum === Math.round(trendOracleSum[0].amt * 100) / 100, JSON.stringify({ trendEngineSum, oracleSum: trendOracleSum[0] }));
 
-    const nirmalSales = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: NIRMAL });
-    const nirmalPurch = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: NIRMAL });
-    check("G7 Nirmal sales_return = genuine zero (no Credit Notes exist)", nirmalSales.ok && nirmalSales.totals.values.returnAmount === 0 && nirmalSales.totals.values.returnCount === 0);
-    check("G8 Nirmal purchase_return = genuine zero (no Debit Notes exist)", nirmalPurch.ok && nirmalPurch.totals.values.returnAmount === 0 && nirmalPurch.totals.values.returnCount === 0);
+    const tenantBSales = await executeQuery({ v: 1, entity: "sales_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: TENANT_B });
+    const tenantBPurch = await executeQuery({ v: 1, entity: "purchase_return", mode: "aggregate", period: ALL_TIME, metrics: ["returnAmount", "returnCount"] }, { tenantId: TENANT_B });
+    check("G7 live tenant B sales_return = genuine zero (no Credit Notes exist)", tenantBSales.ok && tenantBSales.totals.values.returnAmount === 0 && tenantBSales.totals.values.returnCount === 0);
+    check("G8 live tenant B purchase_return = genuine zero (no Debit Notes exist)", tenantBPurch.ok && tenantBPurch.totals.values.returnAmount === 0 && tenantBPurch.totals.values.returnCount === 0);
 
-    const foreignWeFour = await AdjustmentNote.countDocuments({ tenantId: WE_FOUR, tallyGuid: { $not: /^d46f1002-00d9-4559-b3e1-afcf8674c7b1-/ } });
-    check("G9 no foreign-GUID AdjustmentNote docs under WE FOUR (re-confirmed, read-only)", foreignWeFour === 0);
+    const foreignTenantA = await AdjustmentNote.countDocuments({ tenantId: TENANT_A, tallyGuid: { $not: new RegExp("^" + REAL.A.guid + "-") } });
+    check("G9 no foreign-GUID AdjustmentNote docs under live tenant A (re-confirmed, read-only)", foreignTenantA === 0);
     }
   } catch (error) {
     fail += 1;

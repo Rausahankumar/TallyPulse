@@ -1,6 +1,7 @@
 
 const axios = require("axios");
 const { resolveTallyUrl } = require("./tallyUrl");
+const { postToTally } = require("./tallyAccess");
 
 // Default Tally HTTP/JSONEx gateway. Every function below accepts an
 // optional `baseUrl` override (falling back to this) so the connection can
@@ -49,10 +50,10 @@ function resolveDateBound(input, fallback) {
 // Tally resolves against whatever company/companies are currently open in
 // this session. Confirmed live against a real TallyPrime instance: this
 // returns the open company's native $Guid, e.g.
-// "09f68f6a-ace7-4ab4-bee8-ddea59ad0731" - the exact same value Tally
+// "<tenant-B-guid>" - the exact same value Tally
 // already uses as the prefix of every voucher's own tallyGuid
 // (see tallySyncWorker's synced records, e.g.
-// "09f68f6a-ace7-4ab4-bee8-ddea59ad0731-00000365"), which is strong
+// "<tenant-B-guid>-00000365"), which is strong
 // corroborating evidence this is Tally's real internal company identity,
 // not an inferred or approximated value. When no company is open (or the
 // one open can't be resolved), Tally returns an empty collection ([]) -
@@ -92,7 +93,7 @@ const getCompanyInfo = async ({ baseUrl } = {}) => {
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -251,7 +252,7 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -285,7 +286,7 @@ const getVoucherTypeMasters = async ({ baseUrl } = {}) => {
 // ============================================================
 //
 // Confirmed live against this project's own connected TallyPrime
-// instance (WE FOUR, 2026-09): "Type": "StockItem" is a flat master
+// instance (live tenant A, 2026-09): "Type": "StockItem" is a flat master
 // collection, exactly like "Type": "VoucherType" above - every Stock
 // Item in the company, each carrying its own $Parent (the Stock Group
 // it belongs to) and $Guid. Live result: 2,696 Stock Items returned,
@@ -328,7 +329,7 @@ const getStockItemMasters = async ({ baseUrl } = {}) => {
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -362,7 +363,7 @@ const getStockItemMasters = async ({ baseUrl } = {}) => {
 // ============================================================
 //
 // The GST/HSN configuration of the Stock Items in ONE Stock Group. Confirmed live
-// (read-only, WE FOUR, 2026-10-09): with these methods a StockItem collection returns
+// (read-only, live tenant A, 2026-10-09): with these methods a StockItem collection returns
 //   gstapplicable, gsttypeofsupply,
 //   hsndetails[{applicablefrom, hsncode, hsn, srcofhsndetails}],
 //   gstdetails[{applicablefrom, taxability, calculationtype, srcofgstdetails,
@@ -434,7 +435,7 @@ const getStockItemGstMasters = async ({ baseUrl, stockGroupName } = {}) =>
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -468,7 +469,7 @@ const getStockItemGstMasters = async ({ baseUrl, stockGroupName } = {}) =>
 // ============================================================
 //
 // Flat master collections, the same shape as "Type": "StockItem" above.
-// Confirmed live (read-only diagnostic, WE FOUR, 2026-09): 1,979 ledgers in
+// Confirmed live (read-only diagnostic, live tenant A, 2026-09): 1,979 ledgers in
 // 0.46 s and 70 groups in 30 ms, every record carrying a
 // "<companyGuid>-<hex>" Guid. Minimal field sets only - no GSTIN, no
 // balances. Masters only: no voucher data is requested.
@@ -487,7 +488,7 @@ const postMasterCollection = async ({ baseUrl, id, type, nativeMethod }) => {
     ]
   };
 
-  const response = await axios.post(resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL), requestBody, {
+  const response = await postToTally(axios, resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL), requestBody, {
     headers: {
       "Content-Type": "application/json",
       "Version": "1",
@@ -630,7 +631,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
     };
 
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -665,7 +666,7 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 
 
 // ============================================================
-// GET SALES VOUCHERS SINCE ALTERID (incremental sync)
+// VOUCHERS SINCE ALTERID (incremental sync): Sales, Purchase, Credit/Debit Notes
 // ============================================================
 //
 // Unlike getSalesVouchers (date-range based, used by the manual
@@ -687,107 +688,42 @@ const getSalesVouchers = async ({ fromDate, toDate, baseUrl, voucherTypeNames } 
 // Optional `upToAlterId` bounds the fetch to (afterAlterId, upToAlterId] so
 // the sync worker can drain a large backlog in slices (see
 // batchWindow.js) instead of requesting everything at once.
-const getSalesVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
-  try {
-
-    requireVoucherTypeNames(voucherTypeNames, "getSalesVouchersSinceAlterId");
-
-    const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
-    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
-
-    const requestBody = {
-
-      static_variables: [
-        {
-          name: "svExportFormat",
-          value: "jsonex"
-        }
-      ],
-
-      tdlmessage: [
-        {
-          definitions: [
-            {
-              metadata: {
-                name: "RTS Sales AlterID Collection",
-                type: "Collection"
-              },
-
-              attributes: [
-                {
-                  "Type": "Voucher"
-                },
-
-                {
-                  "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*"
-                },
-
-                {
-                  "Filter": "RTS AlterID Filter"
-                }
-              ]
-            },
-
-            {
-              metadata: {
-                name: "RTS AlterID Filter",
-                type: "System",
-                sys_type: "Formulae",
-                ismodify: true
-              },
-
-              value:
-                `${alterIdClause} AND (${typeNameClause})`
-            }
-          ],
-
-        }
-      ]
-    };
-
-    const response = await axios.post(
-      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
-      requestBody,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Version": "1",
-          "TallyRequest": "Export",
-          "Type": "Collection",
-          "ID": "RTS Sales AlterID Collection"
-        },
-
-        timeout: 30000
-      }
-    );
-
-    return response.data;
-
-  } catch (error) {
-
-    console.error(
-      "TALLY SALES ALTERID API ERROR:",
-      error.response?.data || error.message
-    );
-
-    throw error;
-  }
-};
-
-
-// ============================================================
-// GET PURCHASE VOUCHERS SINCE ALTERID (incremental sync)
-// ============================================================
 //
-// Mirrors getSalesVouchersSinceAlterId exactly, with the Purchase-class
-// voucherTypeNames set instead - see that function's comment for the full
-// rationale. Kept as its own self-contained function (not a shared builder
-// with the Sales version) to match this file's existing style.
-const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
+// The three fetchers below used to be three copies of one function. They differ ONLY in the names of the Tally collection and
+// filter they define, the label their errors are logged under and, for Credit/Debit Notes, two extra fields in the Native Method
+// list - so they are one builder driven by this table. The request each one sends is pinned, byte for byte, by
+// verify-tally-since-alterid-requests.js. Credit Note / Debit Note extras (proven live in the CN/DN diagnostic): inventoryentries'
+// accountingallocations (which ledger an item's amount is booked to - what adjustmentNoteClassifier.js needs) and ledgerentries'
+// billallocations (the "Agst Ref" original-invoice linkage, when Tally provides one). Still a minimal, bounded, tenant/company-
+// scoped request - not the ~223-field "*" dump the diagnostic used to discover these field names.
+const SINCE_ALTERID_KINDS = {
+  sales: {
+    fnName: "getSalesVouchersSinceAlterId",
+    collection: "RTS Sales AlterID Collection",
+    filter: "RTS AlterID Filter",
+    errorLabel: "TALLY SALES ALTERID API ERROR:",
+    nativeMethod: "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*",
+  },
+  purchase: {
+    fnName: "getPurchaseVouchersSinceAlterId",
+    collection: "RTS Purchase AlterID Collection",
+    filter: "RTS Purchase AlterID Filter",
+    errorLabel: "TALLY PURCHASE ALTERID API ERROR:",
+    nativeMethod: "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*",
+  },
+  adjustment: {
+    fnName: "getAdjustmentNoteVouchersSinceAlterId",
+    collection: "RTS Adjustment Note AlterID Collection",
+    filter: "RTS Adjustment Note AlterID Filter",
+    errorLabel: "TALLY ADJUSTMENT NOTE ALTERID API ERROR:",
+    nativeMethod: "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.accountingallocations.* , ledgerentries.* , ledgerentries.billallocations.*",
+  },
+};
+
+const buildSinceAlterIdFetcher = (kind) => async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
   try {
 
-    requireVoucherTypeNames(voucherTypeNames, "getPurchaseVouchersSinceAlterId");
+    requireVoucherTypeNames(voucherTypeNames, kind.fnName);
 
     const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
     const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
@@ -806,7 +742,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
           definitions: [
             {
               metadata: {
-                name: "RTS Purchase AlterID Collection",
+                name: kind.collection,
                 type: "Collection"
               },
 
@@ -816,19 +752,18 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
                 },
 
                 {
-                  "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.computedigst , ledgerentries.*"
+                  "Native Method": kind.nativeMethod
                 },
 
                 {
-                  "Filter": "RTS Purchase AlterID Filter"
+                  "Filter": kind.filter
                 }
               ]
             },
 
             {
               metadata: {
-                name: "RTS Purchase AlterID Filter",
+                name: kind.filter,
                 type: "System",
                 sys_type: "Formulae",
                 ismodify: true
@@ -843,7 +778,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -852,7 +787,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
           "Version": "1",
           "TallyRequest": "Export",
           "Type": "Collection",
-          "ID": "RTS Purchase AlterID Collection"
+          "ID": kind.collection
         },
 
         timeout: 30000
@@ -864,7 +799,7 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
   } catch (error) {
 
     console.error(
-      "TALLY PURCHASE ALTERID API ERROR:",
+      kind.errorLabel,
       error.response?.data || error.message
     );
 
@@ -872,106 +807,9 @@ const getPurchaseVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, vouc
   }
 };
 
-
-// ============================================================
-// GET ADJUSTMENT NOTE VOUCHERS SINCE ALTERID (incremental sync)
-// ============================================================
-//
-// Credit Note / Debit Note. Same shape as getSalesVouchersSinceAlterId, with
-// two additions to the Native Method field list, proven live in the CN/DN
-// diagnostic (docs/../generic-tumbling-magpie.md): inventoryentries'
-// accountingallocations (which ledger an item's amount is booked to - what
-// adjustmentNoteClassifier.js needs) and ledgerentries' billallocations
-// (the "Agst Ref" original-invoice linkage, when Tally provides one).
-// Still a minimal, bounded, tenant/company-scoped request - not the ~223-
-// field "*" dump the diagnostic used to discover these field names.
-const getAdjustmentNoteVouchersSinceAlterId = async ({ afterAlterId = 0, baseUrl, voucherTypeNames, upToAlterId } = {}) => {
-  try {
-
-    requireVoucherTypeNames(voucherTypeNames, "getAdjustmentNoteVouchersSinceAlterId");
-
-    const alterIdClause = buildAlterIdRangeClause(afterAlterId, upToAlterId);
-    const typeNameClause = buildVoucherTypeNameFilterClause(voucherTypeNames);
-
-    const requestBody = {
-
-      static_variables: [
-        {
-          name: "svExportFormat",
-          value: "jsonex"
-        }
-      ],
-
-      tdlmessage: [
-        {
-          definitions: [
-            {
-              metadata: {
-                name: "RTS Adjustment Note AlterID Collection",
-                type: "Collection"
-              },
-
-              attributes: [
-                {
-                  "Type": "Voucher"
-                },
-
-                {
-                  "Native Method":
-                    "Date, VoucherTypeName, VoucherNumber, PartyLedgerName, AlterID, Guid, MasterID, IsCancelled, IsDeleted, inventoryentries.* , inventoryentries.accountingallocations.* , ledgerentries.* , ledgerentries.billallocations.*"
-                },
-
-                {
-                  "Filter": "RTS Adjustment Note AlterID Filter"
-                }
-              ]
-            },
-
-            {
-              metadata: {
-                name: "RTS Adjustment Note AlterID Filter",
-                type: "System",
-                sys_type: "Formulae",
-                ismodify: true
-              },
-
-              value:
-                `${alterIdClause} AND (${typeNameClause})`
-            }
-          ],
-
-        }
-      ]
-    };
-
-    const response = await axios.post(
-      resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
-      requestBody,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Version": "1",
-          "TallyRequest": "Export",
-          "Type": "Collection",
-          "ID": "RTS Adjustment Note AlterID Collection"
-        },
-
-        timeout: 30000
-      }
-    );
-
-    return response.data;
-
-  } catch (error) {
-
-    console.error(
-      "TALLY ADJUSTMENT NOTE ALTERID API ERROR:",
-      error.response?.data || error.message
-    );
-
-    throw error;
-  }
-};
+const getSalesVouchersSinceAlterId = buildSinceAlterIdFetcher(SINCE_ALTERID_KINDS.sales);
+const getPurchaseVouchersSinceAlterId = buildSinceAlterIdFetcher(SINCE_ALTERID_KINDS.purchase);
+const getAdjustmentNoteVouchersSinceAlterId = buildSinceAlterIdFetcher(SINCE_ALTERID_KINDS.adjustment);
 
 
 // ============================================================
@@ -1045,7 +883,7 @@ const getPendingVoucherAlterIds = async ({ afterAlterId = 0, baseUrl, voucherTyp
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -1158,7 +996,7 @@ const getVouchersByAlterIds = async ({ alterIds, baseUrl, voucherTypeNames } = {
       ]
     };
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       requestBody,
       {
@@ -1253,7 +1091,7 @@ const getAllSalesVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) => {
   try {
     requireVoucherTypeNames(voucherTypeNames, "getAllSalesVoucherGuids");
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Sales All Guids Collection"),
       {
@@ -1282,7 +1120,7 @@ const getAllPurchaseVoucherGuids = async ({ baseUrl, voucherTypeNames } = {}) =>
   try {
     requireVoucherTypeNames(voucherTypeNames, "getAllPurchaseVoucherGuids");
 
-    const response = await axios.post(
+    const response = await postToTally(axios,
       resolveTallyUrl(baseUrl, DEFAULT_TALLY_URL),
       buildAllGuidsRequestBody(voucherTypeNames, "RTS Purchase All Guids Collection"),
       {

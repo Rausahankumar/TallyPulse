@@ -43,7 +43,8 @@ function testSourceShape() {
   check("chat.js defines a 60000ms chat timeout constant", /CHAT_TIMEOUT_MS\s*=\s*60000/.test(chatSrc));
   check(
     "sendChatMessage's POST call passes the chat timeout override",
-    /client\.post\(path,\s*\{\s*message\s*\},\s*\{\s*timeout:\s*CHAT_TIMEOUT_MS\s*\}\)/.test(chatSrc)
+    // the options may carry more than the timeout (the Stop button adds `signal`)
+    /client\.post\(path,\s*\{\s*message\s*\},\s*\{\s*timeout:\s*CHAT_TIMEOUT_MS\s*(,[^}]*)?\}\)/.test(chatSrc)
   );
   // listChats/getChat/deleteChat must NOT carry a timeout override - they
   // keep the shared 20s default untouched.

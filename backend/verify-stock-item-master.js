@@ -21,7 +21,7 @@
  * ({status, data:{collection:[{metadata:{name}, guid:{value}, parent:{value}}]}}).
  * No live Tally connection required to run this suite (refreshStockItemMasters'
  * `fetcher` is injected). Writes to MongoDB use clearly-synthetic tenant
- * ids (never WE FOUR / Nirmal), and are deleted again at the end -
+ * ids (never live tenant A / live tenant B), and are deleted again at the end -
  * never a production write left behind.
  *
  * Run: node verify-stock-item-master.js
@@ -35,14 +35,9 @@ const { parseStockItemMasterList, findUnusableStockItemEntries, refreshStockItem
 const { validateMasterOwnership } = require("./src/services/tally/companyOwnership");
 const { getTenantVersion } = require("./src/services/query/dataVersion");
 
-let pass = 0;
-let fail = 0;
-
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 // Matches the exact shape empirically confirmed against a real,
 // connected TallyPrime instance for "Type": "StockItem",
@@ -58,8 +53,8 @@ function tallyResponse(collection) {
   return { status: "1", data: { metadata: {}, collection } };
 }
 
-const COMPANY_A_GUID = "d46f1002-00d9-4559-b3e1-afcf8674c7b1"; // real WE FOUR guid, used only as a realistic PREFIX shape - no real data touched
-const COMPANY_B_GUID = "09f68f6a-ace7-4ab4-bee8-ddea59ad0731"; // real Nirmal guid, same reasoning
+const COMPANY_A_GUID = "5e0c1a77-3b2d-4f6a-9c41-7d8e2f0a1b10"; // a made-up guid, used only as a realistic PREFIX shape
+const COMPANY_B_GUID = "a91d4c52-6e87-4b0f-8d33-2c5f9e7b4a68"; // a second made-up guid, same reasoning
 
 console.log("=== 1. Stock Item response parsing ===");
 {
@@ -290,9 +285,9 @@ async function main() {
     await cleanupSyntheticData(); // never leave synthetic test data behind
   }
 
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 }
 
 main().catch(async (err) => {

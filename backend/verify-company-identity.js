@@ -138,7 +138,7 @@ async function main() {
 
   await connectDB();
   await cleanup();
-  clearVoucherTypeClassificationCache(GUID("wefour"));
+  clearVoucherTypeClassificationCache(GUID("acme"));
 
   try {
     // ======================================================== A. registration
@@ -208,21 +208,21 @@ async function main() {
 
     console.log("\nD. Connect Tally detects the company - the user types nothing");
     {
-      open({ name: "We Four", guid: GUID("wefour") });
+      open({ name: "Acme Stores", guid: GUID("acme") });
       const res = await connect(u1); // empty body: no name, no GUID
-      const company = await Company.findOne({ companyGuid: GUID("wefour") }).lean();
+      const company = await Company.findOne({ companyGuid: GUID("acme") }).lean();
       check("connected (201) with an empty request body", res.code === 201 && res.body.success === true, JSON.stringify(res.body));
-      check("company created from what Tally reported (name + internal GUID)", company && company.companyName === "We Four" && company.isActive === true);
-      check("response shows the company name and no tenant id", res.body.data.companyName === "We Four" && !("tenantId" in res.body.data) && !("tenantId" in res.body));
+      check("company created from what Tally reported (name + internal GUID)", company && company.companyName === "Acme Stores" && company.isActive === true);
+      check("response shows the company name and no tenant id", res.body.data.companyName === "Acme Stores" && !("tenantId" in res.body.data) && !("tenantId" in res.body));
       const claims = claimsOf(res.body.token);
-      check("returned session is scoped to the connected company", claims.companyGuId === GUID("wefour") && claims.tenantId === company.tenantId);
+      check("returned session is scoped to the connected company", claims.companyGuId === GUID("acme") && claims.tenantId === company.tenantId);
       const refreshed = await User.findById(u1._id).lean();
-      check("first company became the account's default", refreshed.companyGuId === GUID("wefour") && refreshed.tenantId === company.tenantId);
+      check("first company became the account's default", refreshed.companyGuId === GUID("acme") && refreshed.tenantId === company.tenantId);
       check("account can now use the company context", (await resolveAuthorizedCompany(claims)).tenantId === company.tenantId);
 
       const again = fakeRes();
       await login({ body: { email: EMAIL("owner"), password: PW } }, again);
-      check("next login opens straight on that company", again.body.hasCompany === true && claimsOf(again.body.token).companyGuId === GUID("wefour"));
+      check("next login opens straight on that company", again.body.hasCompany === true && claimsOf(again.body.token).companyGuId === GUID("acme"));
 
       const asserted = await connect(u1, { password: PW, companyGuId: GUID("something-else") });
       check("a client-supplied GUID is only an assertion: a different one is rejected (400)", asserted.code === 400 && /does not match/i.test(asserted.body.message));
@@ -232,26 +232,26 @@ async function main() {
     console.log("\nE. Security: another account cannot take this company");
     {
       const { user: u2 } = await signUp("stranger");
-      open({ name: "We Four", guid: GUID("wefour") });
-      const before = await Company.findOne({ companyGuid: GUID("wefour") }).lean();
+      open({ name: "Acme Stores", guid: GUID("acme") });
+      const before = await Company.findOne({ companyGuid: GUID("acme") }).lean();
 
       let res = await connect(u2);
       check("a stranger connecting while that company is open -> 403", res.code === 403 && /don't have access/i.test(res.body.message), `${res.code} ${res.body && res.body.message}`);
-      check("no access link, no default company was granted", (await accessCount(u2._id, GUID("wefour"))) === 0 && !(await User.findById(u2._id).lean()).companyGuId);
+      check("no access link, no default company was granted", (await accessCount(u2._id, GUID("acme"))) === 0 && !(await User.findById(u2._id).lean()).companyGuId);
 
-      res = await connect(u2, { companyGuId: GUID("wefour") });
+      res = await connect(u2, { companyGuId: GUID("acme") });
       check("knowing the GUID does not help (still 403)", res.code === 403);
 
       const sw = fakeRes();
-      await switchCompany({ user: { id: String(u2._id) }, body: { companyGuId: GUID("wefour") } }, sw);
+      await switchCompany({ user: { id: String(u2._id) }, body: { companyGuId: GUID("acme") } }, sw);
       check("switching to it is refused (403)", sw.code === 403);
 
       const list = fakeRes();
       await listCompanies({ user: { id: String(u2._id) } }, list);
       check("the stranger sees no companies", list.body.data.length === 0);
-      const after = await Company.findOne({ companyGuid: GUID("wefour") }).lean();
+      const after = await Company.findOne({ companyGuid: GUID("acme") }).lean();
       check("the company itself is untouched", after.tenantId === before.tenantId && after.isActive === true);
-      check("the real owner's access is unaffected", (await accessCount(u1._id, GUID("wefour"))) === 1);
+      check("the real owner's access is unaffected", (await accessCount(u1._id, GUID("acme"))) === 1);
     }
 
     // ============================================== F. multiple companies
@@ -266,28 +266,28 @@ async function main() {
 
       res = await connect(u1, { password: PW });
       const second = await Company.findOne({ companyGuid: GUID("second") }).lean();
-      const first = await Company.findOne({ companyGuid: GUID("wefour") }).lean();
+      const first = await Company.findOne({ companyGuid: GUID("acme") }).lean();
       check("correct password -> connected (201)", res.code === 201 && second && second.companyName === "Second Co");
       check("different GUID -> different tenant", second.tenantId !== first.tenantId);
 
-      open({ name: "We Four", guid: GUID("wefour-lookalike") }); // same display name, different GUID
+      open({ name: "Acme Stores", guid: GUID("acme-lookalike") }); // same display name, different GUID
       res = await connect(u1, { password: PW });
-      const lookalike = await Company.findOne({ companyGuid: GUID("wefour-lookalike") }).lean();
+      const lookalike = await Company.findOne({ companyGuid: GUID("acme-lookalike") }).lean();
       check("same display name but different GUID stays a separate company and tenant", res.code === 201 && lookalike && lookalike.tenantId !== first.tenantId && lookalike.tenantId !== second.tenantId);
 
       const list = fakeRes();
       await listCompanies({ user: { id: String(u1._id) } }, list);
       check("account lists its 3 companies, without tenant ids", list.body.data.length === 3 && list.body.data.every((c) => !("tenantId" in c)));
 
-      open({ name: "We Four", guid: GUID("wefour") });
+      open({ name: "Acme Stores", guid: GUID("acme") });
       res = await connect(u1, { password: PW });
       check("reconnecting a company the account already has is fine (200)", res.code === 200 && /reconnected/i.test(res.body.message));
-      check("...and adds no duplicate link", (await accessCount(u1._id, GUID("wefour"))) === 1);
+      check("...and adds no duplicate link", (await accessCount(u1._id, GUID("acme"))) === 1);
     }
 
     // ==================================== G. same GUID keeps its tenant
     console.log("\nG. Same company connected again: same tenant, checkpoints and data preserved");
-    const G1 = GUID("wefour");
+    const G1 = GUID("acme");
     const T1 = (await Company.findOne({ companyGuid: G1 }).lean()).tenantId;
     await SyncCheckpoint.create({ tenantId: T1, companyGuid: G1, voucherType: "Sales", lastAlterId: 403536, lastRunStatus: "success" });
     await SyncCheckpoint.create({ tenantId: T1, companyGuid: G1, voucherType: "Purchase", lastAlterId: 403530, lastRunStatus: "success" });
@@ -296,7 +296,7 @@ async function main() {
       const rows = await SyncCheckpoint.find({ companyGuid: G1 }).lean();
       return { count: rows.length, sales: (rows.find((r) => r.voucherType === "Sales") || {}).lastAlterId, purchase: (rows.find((r) => r.voucherType === "Purchase") || {}).lastAlterId, tenants: [...new Set(rows.map((r) => r.tenantId))] };
     };
-    open({ name: "We Four", guid: G1 });
+    open({ name: "Acme Stores", guid: G1 });
     {
       await Company.updateOne({ companyGuid: G1 }, { isActive: false });
       const res = await connect(u1, { password: PW });
@@ -347,7 +347,7 @@ async function main() {
       await User.deleteOne({ _id: u1._id });
       await UserCompanyAccess.deleteMany({ companyGuid: G1 });
       const { user: u3 } = await signUp("newowner");
-      open({ name: "We Four", guid: G1 });
+      open({ name: "Acme Stores", guid: G1 });
       const res = await connect(u3);
       const c = await Company.findOne({ companyGuid: G1 }).lean();
       const cp = await checkpoints();
@@ -384,8 +384,8 @@ async function main() {
     // ======================================== L. selected-company tiebreak
     console.log("\nL. Several companies open: the SELECTED company is identified from Tally's own masters - never list order");
     {
-      const NIR = { name: "Nirmal FMCG Traders Ltd", guid: GUID("sel-nirmal") };
-      const WF = { name: "WE FOUR", guid: GUID("sel-wefour") };
+      const NIR = { name: "Globex Traders Ltd", guid: GUID("sel-globex") };
+      const WF = { name: "ACME STORES", guid: GUID("sel-acme") };
       const reset = () => { selectedGuid = null; mastersMode = "normal"; };
 
       reset();
@@ -394,22 +394,22 @@ async function main() {
       check("one company open -> that company (behaviour unchanged, no master query needed)", d.ok && d.match.guid === WF.guid && d.selectedBy === "only_open");
       const mastersBefore = seenBodies.filter((b) => b.id === "RTS VoucherType Master Collection").length;
 
-      open(NIR, WF); // Nirmal is listed FIRST
+      open(NIR, WF); // Globex is listed FIRST
       selectedGuid = WF.guid;
       d = await resolveSelectedOpenCompany();
-      check("two open, WE FOUR selected (listed second) -> WE FOUR, not the first-listed Nirmal", d.ok && d.match.guid === WF.guid && d.match.name === "WE FOUR" && d.selectedBy === "voucher_type_masters", JSON.stringify(d.match));
+      check("two open, ACME STORES selected (listed second) -> ACME STORES, not the first-listed Globex", d.ok && d.match.guid === WF.guid && d.match.name === "ACME STORES" && d.selectedBy === "voucher_type_masters", JSON.stringify(d.match));
       check("exactly ONE master query was added for that decision", seenBodies.filter((b) => b.id === "RTS VoucherType Master Collection").length === mastersBefore + 1);
 
       selectedGuid = NIR.guid;
       d = await resolveSelectedOpenCompany();
-      check("two open, Nirmal selected -> Nirmal", d.ok && d.match.guid === NIR.guid);
+      check("two open, Globex selected -> Globex", d.ok && d.match.guid === NIR.guid);
 
       open(WF, NIR); // order flipped: same selected company, same answer
       d = await resolveSelectedOpenCompany();
-      check("list order is irrelevant (flipped list, Nirmal still selected -> Nirmal)", d.ok && d.match.guid === NIR.guid);
+      check("list order is irrelevant (flipped list, Globex still selected -> Globex)", d.ok && d.match.guid === NIR.guid);
       selectedGuid = WF.guid;
       d = await resolveSelectedOpenCompany();
-      check("...and WE FOUR selected -> WE FOUR, now listed first", d.ok && d.match.guid === WF.guid);
+      check("...and ACME STORES selected -> ACME STORES, now listed first", d.ok && d.match.guid === WF.guid);
 
       selectedGuid = "some-third-company-not-in-the-open-list";
       d = await resolveSelectedOpenCompany();
@@ -431,34 +431,34 @@ async function main() {
       selectedGuid = WF.guid;
       const viaAlias = await detectOpenTallyCompany();
       reset();
-      check("...(alias resolves WE FOUR too)", viaAlias.ok && viaAlias.match.guid === WF.guid);
+      check("...(alias resolves ACME STORES too)", viaAlias.ok && viaAlias.match.guid === WF.guid);
 
       // ---- Connect Tally through the real controller
-      const { user: onlyNirmal } = await signUp("sel-nirmal-owner");
-      const { user: onlyWeFour } = await signUp("sel-wefour-owner");
+      const { user: onlyGlobex } = await signUp("sel-globex-owner");
+      const { user: onlyAcmeStores } = await signUp("sel-acme-owner");
       const { user: fresh } = await signUp("sel-fresh");
 
       open(NIR, WF); selectedGuid = NIR.guid;
-      let res = await connect(onlyNirmal);
-      check("Nirmal selected: its owner connects Nirmal (201), name from Tally", res.code === 201 && res.body.data.companyName === "Nirmal FMCG Traders Ltd", JSON.stringify(res.body));
+      let res = await connect(onlyGlobex);
+      check("Globex selected: its owner connects Globex (201), name from Tally", res.code === 201 && res.body.data.companyName === "Globex Traders Ltd", JSON.stringify(res.body));
 
       selectedGuid = WF.guid;
-      res = await connect(onlyWeFour, { password: undefined });
-      check("WE FOUR selected: a different account connects WE FOUR (listed second), not Nirmal", res.code === 201 && res.body.data.companyName === "WE FOUR" && (await accessCount(onlyWeFour._id, WF.guid)) === 1 && (await accessCount(onlyWeFour._id, NIR.guid)) === 0, JSON.stringify(res.body));
+      res = await connect(onlyAcmeStores, { password: undefined });
+      check("ACME STORES selected: a different account connects ACME STORES (listed second), not Globex", res.code === 201 && res.body.data.companyName === "ACME STORES" && (await accessCount(onlyAcmeStores._id, WF.guid)) === 1 && (await accessCount(onlyAcmeStores._id, NIR.guid)) === 0, JSON.stringify(res.body));
 
-      // ---- SECURITY: We Four is selected but this user only owns Nirmal
-      const before = await User.findById(onlyNirmal._id).lean();
-      res = await connect(onlyNirmal, { password: PW });
-      check("SECURITY: WE FOUR selected, user owns only Nirmal -> detected WE FOUR, then access refused (403)", res.code === 403 && /don't have access/i.test(res.body.message), `${res.code} ${res.body && res.body.message}`);
-      const after = await User.findById(onlyNirmal._id).lean();
+      // ---- SECURITY: Acme Stores is selected but this user only owns Globex
+      const before = await User.findById(onlyGlobex._id).lean();
+      res = await connect(onlyGlobex, { password: PW });
+      check("SECURITY: ACME STORES selected, user owns only Globex -> detected ACME STORES, then access refused (403)", res.code === 403 && /don't have access/i.test(res.body.message), `${res.code} ${res.body && res.body.message}`);
+      const after = await User.findById(onlyGlobex._id).lean();
       const list = fakeRes();
-      await listCompanies({ user: { id: String(onlyNirmal._id) } }, list);
-      check("SECURITY: no silent fallback to Nirmal (no session token issued), nothing attached to WE FOUR", !res.body.token && (await accessCount(onlyNirmal._id, WF.guid)) === 0 && after.companyGuId === before.companyGuId);
+      await listCompanies({ user: { id: String(onlyGlobex._id) } }, list);
+      check("SECURITY: no silent fallback to Globex (no session token issued), nothing attached to ACME STORES", !res.body.token && (await accessCount(onlyGlobex._id, WF.guid)) === 0 && after.companyGuId === before.companyGuId);
       check("SECURITY: the account still sees only its own company", list.body.data.length === 1 && list.body.data[0].companyGuid === NIR.guid);
 
       selectedGuid = NIR.guid;
-      res = await connect(onlyNirmal, { password: PW });
-      check("Nirmal selected again: the owner reconnects Nirmal (200)", res.code === 200 && res.body.data.companyName === "Nirmal FMCG Traders Ltd");
+      res = await connect(onlyGlobex, { password: PW });
+      check("Globex selected again: the owner reconnects Globex (200)", res.code === 200 && res.body.data.companyName === "Globex Traders Ltd");
 
       // ---- ambiguity still answers the intentional 409
       selectedGuid = "some-third-company-not-in-the-open-list";

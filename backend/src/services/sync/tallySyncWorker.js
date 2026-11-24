@@ -236,6 +236,289 @@ async function releaseLock(
   );
 }
 
+// ---- One sync pass, in steps -------------------------------------------------------------------------------------------
+// A pass is: guard -> voucher types -> plan the batch -> fetch -> verify -> persist -> advance. Each step below does one of
+// those and returns either what the next step needs or an OUTCOME that ends the pass: { release, result }, where `release` is
+// what the lock is released with (status / error / advanceTo - the only place the checkpoint can move) and `result` is what the
+// caller gets back. The lock is released in exactly one place (runSyncForCompanyModule). verify-sync-pass-outcomes.js pins what
+// every way of ending a pass returns and leaves on the checkpoint.
+
+// A result that processed nothing; `extra` carries what a failure adds (error, companyMismatch, rejected).
+const emptyResult = (extra = {}) => ({
+  processed: 0,
+  created: 0,
+  updated: 0,
+  duplicates: 0,
+  skipped: 0,
+  failed: 0,
+  ...extra,
+});
+
+// Nothing changed since the last checkpoint: the normal steady state, so most ticks end here.
+const nothingChanged = () => ({ release: { status: "success" }, result: emptyResult() });
+
+const failedOutcome = (message, resultExtra = {}) => ({
+  release: { status: "failed", error: message },
+  result: emptyResult({ error: message, ...resultExtra }),
+});
+
+// Step 1 - safety gate (same product rule as addCompany/manual Sales Sync): background sync must never import whatever
+// company happens to be open in Tally into a DIFFERENT tenant. Checked live, every tick, for every company - never assumed
+// just because a checkpoint exists for this tenant. A mismatch/no-company-open is routine and expected in a
+// shared-Tally-instance, multi-company setup (only one company can be open at a time) - treated exactly like "nothing
+// changed" this tick, not a failure. Tally being genuinely unreachable is a real problem and is treated exactly like the
+// fetch-failure path (recorded as failed, logged, retried next tick). Returns an outcome when the pass ends here, else null.
+async function checkTallyCompany(companyGuid, baseUrl) {
+  const guard = await verifyOpenTallyCompany(companyGuid, { baseUrl });
+
+  if (guard.ok) return null;
+
+  return guard.reason === "unreachable" ? failedOutcome(guard.message) : nothingChanged();
+}
+
+// Step 2 - generic Sales/Purchase voucher-type discovery (replaces the old hardcoded $$VchTypeSales/$$VchTypePurchase).
+// Resolved fresh (or from its own short-lived cache) per company, per tick - never a per-customer hardcoded name. A
+// classification that isn't cleanly "ok" (fetch/parse failure, or a genuinely ambiguous/unconfigured company) fails this tick
+// closed: it is recorded as a failure with an explicit NEEDS_CONFIGURATION-prefixed reason where applicable, and this never
+// falls back to the old hardcoded query. Returns { typeNames } or { outcome }.
+async function resolveVoucherTypeNames({ companyGuid, baseUrl, classificationKey, voucherType }) {
+  const classification = await resolveVoucherTypeClassification({
+    companyGuid,
+    baseUrl,
+  });
+
+  const classResult = classification[classificationKey];
+
+  if (classResult && classResult.status === "ok") {
+    return { typeNames: classResult.typeNames };
+  }
+
+  const reasonPrefix =
+    classResult && classResult.status === "needs_configuration"
+      ? "NEEDS_CONFIGURATION"
+      : "CLASSIFICATION_ERROR";
+
+  return {
+    outcome: failedOutcome(
+      `${reasonPrefix}: ${
+        (classResult && classResult.reason) ||
+        `Could not resolve ${voucherType} voucher-type classification for this company.`
+      }`
+    ),
+  };
+}
+
+// Step 3 - bound this tick's batch (see batchWindow.js). A light probe lists the pending AlterIDs; a backlog larger than
+// `batchSize` is fetched as one slice (checkpoint, cutOff] and the rest drains on later ticks. A small backlog is fetched
+// with no cap, exactly as before. If the probe itself fails, the tick fails closed - it never falls back to the unbounded
+// request this exists to prevent - and the checkpoint stays untouched. Returns { idle: true } when nothing is pending, else
+//   upToAlterId      the slice's cut-off (undefined: unbounded)
+//   pendingTotal     how many are pending (undefined: the module has no probe)
+//   expectedAlterIds the AlterIDs the probe selected for THIS fetch; the fetch must return all of them before the checkpoint
+//                    may advance (undefined for a module with no probe: nothing to validate against).
+async function planBatch({ fetchPendingAlterIds, checkpoint, baseUrl, typeNames, batchSize }) {
+  if (typeof fetchPendingAlterIds !== "function") {
+    return { upToAlterId: undefined, pendingTotal: undefined, expectedAlterIds: undefined };
+  }
+
+  const probeResponse = await fetchPendingAlterIds({
+    afterAlterId: checkpoint.lastAlterId,
+    baseUrl,
+    voucherTypeNames: typeNames,
+  });
+
+  const probePayload =
+    typeof probeResponse === "string"
+      ? JSON.parse(probeResponse)
+      : probeResponse;
+
+  const probeRows = extractVoucherCollection(probePayload);
+  const pendingAlterIds = probeRows
+    .map((row) => parseTallyId(row && (row.alterid ?? row.alterId)))
+    .filter((id) => id !== null);
+
+  if (probeRows.length > 0 && pendingAlterIds.length === 0) {
+    throw new Error(
+      "Could not read AlterIDs from the pending-vouchers probe; refusing to fetch an unbounded batch."
+    );
+  }
+
+  const window = computeBatchWindow(pendingAlterIds, batchSize);
+
+  if (window.pending === 0) return { idle: true };
+
+  const upToAlterId = window.bounded ? window.upToAlterId : undefined;
+
+  return {
+    upToAlterId,
+    pendingTotal: window.pending,
+    expectedAlterIds: window.bounded
+      ? pendingAlterIds.filter((id) => id <= upToAlterId)
+      : pendingAlterIds,
+  };
+}
+
+// Step 4 - the heavy fetch of the planned slice, parsed to a list of vouchers.
+async function fetchBatch({ fetchVouchersSinceAlterId, checkpoint, baseUrl, typeNames, upToAlterId }) {
+  const tallyResponse = await fetchVouchersSinceAlterId({
+    afterAlterId: checkpoint.lastAlterId,
+    baseUrl,
+    voucherTypeNames: typeNames,
+    ...(upToAlterId !== undefined ? { upToAlterId } : {}),
+  });
+
+  const parsedPayload =
+    typeof tallyResponse === "string"
+      ? JSON.parse(tallyResponse)
+      : tallyResponse;
+
+  return extractVoucherCollection(parsedPayload);
+}
+
+// Step 5 - both checks run BEFORE anything is persisted or the checkpoint is considered; either one throws.
+//  - Company ownership: the whole batch must belong to this tenant's configured company (Tally answers for the SELECTED
+//    company, which the open-company guard above cannot pin down). One foreign/unverifiable voucher rejects the entire batch:
+//    nothing is written, the checkpoint stays put, and the failure is recorded for diagnosis. In-memory, O(n), no extra
+//    queries.
+//  - Fetch completeness: a partial response that still parses (or a voucher edited between probe and fetch) would otherwise
+//    let the checkpoint jump past vouchers that were never imported. Failing here leaves the checkpoint untouched and writes
+//    nothing; the next tick re-probes and retries, so nothing is lost and no state needs undoing.
+function verifyBatch({ vouchers, tenantId, companyGuid, voucherType, expectedAlterIds }) {
+  assertBatchOwnership(vouchers, companyGuid, {
+    tenantId,
+    companyGuid,
+    source: `sync:${voucherType}`,
+  });
+
+  if (expectedAlterIds !== undefined) {
+    const returnedAlterIds = vouchers
+      .map((voucher) => parseTallyId(voucher && (voucher.alterid ?? voucher.alterId)))
+      .filter((id) => id !== null);
+
+    const missing = findMissingAlterIds(expectedAlterIds, returnedAlterIds);
+
+    if (missing.length > 0) {
+      throw new Error(
+        `Incomplete Tally fetch: ${missing.length} of ${expectedAlterIds.length} expected AlterID(s) were not returned (first missing: ${missing[0]}). Checkpoint not advanced; will retry.`
+      );
+    }
+  }
+}
+
+// Step 6 - persist every voucher, counting what happened to each and tracking the highest AlterID seen.
+async function persistVouchers({ vouchers, processVoucher, tenantId, companyGuid, startAlterId }) {
+  let maxAlterId = startAlterId;
+  let created = 0;
+  let updated = 0;
+  let duplicates = 0;
+  let skipped = 0;
+  let failed = 0;
+  let firstFailureMessage = null;
+
+  for (const voucher of vouchers) {
+    // companyGuid is passed through too (Sales/Purchase mappers ignore the
+    // extra argument) - AdjustmentNote's mapper needs it, and it must come
+    // from this trusted, already-ownership-verified scope, never guessed.
+    const result = await processVoucher(voucher, tenantId, companyGuid);
+
+    if (result.status === "failed") {
+      failed += 1;
+      if (!firstFailureMessage) firstFailureMessage = result.message;
+    } else if (result.status === "created") {
+      created += 1;
+    } else if (result.status === "updated") {
+      updated += 1;
+    } else if (result.status === "duplicate") {
+      duplicates += 1;
+    } else if (result.status === "skipped") {
+      skipped += 1;
+    }
+
+    if (
+      typeof result.tallyAlterId === "number" &&
+      result.tallyAlterId > maxAlterId
+    ) {
+      maxAlterId = result.tallyAlterId;
+    }
+  }
+
+  return { created, updated, duplicates, skipped, failed, firstFailureMessage, maxAlterId };
+}
+
+// The pass itself: runs the steps in order and returns the outcome (see the note above).
+async function syncOnePass({ company, syncModule, checkpoint, baseUrl, batchSize }) {
+  const tenantId = company.tenantId;
+  const companyGuid = company.companyGuid;
+  const {
+    voucherType,
+    classificationKey,
+    fetchVouchersSinceAlterId,
+    fetchPendingAlterIds,
+    processVoucher,
+  } = syncModule;
+
+  const closed = await checkTallyCompany(companyGuid, baseUrl);
+  if (closed) return closed;
+
+  const types = await resolveVoucherTypeNames({ companyGuid, baseUrl, classificationKey, voucherType });
+  if (types.outcome) return types.outcome;
+
+  const plan = await planBatch({ fetchPendingAlterIds, checkpoint, baseUrl, typeNames: types.typeNames, batchSize });
+  if (plan.idle) return nothingChanged();
+
+  const { upToAlterId, pendingTotal, expectedAlterIds } = plan;
+
+  const vouchers = await fetchBatch({ fetchVouchersSinceAlterId, checkpoint, baseUrl, typeNames: types.typeNames, upToAlterId });
+
+  verifyBatch({ vouchers, tenantId, companyGuid, voucherType, expectedAlterIds });
+
+  if (!vouchers.length) return nothingChanged();
+
+  const persisted = await persistVouchers({
+    vouchers,
+    processVoucher,
+    tenantId,
+    companyGuid,
+    startAlterId: checkpoint.lastAlterId,
+  });
+
+  const batchResult = {
+    processed: vouchers.length,
+    created: persisted.created,
+    updated: persisted.updated,
+    duplicates: persisted.duplicates,
+    skipped: persisted.skipped,
+    failed: persisted.failed,
+    ...(pendingTotal !== undefined ? { pendingTotal } : {}),
+  };
+
+  if (persisted.failed > 0) {
+    // Any failure in the batch -> the whole run is a failure for
+    // checkpoint purposes. Vouchers already upserted above are not
+    // rolled back (upsert is idempotent, so reprocessing them next tick
+    // is a harmless no-op) - this just guarantees the failed voucher's
+    // delta is retried instead of silently skipped past.
+    return {
+      release: {
+        status: "failed",
+        error: `${persisted.failed} of ${vouchers.length} voucher(s) failed to sync. First error: ${persisted.firstFailureMessage}`,
+      },
+      result: batchResult,
+    };
+  }
+
+  // A bounded batch is complete up to its cut-off (every pending voucher
+  // in (checkpoint, cutOff] was fetched and persisted, and the cut-off is
+  // the AlterID of a voucher that exists), so advance to it even if the
+  // last few vouchers carried no AlterID in their result (e.g. a skipped
+  // tombstone) - otherwise such a batch could never make progress. An
+  // unbounded batch advances exactly as before.
+  const advanceTo =
+    upToAlterId !== undefined ? Math.max(persisted.maxAlterId, upToAlterId) : persisted.maxAlterId;
+
+  return { release: { status: "success", advanceTo }, result: batchResult };
+}
+
 // Runs one incremental sync pass for a single {company, sync module}
 // combination. Never throws — failures are recorded on the checkpoint and
 // returned in the result so the caller can log them and move on.
@@ -249,13 +532,7 @@ async function runSyncForCompanyModule(
 ) {
   const tenantId = company.tenantId;
   const companyGuid = company.companyGuid;
-  const {
-    voucherType,
-    classificationKey,
-    fetchVouchersSinceAlterId,
-    fetchPendingAlterIds,
-    processVoucher,
-  } = syncModule;
+  const { voucherType } = syncModule;
 
   await ensureCheckpointExists(tenantId, companyGuid, voucherType);
 
@@ -273,284 +550,12 @@ async function runSyncForCompanyModule(
   const baseUrl = resolveTallyBaseUrl(company);
 
   try {
-    // Safety gate (same product rule as addCompany/manual Sales Sync):
-    // background sync must never import whatever company happens to be
-    // open in Tally into a DIFFERENT tenant. Checked live, every tick,
-    // for every company - never assumed just because a checkpoint exists
-    // for this tenant. A mismatch/no-company-open is routine and expected
-    // in a shared-Tally-instance, multi-company setup (only one company
-    // can be open at a time) - treated exactly like "nothing changed"
-    // this tick, not a failure. Tally being genuinely unreachable is a
-    // real problem and is treated exactly like the existing fetch-failure
-    // path below (recorded as failed, logged, retried next tick).
-    const guard = await verifyOpenTallyCompany(companyGuid, { baseUrl });
+    const outcome = await syncOnePass({ company, syncModule, checkpoint, baseUrl, batchSize });
 
-    if (!guard.ok) {
-      if (guard.reason === "unreachable") {
-        await releaseLock(tenantId, companyGuid, voucherType, {
-          status: "failed",
-          error: guard.message,
-        });
+    // The one place the lock is released after a pass that ended normally.
+    await releaseLock(tenantId, companyGuid, voucherType, outcome.release);
 
-        return {
-          processed: 0,
-          created: 0,
-          updated: 0,
-          duplicates: 0,
-          skipped: 0,
-          failed: 0,
-          error: guard.message,
-        };
-      }
-
-      await releaseLock(tenantId, companyGuid, voucherType, { status: "success" });
-      return {
-        processed: 0,
-        created: 0,
-        updated: 0,
-        duplicates: 0,
-        skipped: 0,
-        failed: 0,
-      };
-    }
-
-    // Generic Sales/Purchase voucher-type discovery (replaces the old
-    // hardcoded $$VchTypeSales/$$VchTypePurchase). Resolved fresh (or from
-    // its own short-lived cache) per company, per tick - never a
-    // per-customer hardcoded name. A classification that isn't cleanly
-    // "ok" (fetch/parse failure, or a genuinely ambiguous/unconfigured
-    // company) fails this tick closed: it is recorded as a failure with an
-    // explicit NEEDS_CONFIGURATION-prefixed reason where applicable, and
-    // this function never falls back to the old hardcoded query.
-    const classification = await resolveVoucherTypeClassification({
-      companyGuid,
-      baseUrl,
-    });
-
-    const classResult = classification[classificationKey];
-
-    if (!classResult || classResult.status !== "ok") {
-      const reasonPrefix =
-        classResult && classResult.status === "needs_configuration"
-          ? "NEEDS_CONFIGURATION"
-          : "CLASSIFICATION_ERROR";
-      const message = `${reasonPrefix}: ${
-        (classResult && classResult.reason) ||
-        `Could not resolve ${voucherType} voucher-type classification for this company.`
-      }`;
-
-      await releaseLock(tenantId, companyGuid, voucherType, {
-        status: "failed",
-        error: message,
-      });
-
-      return {
-        processed: 0,
-        created: 0,
-        updated: 0,
-        duplicates: 0,
-        skipped: 0,
-        failed: 0,
-        error: message,
-      };
-    }
-
-    // Bound this tick's batch (see batchWindow.js). A light probe lists the
-    // pending AlterIDs; a backlog larger than `batchSize` is fetched as one
-    // slice (checkpoint, cutOff] and the rest drains on later ticks. A
-    // small backlog is fetched with no cap, exactly as before. If the probe
-    // itself fails, the tick fails closed - it never falls back to the
-    // unbounded request this exists to prevent - and the checkpoint stays
-    // untouched.
-    let upToAlterId;
-    let pendingTotal;
-    // AlterIDs the probe selected for THIS fetch; the fetch must return all
-    // of them before the checkpoint may advance. Undefined for a module
-    // with no probe (nothing to validate against).
-    let expectedAlterIds;
-
-    if (typeof fetchPendingAlterIds === "function") {
-      const probeResponse = await fetchPendingAlterIds({
-        afterAlterId: checkpoint.lastAlterId,
-        baseUrl,
-        voucherTypeNames: classResult.typeNames,
-      });
-
-      const probePayload =
-        typeof probeResponse === "string"
-          ? JSON.parse(probeResponse)
-          : probeResponse;
-
-      const probeRows = extractVoucherCollection(probePayload);
-      const pendingAlterIds = probeRows
-        .map((row) => parseTallyId(row && (row.alterid ?? row.alterId)))
-        .filter((id) => id !== null);
-
-      if (probeRows.length > 0 && pendingAlterIds.length === 0) {
-        throw new Error(
-          "Could not read AlterIDs from the pending-vouchers probe; refusing to fetch an unbounded batch."
-        );
-      }
-
-      const window = computeBatchWindow(pendingAlterIds, batchSize);
-      pendingTotal = window.pending;
-
-      if (window.pending === 0) {
-        // Nothing changed since the last checkpoint - the normal steady
-        // state, so most ticks end here after one light request.
-        await releaseLock(tenantId, companyGuid, voucherType, { status: "success" });
-        return {
-          processed: 0,
-          created: 0,
-          updated: 0,
-          duplicates: 0,
-          skipped: 0,
-          failed: 0,
-        };
-      }
-
-      if (window.bounded) {
-        upToAlterId = window.upToAlterId;
-      }
-
-      expectedAlterIds = window.bounded
-        ? pendingAlterIds.filter((id) => id <= upToAlterId)
-        : pendingAlterIds;
-    }
-
-    const tallyResponse = await fetchVouchersSinceAlterId({
-      afterAlterId: checkpoint.lastAlterId,
-      baseUrl,
-      voucherTypeNames: classResult.typeNames,
-      ...(upToAlterId !== undefined ? { upToAlterId } : {}),
-    });
-
-    const parsedPayload =
-      typeof tallyResponse === "string"
-        ? JSON.parse(tallyResponse)
-        : tallyResponse;
-
-    const vouchers = extractVoucherCollection(parsedPayload);
-
-    // Company ownership, BEFORE anything is written or the checkpoint is
-    // considered: the whole batch must belong to this tenant's configured
-    // company (Tally answers for the SELECTED company, which the open-company
-    // guard above cannot pin down). One foreign/unverifiable voucher rejects
-    // the entire batch: nothing is written, the checkpoint stays put, and the
-    // failure is recorded for diagnosis. In-memory, O(n), no extra queries.
-    assertBatchOwnership(vouchers, companyGuid, {
-      tenantId,
-      companyGuid,
-      source: `sync:${voucherType}`,
-    });
-
-    // Fetch completeness: checked BEFORE anything is persisted or the
-    // checkpoint considered. A partial response that still parses (or a
-    // voucher edited between probe and fetch) would otherwise let the
-    // checkpoint jump past vouchers that were never imported. Failing here
-    // leaves the checkpoint untouched and writes nothing; the next tick
-    // re-probes and retries, so nothing is lost and no state needs undoing.
-    if (expectedAlterIds !== undefined) {
-      const returnedAlterIds = vouchers
-        .map((voucher) => parseTallyId(voucher && (voucher.alterid ?? voucher.alterId)))
-        .filter((id) => id !== null);
-
-      const missing = findMissingAlterIds(expectedAlterIds, returnedAlterIds);
-
-      if (missing.length > 0) {
-        throw new Error(
-          `Incomplete Tally fetch: ${missing.length} of ${expectedAlterIds.length} expected AlterID(s) were not returned (first missing: ${missing[0]}). Checkpoint not advanced; will retry.`
-        );
-      }
-    }
-
-    if (!vouchers.length) {
-      // Nothing changed since the last checkpoint. Normal steady state,
-      // not an error - most ticks will land here.
-      await releaseLock(tenantId, companyGuid, voucherType, { status: "success" });
-      return {
-        processed: 0,
-        created: 0,
-        updated: 0,
-        duplicates: 0,
-        skipped: 0,
-        failed: 0,
-      };
-    }
-
-    let maxAlterId = checkpoint.lastAlterId;
-    let created = 0;
-    let updated = 0;
-    let duplicates = 0;
-    let skippedCount = 0;
-    let failed = 0;
-    let firstFailureMessage = null;
-
-    for (const voucher of vouchers) {
-      // companyGuid is passed through too (Sales/Purchase mappers ignore the
-      // extra argument) - AdjustmentNote's mapper needs it, and it must come
-      // from this trusted, already-ownership-verified scope, never guessed.
-      const result = await processVoucher(voucher, tenantId, companyGuid);
-
-      if (result.status === "failed") {
-        failed += 1;
-        if (!firstFailureMessage) firstFailureMessage = result.message;
-      } else if (result.status === "created") {
-        created += 1;
-      } else if (result.status === "updated") {
-        updated += 1;
-      } else if (result.status === "duplicate") {
-        duplicates += 1;
-      } else if (result.status === "skipped") {
-        skippedCount += 1;
-      }
-
-      if (
-        typeof result.tallyAlterId === "number" &&
-        result.tallyAlterId > maxAlterId
-      ) {
-        maxAlterId = result.tallyAlterId;
-      }
-    }
-
-    const batchResult = {
-      processed: vouchers.length,
-      created,
-      updated,
-      duplicates,
-      skipped: skippedCount,
-      failed,
-      ...(pendingTotal !== undefined ? { pendingTotal } : {}),
-    };
-
-    if (failed > 0) {
-      // Any failure in the batch -> the whole run is a failure for
-      // checkpoint purposes. Vouchers already upserted above are not
-      // rolled back (upsert is idempotent, so reprocessing them next tick
-      // is a harmless no-op) - this just guarantees the failed voucher's
-      // delta is retried instead of silently skipped past.
-      await releaseLock(tenantId, companyGuid, voucherType, {
-        status: "failed",
-        error: `${failed} of ${vouchers.length} voucher(s) failed to sync. First error: ${firstFailureMessage}`,
-      });
-      return batchResult;
-    }
-
-    // A bounded batch is complete up to its cut-off (every pending voucher
-    // in (checkpoint, cutOff] was fetched and persisted, and the cut-off is
-    // the AlterID of a voucher that exists), so advance to it even if the
-    // last few vouchers carried no AlterID in their result (e.g. a skipped
-    // tombstone) - otherwise such a batch could never make progress. An
-    // unbounded batch advances exactly as before.
-    const advanceTo =
-      upToAlterId !== undefined ? Math.max(maxAlterId, upToAlterId) : maxAlterId;
-
-    await releaseLock(tenantId, companyGuid, voucherType, {
-      status: "success",
-      advanceTo,
-    });
-
-    return batchResult;
+    return outcome.result;
   } catch (error) {
     const message =
       error && error.message ? error.message : "Unknown sync error";
@@ -560,18 +565,12 @@ async function runSyncForCompanyModule(
       error: message,
     });
 
-    return {
-      processed: 0,
-      created: 0,
-      updated: 0,
-      duplicates: 0,
-      skipped: 0,
-      failed: 0,
+    return emptyResult({
       error: message,
       ...(error && error.code === "COMPANY_MISMATCH"
         ? { companyMismatch: true, rejected: error.validation.total }
         : {}),
-    };
+    });
   }
 }
 
@@ -780,9 +779,15 @@ function stopTallySyncWorker() {
   }
 }
 
+// True while a sync cycle is running (the graceful shutdown waits for it).
+function isSyncCycleRunning() {
+  return cycleInProgress;
+}
+
 module.exports = {
   startTallySyncWorker,
   stopTallySyncWorker,
+  isSyncCycleRunning,
   runSyncForAllCompanies,
   runSyncForCompanyModule,
   runMasterRefreshForCompany,

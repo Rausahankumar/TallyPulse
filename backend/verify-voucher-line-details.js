@@ -12,7 +12,7 @@
  *   mismatching / raced vouchers are skipped or abort the run; tenants are isolated; bounded, resumable, idempotent; and the
  *   database-target guard the command uses.
  *
- * Fixtures: field names, nesting and value formats are exactly what a real TallyPrime returned in read-only probes (WE FOUR,
+ * Fixtures: field names, nesting and value formats are exactly what a real TallyPrime returned in read-only probes (live tenant A,
  * 2026-10-09): `discount` as " 21" (a percentage, leading space), no discount-amount field, `rate` before and `amount` after
  * discount, and the `computed*` GST group that appears only when `inventoryentries.computedigst` is requested. Names, GUIDs and
  * voucher numbers are synthetic. Values marked SYNTHETIC are edge cases the probes did not return. Writes go only to clearly
@@ -35,13 +35,9 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
-let pass = 0;
-let fail = 0;
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 // ================================================================ PART 1: requests, parsing, discount and GST amounts
 // (its helpers stay private to this function; check() and the counters are shared with part 2)
@@ -489,9 +485,9 @@ await runBackfillPart();
 (async () => {
   await partParsing();
   await partBackfill();
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 })().catch(async (err) => {
   console.error(err);
   try { await mongoose.disconnect(); } catch { /* ignore */ }

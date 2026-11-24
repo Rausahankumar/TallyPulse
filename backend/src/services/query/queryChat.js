@@ -298,16 +298,46 @@ async function answerAnalysis(a, tm) {
   const revenue = Object.values(ap.definitionNotes || {}).some((notes) => (notes || []).some((n) => n && n.code === REVENUE_ASSUMPTION.code));
   // the turn's scope is what its PLAN asked; follow-ups the investigation added to gather evidence (origin) are not part of it
   const state = formatted.answered ? followUp.buildAnalysisState(execution.steps.filter((s) => !s.origin), { revenue }) : null;
-  const queryContext = state && followUp.readQueryState(JSON.parse(JSON.stringify(state))) ? state : undefined;
+  // Every step was refused because its period is outside the synced data (nothing ran, so there is no scope to save): remember the
+  // QUESTION, and say where the data ends, so the user's reply ("last complete month", or a period) is planned together with it
+  // instead of as a brand-new question. The dates come from the tenant's own data (followUp.dataWindow), never from the model.
+  // Two ways a period has no data: the step was REFUSED (outside the synced window), or it RAN and found nothing because the
+  // company's latest voucher is dated before the whole period (a healthy sync makes the window reach today, so a month long after
+  // the last voucher is inside it and just comes back empty). Either way the honest answer is "no data for this period".
+  const { dayOf: dayOfStored, dataDayOf } = require("./evidence");
+  const { isZero } = require("./answerFormatter");
+  const dataDay = dataDayOf(dataThrough);
+  const queryStepsRun = execution.steps.filter((s) => s.kind === "query" && !s.origin);
+  const stepOutside = (s) => s.status === "refused" && !!s.error && s.error.code === "outside_coverage";
+  const stepEmptyAfterData = (s) => s.status === "ok" && !!dataDay && !!s.result && !!s.result.period && dayOfStored(s.result.period.from) > dataDay && isZero(s.request, s.result);
+  const allEmptyAfterData = queryStepsRun.length > 0 && execution.steps.every((s) => s.origin || (s.kind === "query" && (stepOutside(s) || stepEmptyAfterData(s)))) && queryStepsRun.some(stepEmptyAfterData);
+  const allOutside = (!formatted.answered && execution.steps.some(stepOutside)) || allEmptyAfterData;
+  const window = allOutside && dataThrough ? followUp.dataWindow(dataThrough) : null;
+  let answerText = formatted.text;
+  let pendingState = null;
+  if (window) {
+    const lastMonth = new Date(`${window.lastCompleteMonth.from}T00:00:00`).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    const ask = `Tell me the period to use (for example "last complete month") and I will run this question again.`;
+    answerText = allEmptyAfterData
+      // nothing to show: the steps found no records, so they are not listed (an empty table per step says nothing)
+      ? `There is no data for ${queryStepsRun.find(stepEmptyAfterData).result.period.label || "this period"}: this company's latest voucher is dated ${fmtDay(dataThrough)}. Its last complete month is ${lastMonth}. ${ask}`
+      : `${answerText}\n\nThis company's data ends on ${fmtDay(dataThrough)}; its last complete month is ${lastMonth}. ${ask}`;
+    const asked = String(a.userMessage).replace(/\s*\[the data ends on [^\]]*\]/g, "");
+    pendingState = followUp.withPendingQuestion(null, `${asked} [the data ends on ${window.through}, its last complete month is ${window.lastCompleteMonth.from} to ${window.lastCompleteMonth.to}]`); // no ";" - the question safety gate refuses it
+  }
+  const readable = (x) => !!x && !!followUp.readQueryState(JSON.parse(JSON.stringify(x)));
+  const queryContext = allEmptyAfterData && readable(pendingState) ? pendingState : readable(state) ? state : readable(pendingState) ? pendingState : undefined;
+  // "answered" means the user got figures: steps that found no records for a period after the last voucher are not an answer
+  const gotFigures = formatted.answered > 0 && !allEmptyAfterData;
   return {
     handled: true,
     ...(queryContext ? { queryContext } : {}),
-    structured: baseResponse(formatted.text, {
-      toolCalls: [{ toolName: "analysis_plan", state: !formatted.answered ? "no_usable_data" : dataState ? FRESH_TO_STATE[dataState] : "valid_data" }],
+    structured: baseResponse(answerText, {
+      toolCalls: [{ toolName: "analysis_plan", state: !gotFigures ? "no_usable_data" : dataState ? FRESH_TO_STATE[dataState] : "valid_data" }],
       warnings: formatted.warnings,
       // Presentation only (headline, KPI cards, charts, tables, labelled findings): built from these same steps and evidence.
-      visualization: buildAnalysisPresentation({ execution, formatted, assumptions: ap.assumptions, unavailable: ap.unavailable, display: displayIntent(a.userMessage), actions: ap.actions === true }),
-      meta: { ...meta, status: formatted.answered ? "answered" : "execution_failed", steps: execution.steps.map((s) => s.status), unavailable: ap.unavailable || [], actions: ap.actions === true, language, investigation: { rounds: investigated.investigation.rounds, followUps: investigated.investigation.followUps, modelCalls: investigated.investigation.modelCalls, stopReason: investigated.investigation.stopReason, decision: investigated.investigation.decision } },
+      visualization: allEmptyAfterData ? undefined : buildAnalysisPresentation({ execution, formatted, assumptions: ap.assumptions, unavailable: ap.unavailable, display: displayIntent(a.userMessage), actions: ap.actions === true }),
+      meta: { ...meta, status: gotFigures ? "answered" : "execution_failed", steps: execution.steps.map((s) => s.status), unavailable: ap.unavailable || [], actions: ap.actions === true, language, investigation: { rounds: investigated.investigation.rounds, followUps: investigated.investigation.followUps, modelCalls: investigated.investigation.modelCalls, stopReason: investigated.investigation.stopReason, decision: investigated.investigation.decision } },
     }),
   };
 }

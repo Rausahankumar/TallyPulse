@@ -15,6 +15,7 @@
 
 require("dotenv").config({ quiet: true });
 const fs = require("fs");
+const REAL = require("./test/realTenants");
 const path = require("path");
 const http = require("http");
 const https = require("https");
@@ -466,11 +467,11 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   // ============================================================ H/I. real tenant, real engine + cache (read-only)
   section("H. real tenant: planner plans executed by the real engine match an independent Mongo oracle");
   await connectDB();
-  let we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === "WE FOUR");
-  // No WE FOUR here (always the case in the isolated CI database): H, I and J run on two synthetic tenants instead, seeded
+  let we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === REAL.A.name);
+  // No live tenant A here (always the case in the isolated CI database): H, I and J run on two synthetic tenants instead, seeded
   // here and removed after J. connectDB() already passed the test-mode guard (loopback test database only). Every H/I/J
   // check compares with an independent Mongo oracle or checks behaviour, so synthetic vouchers exercise the same code path;
-  // they do not prove real WE FOUR data shapes, which still run here whenever that tenant exists.
+  // they do not prove live tenant A data shapes, which still run here whenever that tenant exists.
   let syntheticChat = null;
   if (!we) {
     const SyncCheckpointModel = require("./src/models/syncCheckpoint.model");
@@ -509,10 +510,10 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       }
     }
     we = { tenantId: A.tenantId, companyGuid: A.companyGuid };
-    console.log("    no WE FOUR tenant in this database: running H, I and J on two synthetic tenants (seeded here, removed after J)");
+    console.log("    no live tenant A in this database: running H, I and J on two synthetic tenants (seeded here, removed after J)");
   }
   const realData = !!we;
-  if (!realData) console.log("  SKIPPED - sections H, I and J need the real WE FOUR tenant, which is not present in this database");
+  if (!realData) console.log("  SKIPPED - sections H, I and J need the live tenant A, which is not present in this database");
   const tenantId = realData ? we.tenantId : null;
   const realCtx = { tenantId };
   const AUG = { kind: "custom", from: "2025-08-01", to: "2025-08-31" };
