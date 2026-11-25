@@ -462,7 +462,6 @@ module.exports = {
   // existing caller - purely additive.
   safeString,
   findCollectionByKeywords,
-  // Item-line discount (Tally sends a percentage only; the amount is derived). Exported for the tests.
+  // Item-line discount (Tally sends a percentage only; the amount is derived: deriveDiscountAmount, exported above). Exported for the tests.
   parseDiscountPercentage,
-  deriveDiscountAmount,
 };

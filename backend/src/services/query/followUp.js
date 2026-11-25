@@ -159,7 +159,7 @@ function readQueryState(stored) {
 // The ranking a single-query answer showed ("products whose sales fell", biggest falls first, top 100): what "these products" /
 // "those customers" refers to in an analysis follow-up. Only a single-query state has one; an analysis state has no single ranking.
 const RANKING_KEYS = ["groupBy", "sort", "having", "limit"];
-const SCOPE_KEYS = [...CARRY_KEYS, ...RANKING_KEYS];
+const SCOPE_KEYS = new Set([...CARRY_KEYS, ...RANKING_KEYS]);
 const SCOPE_MAX_CHARS = 1200;
 const SCOPE_LEAD = "Previous turn's analysis scope (structured JSON; only what that turn's steps all shared - anything not listed was not shared and must come from the question):";
 const SCOPE_RULE = 'The question below may refer to that scope ("this", "those", "same period"): keep the listed scope for what the question does not change. When groupBy/sort/having/limit are listed they are the ranking the previous answer showed: "these products" / "those customers" means the rows of that ranking, so plan the investigation over the same period and ranking instead of asking which ones. If the question is not a follow-up, ignore it.';
@@ -179,7 +179,7 @@ function analysisScopeOf(state) {
 function readScope(scope) {
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return null;
   const keys = Object.keys(scope);
-  if (!keys.length || !keys.every((k) => SCOPE_KEYS.includes(k)) || ("entity" in scope && typeof scope.entity !== "string")) return null;
+  if (!keys.length || !keys.every((k) => SCOPE_KEYS.has(k)) || ("entity" in scope && typeof scope.entity !== "string")) return null;
   const json = JSON.stringify(scope);
   return json.length <= SCOPE_MAX_CHARS ? JSON.parse(json) : null;
 }

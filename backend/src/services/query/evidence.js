@@ -413,22 +413,22 @@ function possibleCauses(steps, allSteps, ctx, out) {
         const { a, b } = hits[hits.length - 1];
         const fmt = (v) => fmtValue(p.metric, v);
         const who = p.who ? ` from ${p.who}` : "";
-        const steps = [...new Set([...fall.steps, p.n])];
+        const causeSteps = [...new Set([...fall.steps, p.n])];
         out.findings.push({
           label: "possible_cause",
           text: `Purchases of ${fall.scope}${who} fell from ${fmt(a.v)} in ${bucketName(a.key)} to ${fmt(b.v)} in ${bucketName(b.key)}, ${b.start <= fall.prevStart ? "before" : "around the time"} the sales fall in ${fall.label}. This may have limited what could be sold; purchases are not stock on hand (stock is not recorded), so this is not confirmed.`,
-          steps,
+          steps: causeSteps,
         });
         const because = `purchases ${fmt(a.v)} in ${bucketName(a.key)} -> ${fmt(b.v)} in ${bucketName(b.key)}; sales of ${fall.scope} ${signed(fall.metric, fall.delta)} in ${fall.label}`;
         out.facts.push({ type: "supply_fell", product: fall.scope, who: p.who || null, metric: p.metric, from: { start: a.start, value: a.v }, to: { start: b.start, value: b.v }, fallDays: [fall.start, fall.end] });
-        out.recs.push(rec("verify", `Check supplier orders and the availability of ${fall.scope}${who}: its purchases fell before or with its sales (the data shows purchases, not stock levels).`, because, steps, fall.delta, { type: "supply_check", product: fall.scope, who: p.who || null, days: [fall.start, fall.end] }));
+        out.recs.push(rec("verify", `Check supplier orders and the availability of ${fall.scope}${who}: its purchases fell before or with its sales (the data shows purchases, not stock levels).`, because, causeSteps, fall.delta, { type: "supply_check", product: fall.scope, who: p.who || null, days: [fall.start, fall.end] }));
         found = true;
       }
       if (!found) {
-        const steps = [...new Set([...fall.steps, ...fresh.map((p) => p.n)])];
-        out.findings.push({ label: "measured", text: `Purchases of ${fall.scope} show no fall of ${MATERIAL_FALL_PCT}% or more from ${window}, the window of its sales fall in ${fall.label}.`, steps });
+        const steadySteps = [...new Set([...fall.steps, ...fresh.map((p) => p.n)])];
+        out.findings.push({ label: "measured", text: `Purchases of ${fall.scope} show no fall of ${MATERIAL_FALL_PCT}% or more from ${window}, the window of its sales fall in ${fall.label}.`, steps: steadySteps });
         out.facts.push({ type: "supply_steady", product: fall.scope });
-        out.recs.push(rec("verify", `Purchases of ${fall.scope} did not fall, so review its customer orders and selling rates next.`, `no purchase fall of ${MATERIAL_FALL_PCT}% or more from ${window}; sales of ${fall.scope} ${signed(fall.metric, fall.delta)} in ${fall.label}`, steps, fall.delta, { type: "review_orders", product: fall.scope }));
+        out.recs.push(rec("verify", `Purchases of ${fall.scope} did not fall, so review its customer orders and selling rates next.`, `no purchase fall of ${MATERIAL_FALL_PCT}% or more from ${window}; sales of ${fall.scope} ${signed(fall.metric, fall.delta)} in ${fall.label}`, steadySteps, fall.delta, { type: "review_orders", product: fall.scope }));
       }
       continue;
     }

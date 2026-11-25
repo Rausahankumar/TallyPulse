@@ -85,7 +85,7 @@ function turnPlannerClient(deps, tenantId, tm) {
 // the lists reload in the background; a name not in a stale list waits for the fresh list first (see entityResolver).
 const resolvers = new Map();
 let bumpHooked = false;
-function getTenantResolver(tenantId, now = Date.now()) {
+function getTenantResolver(tenantId, nowMs = Date.now()) {
   if (!bumpHooked) {
     bumpHooked = true;
     require("./dataVersion").onBump((key) => {
@@ -95,14 +95,14 @@ function getTenantResolver(tenantId, now = Date.now()) {
   }
   const hit = resolvers.get(tenantId);
   if (hit) {
-    if (hit.expires <= now) {
+    if (hit.expires <= nowMs) {
       hit.resolver.markStale();
-      hit.expires = now + RESOLVER_TTL_MS;
+      hit.expires = nowMs + RESOLVER_TTL_MS;
     }
     return hit.resolver;
   }
   const resolver = createEntityResolver({ tenantId });
-  resolvers.set(tenantId, { resolver, expires: now + RESOLVER_TTL_MS });
+  resolvers.set(tenantId, { resolver, expires: nowMs + RESOLVER_TTL_MS });
   return resolver;
 }
 
