@@ -59,7 +59,9 @@ const base = { tenantId: "tenantA", requestId: "req-1", httpStatus: 200, totalMs
   check("request id and tenant recorded", b.requestId === "r-both" && b.tenantId === "tenantA");
   check("provider anthropic; planner model recorded", b.provider === "anthropic" && b.plannerModel === usage.plannerModel() && /^claude-/.test(b.plannerModel));
   check("retry count honestly null (SDK-internal retries are not observable)", b.retryCount === null);
-  check("cost not invented: estimatedCostUsd null", b.estimatedCostUsd === null);
+  // cost is an ESTIMATE derived only from the recorded tokens and the model's published list price (aiPricing.js): 100 in, 10 out,
+  // 50 cache-read, 5 cache-write on Sonnet 4.5 = (100*3 + 10*15 + 5*3.75 + 50*0.30) / 1e6 = $0.000484; labelled by pricingVersion
+  check("cost is not invented: an estimate from the recorded tokens x list price, labelled", b.estimatedCostUsd === 0.000484 && /^anthropic-list-prices-/.test(b.pricingVersion) && b.estimatedUncachedCostUsd === 0.000615);
   {
     const src = (f) => fs.readFileSync(path.join(__dirname, "src/services", f), "utf8");
     const dm = (s) => (/const DEFAULT_(?:PLANNER_)?MODEL = "([^"]+)"/.exec(s) || [])[1];

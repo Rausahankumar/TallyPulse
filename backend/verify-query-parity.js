@@ -3,7 +3,7 @@
 /**
  * Phase 1C - PARITY SUITE: generic Query Engine vs the existing analytics.
  *
- * READ-ONLY against real data (WE FOUR = the large tenant, Nirmal = a small
+ * READ-ONLY against real data (live tenant A = the large tenant, live tenant B = a small
  * second tenant). Writes nothing. No Claude/Anthropic calls.
  *
  * Oracle policy (from the semantic catalog's PARITY_ORACLES):
@@ -26,6 +26,7 @@
 
 require("dotenv").config();
 const mongoose = require("mongoose");
+const REAL = require("./test/realTenants");
 const connectDB = require("./src/config/db");
 
 const Sale = require("./src/models/sales.model");
@@ -880,7 +881,7 @@ async function runTenant(tenant, { extended }) {
 // ================================================================== the run (shared)
 
 // Runs the whole parity suite for one large tenant (extended) and an optional second tenant (cross-tenant isolation) and
-// prints the summary. Returns the number of failed cases. Used by the real-data run below (WE FOUR + a second real
+// prints the summary. Returns the number of failed cases. Used by the real-data run below (live tenant A + a second real
 // tenant) and by verify-query-parity-synthetic.js (two synthetic tenants in the isolated CI database). Cases unchanged.
 async function runParity({ big, other }) {
   let failedCount = 0;
@@ -946,15 +947,15 @@ if (require.main === module) {
     let failedCount = 1;
     try {
       const companies = await Company.find({ isActive: true }).lean();
-      const we = companies.find((c) => c.companyName === "WE FOUR");
-      const other = companies.find((c) => c.companyName !== "WE FOUR" && c.tenantId !== (we && we.tenantId));
+      const we = companies.find((c) => c.companyName === REAL.A.name);
+      const other = companies.find((c) => c.companyName !== REAL.A.name && c.tenantId !== (we && we.tenantId));
       if (!we) {
-        console.log("  SKIPPED - the parity suite compares the engine with the existing analytics on the real WE FOUR tenant, which is not present in this database.");
+        console.log("  SKIPPED - the parity suite compares the engine with the existing analytics on the live tenant A, which is not present in this database.");
         await mongoose.disconnect();
         process.exit(0);
       }
       failedCount = await runParity({
-        big: { tenantId: we.tenantId, name: "WE FOUR" },
+        big: { tenantId: we.tenantId, name: "live tenant A" },
         other: other ? { tenantId: other.tenantId, name: other.companyName } : null,
       });
     } finally {

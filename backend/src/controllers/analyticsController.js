@@ -6,6 +6,7 @@ const periodEngine = require("../services/analytics/periodEngine");
 const stockGroupAnalytics = require("../services/analytics/stockGroupAnalytics");
 const { getTenantReferenceDate } = require("../services/analytics/referenceDate");
 const { wrapAnalyticsResult } = require("../services/analytics/trustEnvelope");
+const { routeHandler } = require("../middleware/errorHandler");
 
 // --------------------------------------------------
 // Read-only REST surface over the deterministic Analytics Engine
@@ -150,28 +151,9 @@ function parseStockGroupPeriodFromQuery(query, referenceDate) {
   }
 }
 
-// Wraps a handler so any thrown error (bad query params, or anything
-// unexpected) becomes a clean HTTP error response instead of a 500 with
-// no message - matches the pattern already used across
-// authController/importController.
-function handle(fn) {
-  return async (req, res) => {
-    try {
-      await fn(req, res);
-    } catch (error) {
-      // Validation errors carry a 4xx status and a message we wrote; anything
-      // else is logged and answered generically (audit F-12).
-      const status = error.status >= 400 && error.status < 500 ? error.status : 500;
-
-      if (status === 500) console.error("ANALYTICS ERROR:", error);
-
-      return res.status(status).json({
-        success: false,
-        message: status === 500 ? "Something went wrong on the server. Please try again." : error.message,
-      });
-    }
-  };
-}
+// Wraps a handler so any thrown error (bad query params, or anything unexpected) becomes a clean HTTP error response
+// (see routeHandler in middleware/errorHandler.js).
+const handle = routeHandler("ANALYTICS ERROR");
 
 const getSalesSummary = handle(async (req, res) => {
   const { tenantId } = req.companyContext;

@@ -52,7 +52,7 @@ if (!LIVE) {
 
 const { planQuestion, createAnthropicPlannerClient, uncalculableTermRefusal } = require("./src/services/query/planner");
 const { parseQueryPlan } = require("./src/services/query/queryPlan.schema");
-// The corpus, the semantic comparator and the scoring are shared with eval-nlu-models.js (one implementation for every model).
+// The corpus, the semantic comparator and the scoring are shared by every evaluation of the planner.
 const { corpus, REF_DATE, canonical, diffPlans, makeResolver, scoreRow: scoreLive, needsDiagnostic, diagnose } = require("./eval/nluScoring");
 
 const STATUSES = new Set(["supported", "clarify", "decline"]);

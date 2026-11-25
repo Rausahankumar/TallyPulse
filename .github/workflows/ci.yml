@@ -67,7 +67,7 @@ jobs:
       - name: Frontend verification scripts
         run: |
           set -e
-          for f in verify-*.mjs; do node "$f"; done
+          for f in verify-*.mjs verify-*.cjs; do node "$f"; done
 
   backend-verify-suites:
     name: Backend - self-contained verification suites
@@ -136,75 +136,33 @@ jobs:
         run: |
           failed=0
           partial=""
-          # Suites whose real-tenant oracle sections still skip here (CI has no WE FOUR / Nirmal data); their synthetic
+          # Suites whose real-tenant oracle sections still skip here (CI has no live tenant A / live tenant B data); their synthetic
           # sections run and must pass, and each is reported PARTIAL, never PASS. Any other SKIP fails the job.
           #   verify-query-engine.js     section 8: three all-time totals / top customer on real data (the reference-date
           #                              checks of that section run on synthetic tenant A)
           #   verify-return-analytics.js section G: engine = Mongo oracle on real Credit/Debit Notes (B1-B6 cover the
           #                              same metrics on synthetic notes)
-          #   verify-return-ranking.js   section D: real top-N rankings and Nirmal's empty rankings (the default limit
+          #   verify-return-ranking.js   section D: real top-N rankings and live tenant B's empty rankings (the default limit
           #                              and truncation run on synthetic notes)
           PARTIAL="verify-query-engine.js verify-return-analytics.js verify-return-ranking.js"
-          # Entirely real-data: compares the engine with the existing analytics on WE FOUR. Not run here; its synthetic
+          # Entirely real-data: compares the engine with the existing analytics on live tenant A. Not run here; its synthetic
           # counterpart verify-query-parity-synthetic.js runs below.
           NOT_RUN="verify-query-parity.js"
-          for f in \
-            verify-tally-parser-voucher-total.js \
-            verify-sales-mapper.js \
-            verify-purchase-mapper.js \
-            verify-sales-import.js \
-            verify-sales-sync-worker.js \
-            verify-migrate-voucher-total-amount.js \
-            verify-security-audit.js \
-            verify-db-connection-guard.js \
-            verify-company-identity.js \
-            verify-company-ownership.js \
-            verify-multi-company.js \
-            verify-self-heal.js \
-            verify-sync-batching.js \
-            verify-voucher-recovery.js \
-            verify-reconciliation-history.js \
-            verify-reconciliation-perf-and-failure.js \
-            verify-analytics-scope.js \
-            verify-period-engine.js \
-            verify-month-boundary-dates.js \
-            verify-timezone-boundaries.js \
-            verify-stock-item-master.js \
-            verify-stock-item-gst.js \
-            verify-voucher-line-details.js \
-            verify-insights.js \
-            verify-insight-tools.js \
-            verify-stock-group-analytics.js \
-            verify-ledger-master.js \
-            verify-adjustment-note.js \
-            verify-query-dsl.js \
-            verify-query-engine.js \
-            verify-customer-count.js \
-            verify-analysis-plan.js \
-            verify-analysis-planner.js \
-            verify-query-cache.js \
-            verify-query-parity.js \
-            verify-query-parity-synthetic.js \
-            verify-entity-resolver.js \
-            verify-query-planner.js \
-            verify-query-chat.js \
-            verify-semantic-foundation.js \
-            verify-comparison-period-capability.js \
-            verify-growth-comparison-capability.js \
-            verify-return-query.js \
-            verify-return-analytics.js \
-            verify-return-ranking.js \
-            verify-product-return-analytics.js \
-            verify-presentation.js \
-            verify-ai-telemetry.js \
-            verify-ai-usage-persist.js \
-            verify-cost-forensic.js \
-            verify-chat-management.js \
-            verify-nlu-eval.js \
-            verify-openrouter-eval.js \
-            verify-planner-digest.js ; do
+          # Every verify-*.js in backend/ runs, except the suites in SKIP below. A new suite is therefore run automatically (and fails the
+          # job if it fails); the only way to leave one out is to name it here, with the reason.
+          # SKIP = suites that need something CI does not have:
+          #   live TallyPrime:            verify-voucher-type-classification.js, verify-voucher-lifecycle.js,
+          #                               verify-sync-worker-guard.js, verify-reconciliation.js
+          #   real tenants / running API: verify-company-guid-match.js, verify-dashboard-real-data.js,
+          #                               verify-reports.js, verify-voucher-pagination.js
+          #   billed model calls:         verify-planner-live-eval.js
+          SKIP="verify-voucher-type-classification.js verify-voucher-lifecycle.js verify-sync-worker-guard.js verify-reconciliation.js verify-company-guid-match.js verify-dashboard-real-data.js verify-reports.js verify-voucher-pagination.js verify-planner-live-eval.js"
+          for f in verify-*.js; do
+            case " $SKIP " in
+              *" $f "*) echo "SKIP $f (needs live Tally, real tenants or a paid model: run it locally)"; continue ;;
+            esac
             case " $NOT_RUN " in
-              *" $f "*) echo "NOT RUN $f (real-data only; needs the WE FOUR tenant)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
+              *" $f "*) echo "NOT RUN $f (real-data only; needs the live tenant A)"; echo "- NOT RUN \`$f\` (real-data only)" >> "$GITHUB_STEP_SUMMARY"; continue ;;
             esac
             echo "::group::$f"
             out=$(mktemp)

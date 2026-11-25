@@ -6,7 +6,7 @@ const LedgerMaster = require("../../models/ledgerMaster.model");
 // --------------------------------------------------
 // Tally Ledger master layer (mirrors stockItemMaster.js).
 //
-// Explicit/on-demand only (refresh-ledger-master.js) - no scheduled worker,
+// Explicit/on-demand only (no scheduled job) - no scheduled worker,
 // and the incremental voucher sync is untouched. Every refresh is a FULL
 // read (1,979 ledgers took 0.46 s live): Tally's incremental $AlterID
 // filter cannot see deletions, so a full list is the only way to know a

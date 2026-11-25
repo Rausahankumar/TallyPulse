@@ -15,6 +15,7 @@
 
 require("dotenv").config({ quiet: true });
 const fs = require("fs");
+const REAL = require("./test/realTenants");
 const path = require("path");
 const http = require("http");
 const https = require("https");
@@ -440,7 +441,7 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   }
 
   // ============================================================ G. resolver cache
-  section("G. per-tenant resolver cache is invalidated by data-version bumps");
+  section("G. per-tenant resolver is kept; data-version bumps mark its lists stale");
   {
     const dataVersion = require("./src/services/query/dataVersion");
     const TenantDataVersion = require("./src/models/tenantDataVersion.model");
@@ -451,14 +452,24 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
     check("same tenant, same resolver within the TTL", r1 === r2);
     const other = getTenantResolver("verify-chat-synthetic-tenant-2");
     check("different tenants never share a resolver", other !== r1);
+    // load the lists once (synthetic tenants hold no vouchers: empty lists), so there is something to mark stale
+    await r1({ text: "nobody" });
+    await other({ text: "nobody" });
+    const fresh = (r) => Object.values(r.state()).every((d) => d.loaded && !d.stale);
+    check("lists are loaded and fresh before any change", fresh(r1) && fresh(other));
     await dataVersion.bumpTenantVersion(T);
     const r3 = getTenantResolver(T);
-    check("a data-version bump for the tenant drops its resolver (fresh name lists)", r3 !== r1);
-    check("...and leaves the other tenant's resolver alone", getTenantResolver("verify-chat-synthetic-tenant-2") === other);
+    check("a data-version bump for the tenant keeps its resolver and marks its lists stale", r3 === r1 && Object.values(r1.state()).every((d) => d.stale));
+    check("...and leaves the other tenant's resolver alone", getTenantResolver("verify-chat-synthetic-tenant-2") === other && fresh(other));
+    await r1({ text: "nobody" });
+    await new Promise((r) => setTimeout(r, 50));
+    check("the next question reloads the stale lists (fresh again)", fresh(r1));
     await dataVersion.bumpTenantVersion("*");
-    check("a global bump drops every resolver", getTenantResolver(T) !== r3 && getTenantResolver("verify-chat-synthetic-tenant-2") !== other);
+    check("a global bump marks every resolver's lists stale", Object.values(r1.state()).every((d) => d.stale) && Object.values(other.state()).every((d) => d.stale));
+    await r1({ text: "nobody" });
+    await new Promise((r) => setTimeout(r, 50));
     const live = getTenantResolver(T);
-    check("expired resolvers are rebuilt", getTenantResolver(T, Date.now() + 10 * 60 * 1000) !== live);
+    check("an expired resolver is kept and its lists are marked stale (the TTL is a backstop for writes this process did not see)", getTenantResolver(T, Date.now() + 10 * 60 * 1000) === live && Object.values(live.state()).every((d) => d.stale));
     await TenantDataVersion.deleteMany({ tenantId: /^verify-chat-synthetic/ });
     await mongoose.disconnect().catch(() => {});
   }
@@ -466,11 +477,11 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
   // ============================================================ H/I. real tenant, real engine + cache (read-only)
   section("H. real tenant: planner plans executed by the real engine match an independent Mongo oracle");
   await connectDB();
-  let we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === "WE FOUR");
-  // No WE FOUR here (always the case in the isolated CI database): H, I and J run on two synthetic tenants instead, seeded
+  let we = (await Company.find({ isActive: true }).lean()).find((c) => c.companyName === REAL.A.name);
+  // No live tenant A here (always the case in the isolated CI database): H, I and J run on two synthetic tenants instead, seeded
   // here and removed after J. connectDB() already passed the test-mode guard (loopback test database only). Every H/I/J
   // check compares with an independent Mongo oracle or checks behaviour, so synthetic vouchers exercise the same code path;
-  // they do not prove real WE FOUR data shapes, which still run here whenever that tenant exists.
+  // they do not prove live tenant A data shapes, which still run here whenever that tenant exists.
   let syntheticChat = null;
   if (!we) {
     const SyncCheckpointModel = require("./src/models/syncCheckpoint.model");
@@ -509,10 +520,10 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       }
     }
     we = { tenantId: A.tenantId, companyGuid: A.companyGuid };
-    console.log("    no WE FOUR tenant in this database: running H, I and J on two synthetic tenants (seeded here, removed after J)");
+    console.log("    no live tenant A in this database: running H, I and J on two synthetic tenants (seeded here, removed after J)");
   }
   const realData = !!we;
-  if (!realData) console.log("  SKIPPED - sections H, I and J need the real WE FOUR tenant, which is not present in this database");
+  if (!realData) console.log("  SKIPPED - sections H, I and J need the live tenant A, which is not present in this database");
   const tenantId = realData ? we.tenantId : null;
   const realCtx = { tenantId };
   const AUG = { kind: "custom", from: "2025-08-01", to: "2025-08-31" };
@@ -676,13 +687,23 @@ const ask = (q, deps = {}, extra = {}) => tryAnswerWithQueryEngine({ context: CT
       ["protocol violation (prose)", () => ({ content: [{ type: "text", text: "Sales were big" }] }), "planner_protocol_violation", /couldn.t turn this question into a query/i],
       ["unknown name", () => toolReply({ plan: planOf({ filters: [{ dim: "customer", op: "eq_ci", value: "Ghost Ltd" }] }) }), "planner_entity_not_resolved", /did not match a known customer/i],
     ];
+    // ASK_AI_ANALYSIS=off: the planner-failure path itself (with analysis plans on - the default - an invalid plan is handed
+    // to the analysis planner instead; that route is checked just below and in verify-analysis-planner.js)
     for (const [label, reply, code, msg] of failureCases) {
       events.length = 0;
       const p = tracingPlanner(reply);
       const e = tracingEngine();
-      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr(), analysisMode: "off" });
       check(`${label}: exactly ONE planner call, handled with an honest message (${code}), no engine`, r.handled === true && p.calls === 1 && e.calls === 0 && r.structured.details.queryEngine.code === code && r.structured.details.queryEngine.status === "planner_failed" && r.structured.details.queryEngine.claudeCalls === 1 && msg.test(r.structured.answer), `${JSON.stringify(r.structured && r.structured.details.queryEngine)} :: ${r.structured && r.structured.answer}`);
       check(`  -> the answer does not pretend to contain figures`, !/₹|Invoice amount:/.test(r.structured.answer) && r.structured.details.toolCalls.length === 0 && r.structured.freshness === null);
+    }
+    {
+      // the default (ASK_AI_ANALYSIS unset = on): an invalid plan goes to the analysis planner, which (here) cannot plan it either
+      const p = tracingPlanner(() => toolReply({ plan: planOf({ groupBy: [{ dim: "product" }] }) }));
+      const e = tracingEngine();
+      const r = await run("show sales last month", { plannerClient: p, execute: e, getFreshness: fr() });
+      const m = r.structured.details.queryEngine;
+      check("default (analysis on): an invalid plan reaches the analysis planner, which fails honestly - no engine, no figures", [r.handled, m.route, m.status, p.calls >= 2, e.calls, /₹|Invoice amount:/.test(r.structured.answer)].join() === [true, "analysis", "planner_failed", true, 0, false].join(), JSON.stringify({ route: m.route, status: m.status, calls: p.calls, engine: e.calls }));
     }
     {
       const r = await run("show sales last month", { plannerClient: tracingPlanner(() => new Error("sk-ant-secret-key internal stack")), execute: tracingEngine(), getFreshness: fr() });

@@ -6,7 +6,7 @@
  *
  * Every number is independently cross-checked against a raw Mongo
  * aggregation computed a different way in this file, for both real
- * tenants (WE FOUR, Nirmal) - never "trust the function under test to
+ * tenants (live tenant A, live tenant B) - never "trust the function under test to
  * grade itself".
  *
  * Run: node verify-dashboard-real-data.js
@@ -14,6 +14,7 @@
 
 require("dotenv").config();
 const jwt = require("jsonwebtoken");
+const REAL = require("./test/realTenants");
 const axios = require("axios");
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
@@ -116,7 +117,7 @@ async function testTenant(name, tenantId, otherTenantId) {
 }
 
 async function testLiveHttp() {
-  console.log("\n=== Live HTTP: default (no query params) Dashboard calls return valid_data for WE FOUR ===");
+  console.log("\n=== Live HTTP: default (no query params) Dashboard calls return valid_data for live tenant A ===");
   const BASE_URL = "http://localhost:5000";
   let user;
   try {
@@ -166,11 +167,11 @@ async function testLiveHttp() {
 async function main() {
   await connectDB();
 
-  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  const nirmal = await Company.findOne({ companyName: /Nirmal/i }).lean();
+  const tenantA = await Company.findOne({ companyName: REAL.A.name }).lean();
+  const tenantB = await Company.findOne({ companyName: REAL.B.nameRegex }).lean();
 
-  if (weFour) await testTenant("WE FOUR", weFour.tenantId, nirmal?.tenantId);
-  if (nirmal) await testTenant("Nirmal", nirmal.tenantId, weFour?.tenantId);
+  if (tenantA) await testTenant("live tenant A", tenantA.tenantId, tenantB?.tenantId);
+  if (tenantB) await testTenant("live tenant B", tenantB.tenantId, tenantA?.tenantId);
 
   await testLiveHttp();
 

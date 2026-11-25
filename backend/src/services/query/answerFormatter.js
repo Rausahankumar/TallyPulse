@@ -140,6 +140,8 @@ function formatQueryAnswer({ plan, result, definitionNotes = [], plannerAssumpti
     });
   } else if ((plan.groupBy || []).length) {
     lines.push("");
+    // the period every row's "previous" refers to (a follow-up may have taken it from the conversation, not the question)
+    if (cmpLabel) lines.push(`Compared with ${cmpLabel}:`);
     const metrics = result.metrics;
     const primary = metrics[0];
     (result.rows || []).slice(0, MAX_DISPLAY_ROWS).forEach((r, i) => {
@@ -210,4 +212,4 @@ function formatNonAnswer(result) {
   return canned || result.reason || "Could you clarify the question?";
 }
 
-module.exports = { formatQueryAnswer, formatNonAnswer, plainMetricNames, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, SCOPE_HINT, MAX_DISPLAY_ROWS };
+module.exports = { formatQueryAnswer, formatNonAnswer, plainMetricNames, fmtMoney, fmtNumber, fmtValue, fmtSigned, pctOf, periodText, isZero, SCOPE_HINT, MAX_DISPLAY_ROWS };

@@ -253,7 +253,7 @@ async function backfillVoucherLineDetails({ company, voucherType, apply = false,
 // which on a developer machine is the live cluster. This turns "write to a non-local database" into something that has to
 // be typed on purpose: --apply against a non-loopback host needs --confirm-host <that exact host>. Dry runs are allowed
 // anywhere because they write nothing. Only the host name is ever shown (never credentials, port or options).
-// Used by backfill-voucher-line-details.js before it connects.
+// Pre-flight check for a voucher line-detail back-fill.
 // --------------------------------------------------
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);

@@ -226,7 +226,7 @@ function parseTallyBoolean(rawValue) {
 // --------------------------------------------------
 // Line discount, from what Tally actually sends.
 //
-// Confirmed live (WE FOUR, August 2025, 5,644 item lines): every inventory line carries a field called `discount`, the
+// Confirmed live (live tenant A, August 2025, 5,644 item lines): every inventory line carries a field called `discount`, the
 // discount PERCENTAGE as text with a leading space (" 36.44"); 55% of the lines have one above zero. There is NO discount
 // amount field. Tally's `rate` is the price before discount and `amount` is the line after discount:
 //   amount = quantity x rate x (1 - discount / 100)        e.g. 440 x 20.90 x 0.79 = 7,264.84
@@ -384,7 +384,7 @@ function parseTallyVoucher(voucher) {
   // Voucher Register export. The previous formula
   // (`inventoryTotal || ledgerTotal || 0`) used the pre-tax item subtotal
   // whenever any inventory existed, silently excluding GST/freight/
-  // rounding from every affected voucher - see migrate-voucher-total-amount.js
+  // rounding from every affected voucher
   // for the backfill of historical documents already stored with the old,
   // wrong total.
   const partyLedgerTotal = computePartyLedgerTotal(parsedLedgers, partyName);
@@ -462,7 +462,6 @@ module.exports = {
   // existing caller - purely additive.
   safeString,
   findCollectionByKeywords,
-  // Item-line discount (Tally sends a percentage only; the amount is derived). Exported for the tests.
+  // Item-line discount (Tally sends a percentage only; the amount is derived: deriveDiscountAmount, exported above). Exported for the tests.
   parseDiscountPercentage,
-  deriveDiscountAmount,
 };

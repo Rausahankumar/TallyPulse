@@ -53,7 +53,7 @@
  *
  * Uses tenantId '6a8e75cdf5f2a9694ed20472' (tenant A - an orphaned tenant
  * identity as of 2026-09-18: no Company document exists for it anymore,
- * the real Nirmal FMCG Company record now lives under a different
+ * the live tenant B Company record now lives under a different
  * tenantId/companyGuid pair entirely - see the project memory note on
  * this. That's fine for every test here: none of them look up a Company
  * document by tenantId, they only use it as an opaque scoping key for

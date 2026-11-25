@@ -3,7 +3,9 @@
 // Durable per-turn AI usage (P0 cost measurement). Derives ONE allow-listed record from the existing
 // `tallypulse.ai.turn` event (turnTelemetry.buildTurnEvent) and writes it to MongoDB, fire-and-forget:
 // the chat turn never waits for it and a failure here can never change or break a response.
-// Usage counters only; cost is NOT computed (no pricing configuration exists in the app).
+// Usage counters, plus an ESTIMATED cost (tokens x published list price, aiPricing.js; null for a model without a listed price).
+
+const { estimateCost, PRICING_VERSION } = require("./aiPricing");
 
 const PROVIDER = "anthropic";
 // Mirrors the model expression at the Claude call site (planner.js);
@@ -40,18 +42,39 @@ function buildUsageRecord(event) {
     plannerModel: plannerCalls > 0 ? plannerModel() : null,
     claudeCalls: plannerCalls,
     plannerCalls,
+    providerRequests: null,
     retryCount: null,
     plannerInputTokens: n(event.plannerInputTokens),
     plannerOutputTokens: n(event.plannerOutputTokens),
     plannerCacheReadTokens: n(event.plannerCacheReadTokens),
     plannerCacheWriteTokens: n(event.plannerCacheCreationTokens),
+    // planner response cache: a hit avoided a model call and is NOT in claudeCalls/plannerCalls above
+    plannerCacheHits: n(event.plannerCacheHits),
+    plannerCacheMisses: n(event.plannerCacheMisses),
+    plannerCacheBypasses: n(event.plannerCacheBypasses),
+    // engine executions of the turn by answer-cache status, and insight tool runs (counts only)
+    queryExecutions: n(event.queryExecutions),
+    answerCacheHits: n(event.answerCacheHits),
+    answerCacheMisses: n(event.answerCacheMisses),
+    answerCacheCoalesced: n(event.answerCacheCoalesced),
+    answerCacheBypasses: n(event.answerCacheBypasses),
+    insightRuns: n(event.insightRuns),
     plannerLatencyMs: event.plannerLatencyMs,
     totalLatencyMs: event.totalLatencyMs,
     ok: event.ok,
     httpStatus: event.httpStatus,
     failureCategory: failureCategoryOf(event),
     estimatedCostUsd: null,
+    estimatedUncachedCostUsd: null,
+    pricingVersion: null,
   };
+  // provider requests actually sent (SDK retries included); retries = those beyond one per model call. Null: not measured.
+  const sent = Number.isFinite(event.plannerHttpAttempts) && event.plannerHttpAttempts >= 0 ? event.plannerHttpAttempts : plannerCalls === 0 ? 0 : null;
+  rec.providerRequests = sent;
+  rec.retryCount = sent === null ? null : Math.max(0, sent - plannerCalls);
+  // an ESTIMATE from the provider-reported tokens and the configured model's list price; zero model calls cost nothing
+  const cost = plannerCalls === 0 ? { usd: 0, uncachedUsd: 0, pricingVersion: PRICING_VERSION } : estimateCost({ model: rec.plannerModel, inputTokens: rec.plannerInputTokens, outputTokens: rec.plannerOutputTokens, cacheReadTokens: rec.plannerCacheReadTokens, cacheWriteTokens: rec.plannerCacheWriteTokens });
+  if (cost) Object.assign(rec, { estimatedCostUsd: cost.usd, estimatedUncachedCostUsd: cost.uncachedUsd, pricingVersion: cost.pricingVersion });
   rec.inputTokens = rec.plannerInputTokens;
   rec.outputTokens = rec.plannerOutputTokens;
   rec.cacheReadTokens = rec.plannerCacheReadTokens;

@@ -17,10 +17,10 @@
  *      root, multi-level hierarchy, broken chain, cycle, zero root,
  *      duplicate root, Sales/Purchase independence).
  *   2. REAL-DATA-DERIVED fixtures - the exact VoucherType master lists
- *      captured live from "We Four" (customized company, guid
- *      d46f1002-00d9-4559-b3e1-afcf8674c7b1) and "Nirmal FMCG Traders Ltd"
+ *      captured live from "live tenant A" (customized company, guid
+ *      <tenant-A-guid>) and "live tenant B"
  *      (standard dev-tenant company, guid
- *      09f68f6a-ace7-4ab4-bee8-ddea59ad0731) on 2026-09-18, run back
+ *      <tenant-B-guid>) on 2026-09-18, run back
  *      through the real classifier to confirm it reproduces the
  *      hand-verified expected type-name sets.
  *   3. REAL LIVE TALLY integration - whichever company is actually open in
@@ -40,6 +40,7 @@
 
 require("dotenv").config();
 const http = require("http");
+const REAL = require("./test/realTenants");
 const axios = require("axios");
 
 const {
@@ -103,8 +104,8 @@ function testStandardRoot() {
   );
 }
 
-function testRenamedRootLikeWeFour() {
-  console.log("\n=== UNIT: renamed Sales root (We Four shape, minimal) ===");
+function testRenamedRootLikeTenantA() {
+  console.log("\n=== UNIT: renamed Sales root (live tenant A shape, minimal) ===");
   const masters = [
     m("Online Sales", "Online Sales", "Sales"), // reserved root, renamed
     m("Invoice", "Online Sales", ""),
@@ -255,12 +256,12 @@ function testSalesPurchaseIndependence() {
 // SECTION 2: REAL-DATA-DERIVED fixtures
 // ====================================================================
 
-// Captured live 2026-09-18 from "We Four" (guid
-// d46f1002-00d9-4559-b3e1-afcf8674c7b1) via a real "Type": "VoucherType"
+// Captured live 2026-09-18 from "live tenant A" (guid
+// <tenant-A-guid>) via a real "Type": "VoucherType"
 // Collection query (Native Method: "Name, Parent") - see the investigation
 // report for the raw curl output this was transcribed from. 39 voucher
 // types, matching the company's real count at capture time.
-const WE_FOUR_REAL_VOUCHER_TYPES_20260918 = [
+const TENANT_A_REAL_VOUCHER_TYPES_20260918 = [
   m("AMAZON INVOICE", "Online Sales", ""),
   m("Attendance", "Attendance", "Attendance"),
   m("CK122 Opening Stock", "Job Work Out Order", ""),
@@ -302,10 +303,10 @@ const WE_FOUR_REAL_VOUCHER_TYPES_20260918 = [
   m("Stock Journal", "Stock Journal", "Stock Journal"),
 ];
 
-// Captured live 2026-09-18 from "Nirmal FMCG Traders Ltd" (guid
-// 09f68f6a-ace7-4ab4-bee8-ddea59ad0731, the dev tenant - a standard,
+// Captured live 2026-09-18 from "live tenant B" (guid
+// <tenant-B-guid>, the dev tenant - a standard,
 // un-customized company). 28 voucher types.
-const NIRMAL_REAL_VOUCHER_TYPES_20260918 = [
+const TENANT_B_REAL_VOUCHER_TYPES_20260918 = [
   m("Attendance", "Attendance", "Attendance"),
   m("Contra", "Contra", "Contra"),
   m("Credit Note", "Credit Note", "Credit Note"),
@@ -319,7 +320,7 @@ const NIRMAL_REAL_VOUCHER_TYPES_20260918 = [
   m("Material Out", "Material Out", "Material Out"),
   m("Memorandum", "Memorandum", "Memorandum"),
   m("New Sales", "Sales", ""),
-  m("Nirmal FMCG Traders Ltd", "Attendance", ""),
+  m("live tenant B", "Attendance", ""),
   m("Payment", "Payment", "Payment"),
   m("Payroll", "Payroll", "Payroll"),
   m("Physical Stock", "Physical Stock", "Physical Stock"),
@@ -336,9 +337,9 @@ const NIRMAL_REAL_VOUCHER_TYPES_20260918 = [
   m("Stock Journal", "Stock Journal", "Stock Journal"),
 ];
 
-function testWeFourRealDataDerived() {
-  console.log("\n=== REAL-DATA-DERIVED: We Four's actual VoucherType master, replayed offline ===");
-  const result = classifyVoucherTypes(WE_FOUR_REAL_VOUCHER_TYPES_20260918);
+function testTenantARealDataDerived() {
+  console.log("\n=== REAL-DATA-DERIVED: live tenant A's actual VoucherType master, replayed offline ===");
+  const result = classifyVoucherTypes(TENANT_A_REAL_VOUCHER_TYPES_20260918);
 
   check("totalVoucherTypes === 39", result.totalVoucherTypes === 39, result.totalVoucherTypes);
   check("sales.status === ok", result.sales.status === "ok");
@@ -374,9 +375,9 @@ function testWeFourRealDataDerived() {
   );
 }
 
-function testNirmalRealDataDerived() {
-  console.log("\n=== REAL-DATA-DERIVED: Nirmal FMCG's actual VoucherType master, replayed offline ===");
-  const result = classifyVoucherTypes(NIRMAL_REAL_VOUCHER_TYPES_20260918);
+function testTenantBRealDataDerived() {
+  console.log("\n=== REAL-DATA-DERIVED: live tenant B's actual VoucherType master, replayed offline ===");
+  const result = classifyVoucherTypes(TENANT_B_REAL_VOUCHER_TYPES_20260918);
 
   check("totalVoucherTypes === 28", result.totalVoucherTypes === 28, result.totalVoucherTypes);
   check("sales.status === ok", result.sales.status === "ok");
@@ -400,8 +401,8 @@ function testNirmalRealDataDerived() {
 // is actually open right now)
 // ====================================================================
 
-const WE_FOUR_GUID = "d46f1002-00d9-4559-b3e1-afcf8674c7b1";
-const NIRMAL_GUID = "09f68f6a-ace7-4ab4-bee8-ddea59ad0731";
+const TENANT_A_GUID = REAL.A.guid;
+const TENANT_B_GUID = REAL.B.guid;
 
 async function tallyReachable() {
   try {
@@ -421,12 +422,12 @@ function countByType(collection) {
   return counts;
 }
 
-// A company with thousands of vouchers (e.g. We Four: 5,500+ Sales) makes an
+// A company with thousands of vouchers (e.g. live tenant A: 5,500+ Sales) makes an
 // unbounded AlterID>0 fetch (with the inventory/ledger walk) exceed odbcService's
 // 30s timeout. Above this many vouchers the live section switches to a bounded
 // window: one light query (VoucherTypeName + AlterID only) yields every
 // AlterID, and the heavy fetch is limited to the newest LIVE_WINDOW vouchers.
-// Small companies (Nirmal) keep the original full-fetch checks unchanged.
+// Small companies (live tenant B) keep the original full-fetch checks unchanged.
 const LIVE_FULL_FETCH_MAX = 300;
 const LIVE_WINDOW = 25;
 const LIVE_TALLY_URL = process.env.TALLY_URL || "http://localhost:9000";
@@ -481,7 +482,7 @@ async function testLiveClassificationAndQueries() {
 
   const openGuid = detection.match.guid;
   const label =
-    openGuid === WE_FOUR_GUID ? "We Four" : openGuid === NIRMAL_GUID ? "Nirmal FMCG" : `unknown (${openGuid})`;
+    openGuid === TENANT_A_GUID ? "live tenant A" : openGuid === TENANT_B_GUID ? "live tenant B" : `unknown (${openGuid})`;
   console.log(`  current company: ${detection.match.name} [${label}]`);
 
   clearVoucherTypeClassificationCache(openGuid);
@@ -492,16 +493,16 @@ async function testLiveClassificationAndQueries() {
   console.log(`  sales root: ${classification.sales.rootName}, typeNames: ${JSON.stringify(classification.sales.typeNames)}`);
   console.log(`  purchase root: ${classification.purchase.rootName}, typeNames: ${JSON.stringify(classification.purchase.typeNames)}`);
 
-  if (openGuid === WE_FOUR_GUID) {
+  if (openGuid === TENANT_A_GUID) {
     check(
-      "We Four's LIVE classification matches the captured-fixture expectation",
+      "live tenant A's LIVE classification matches the captured-fixture expectation",
       classification.sales.rootName === "Online Sales" &&
         ["Invoice", "Sales"].every((n) => classification.sales.typeNames.includes(n))
     );
   }
-  if (openGuid === NIRMAL_GUID) {
+  if (openGuid === TENANT_B_GUID) {
     check(
-      "Nirmal's LIVE classification matches the captured-fixture expectation",
+      "live tenant B's LIVE classification matches the captured-fixture expectation",
       classification.sales.rootName === "Sales" && classification.purchase.typeNames.includes("Purchase")
     );
   }
@@ -825,7 +826,7 @@ async function testNeedsConfigurationViaStub() {
 async function main() {
   // Section 1
   testStandardRoot();
-  testRenamedRootLikeWeFour();
+  testRenamedRootLikeTenantA();
   testMultiLevelHierarchy();
   testBrokenParentChain();
   testCyclicHierarchy();
@@ -834,8 +835,8 @@ async function main() {
   testSalesPurchaseIndependence();
 
   // Section 2
-  testWeFourRealDataDerived();
-  testNirmalRealDataDerived();
+  testTenantARealDataDerived();
+  testTenantBRealDataDerived();
 
   // Section 4 (synthetic - no live Tally needed, run before/independent of section 3)
   await testFetchFailureDoesNotFallBack();

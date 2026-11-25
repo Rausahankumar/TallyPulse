@@ -46,4 +46,13 @@ function applyHttpSecurity(app, { allowedOrigins = parseAllowedOrigins(process.e
   return allowedOrigins;
 }
 
-module.exports = { applyHttpSecurity, parseAllowedOrigins, DEV_ORIGINS };
+// How many reverse proxies (Render, nginx, a tunnel...) sit in front of the app, from TRUST_PROXY. Express then reads the real client
+// address from X-Forwarded-For, so per-address limits (login, register) are per client and not one shared bucket for everyone. Only
+// a positive whole number is accepted (the hop count): "true" would trust a header any client can forge. Unset or anything else =
+// null = off, which is right when the app is reached directly (a laptop, tests).
+function parseTrustProxy(value) {
+  const text = String(value === undefined || value === null ? "" : value).trim();
+  return /^[1-9]\d{0,2}$/.test(text) ? Number(text) : null;
+}
+
+module.exports = { applyHttpSecurity, parseAllowedOrigins, parseTrustProxy, DEV_ORIGINS };

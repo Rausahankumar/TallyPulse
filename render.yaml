@@ -1,0 +1,65 @@
+# Render Blueprint: tells Render what to run and how, so a deploy is repeatable instead of clicked together by hand.
+# Render reads this file from the repository root (New + > Blueprint > pick the repo).
+#
+# SECRETS ARE NEVER IN THIS FILE. Every value marked `sync: false` is typed once in the Render dashboard (Environment tab)
+# and stays there. Do not put a key, a password or a database URL in this file or in git.
+
+services:
+  # ---------------------------------------------------------------------------------------------
+  # Backend API + the Tally sync workers (they run inside this one process).
+  # ---------------------------------------------------------------------------------------------
+  - type: web
+    name: tallypulse-api
+    runtime: node
+    rootDir: backend
+    # A paid plan: the free plan puts the service to sleep, and a sleeping service runs no sync.
+    plan: starter
+    buildCommand: npm ci
+    startCommand: node server.js
+    # GET / answers 200 while the server is up (server.js "Health Check").
+    healthCheckPath: /
+    # Seconds Render waits after SIGTERM before killing the process. SHUTDOWN_GRACE_SECONDS below must stay smaller.
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "24"
+      # One reverse proxy (Render's) sits in front of the app: needed for per-user and per-address rate limits.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: SHUTDOWN_GRACE_SECONDS
+        value: "25"
+      # --- set in the dashboard (secrets or per-deployment values) ---
+      - key: MONGODB_URI # the PRODUCTION database user, not the local test one
+        sync: false
+      - key: JWT_SECRET # long random value; changing it logs every user out
+        sync: false
+      - key: ANTHROPIC_API_KEY # a key made for production, with a usage limit
+        sync: false
+      - key: TALLY_URL # the https address of the Cloudflare Tunnel to Tally (https://tally.<your-domain>)
+        sync: false
+      - key: CF_ACCESS_CLIENT_ID # Cloudflare Access service token
+        sync: false
+      - key: CF_ACCESS_CLIENT_SECRET
+        sync: false
+      - key: CORS_ORIGINS # the frontend's address, e.g. https://tallypulse-web.onrender.com (no trailing slash)
+        sync: false
+
+  # ---------------------------------------------------------------------------------------------
+  # Frontend: the built React app, served as static files.
+  # ---------------------------------------------------------------------------------------------
+  - type: web
+    name: tallypulse-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    # A single-page app: /chat, /dashboard etc. have no file of their own, so every path is served index.html.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL # the backend address plus /api, e.g. https://tallypulse-api.onrender.com/api (read at build time)
+        sync: false

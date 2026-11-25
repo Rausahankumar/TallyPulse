@@ -456,7 +456,7 @@ async function productTrend(tenantId, period, { product, maxTimeMS } = {}) {
     }
   }
 
-  const rate = (side) => (side && side.pricedQty > 0 ? round2(side.amount / side.pricedQty) : null);
+  const rate = (leg) => (leg && leg.pricedQty > 0 ? round2(leg.amount / leg.pricedQty) : null);
   let running = 0;
   const rows = filled.map((m) => {
     const sold = m.sale ? m.sale.qty : 0, bought = m.purchase ? m.purchase.qty : 0;

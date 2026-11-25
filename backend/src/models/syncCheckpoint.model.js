@@ -29,7 +29,15 @@ const syncCheckpointSchema = new mongoose.Schema(
       default: 0,
     },
 
+    // The time of the last sync ATTEMPT that finished (success or failure): releaseLock sets it either way.
     lastSyncedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // The time of the last SUCCESSFUL sync, set only by a successful run. Checkpoints written before this field existed have none:
+    // for those, freshness.successTimeOf falls back to lastSyncedAt when the last run did not fail.
+    lastSuccessAt: {
       type: Date,
       default: null,
     },

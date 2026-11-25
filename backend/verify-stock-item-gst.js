@@ -10,7 +10,7 @@
  *   time, tenant and company isolation, identity by GUID, cache invalidation, and proof that voucher totals and product-group
  *   answers are unchanged by a GST refresh.
  *
- * Fixtures: CAPTURED = the shape a real TallyPrime returned for one Stock Item in a read-only probe (WE FOUR, 2026-10-09):
+ * Fixtures: CAPTURED = the shape a real TallyPrime returned for one Stock Item in a read-only probe (live tenant A, 2026-10-09):
  * field names, nesting and value formats (the \u0004 prefix, leading spaces) exactly as received, with the item name, group and
  * GUID replaced by synthetic ones. SYNTHETIC = values Tally can produce but the probe did not return (several states, per-unit
  * rates, "Nil Rated"). No live Tally: axios.post is blocked. Writes go only to clearly synthetic tenants and are removed at the
@@ -38,13 +38,9 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
 
-let pass = 0;
-let fail = 0;
-function check(id, description, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`${ok ? "PASS" : "FAIL"} | ${id} - ${description}${ok ? "" : `\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`}`);
-  if (ok) pass += 1; else fail += 1;
-}
+const { createChecker } = require("./test/check");
+const t = createChecker();
+const check = t.check;
 
 // ================================================================ PART 1: parsing, normalisation and merge rules
 // (its helpers stay private to this function; check() and the counters are shared with part 2)
@@ -811,9 +807,9 @@ await runSyncPart();
 (async () => {
   await partParsing();
   await partSync();
-  console.log(`\n${pass} passed, ${fail} failed, ${pass + fail} total`);
+  console.log(t.summary());
   await mongoose.disconnect();
-  process.exit(fail > 0 ? 1 : 0);
+  process.exit(t.fail > 0 ? 1 : 0);
 })().catch(async (err) => {
   console.error(err);
   try { await mongoose.disconnect(); } catch { /* ignore */ }

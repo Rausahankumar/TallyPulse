@@ -142,7 +142,7 @@ const salesSchema = new mongoose.Schema(
 // Identity: {tenantId, tallyGuid} - Tally's own stable per-voucher-master
 // identifier, NOT voucherNo. Two distinct voucher masters can legitimately
 // share a voucherNo (confirmed empirically against a live TallyPrime
-// instance - see migrate-voucher-identity.js for the full rationale).
+// instance - see docs).
 // Partial (tallyGuid must be a real string) so legacy/guid-less documents
 // never collide on a shared "null" identity.
 salesSchema.index(

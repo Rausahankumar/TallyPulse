@@ -12,6 +12,7 @@
 
 require("dotenv").config();
 const fs = require("fs");
+const REAL = require("./test/realTenants");
 const path = require("path");
 
 const { planQuestion, createAnthropicPlannerClient, getPlannerPrompt, PLANNER_TOOL_NAME, PLANNER_MAX_TOKENS, PLANNER_MAX_QUESTION_CHARS } = require("./src/services/query/planner");
@@ -36,7 +37,7 @@ const eq = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 
 // ---- tenant-scoped fake name lists (resolver), and a scripted fake Claude
 const NAMES = {
-  customer: ["Dhingra General Store", "Nirmal FMCG Traders Ltd"],
+  customer: ["Dhingra General Store", "Globex Traders Ltd"],
   supplier: ["Acme Foods Pvt Ltd"],
   product: ["Maggi Noodles", "Parle-G 100g"],
   productGroup: ["Snacks", "Noodles"],
@@ -105,7 +106,8 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     const a = getPlannerPrompt();
     const b = getPlannerPrompt();
     check("system prompt and tool are built once and byte-stable (cache-friendly)", a === b && JSON.stringify(a) === JSON.stringify(b));
-    check("tool input schema is closed (additionalProperties:false) with plan/decline/assumptions only", req.tools[0].input_schema.additionalProperties === false && eq(Object.keys(req.tools[0].input_schema.properties).sort(), ["assumptions", "decline", "plan"]));
+    check("tool input schema is closed (additionalProperties:false) with plan/decline/assumptions/language only", req.tools[0].input_schema.additionalProperties === false && eq(Object.keys(req.tools[0].input_schema.properties).sort(), ["assumptions", "decline", "language", "plan"]));
+    check("language is an optional enum of en/hi/hinglish, with no prompt sentence (the system prompt budget is full)", eq([...req.tools[0].input_schema.properties.language.enum].sort(), ["en", "hi", "hinglish"]) && !(req.tools[0].input_schema.required || []).includes("language") && !/language/i.test(req.system[0].text));
     const second = fakeClaude(reply({ plan: plan({}) }));
     await planQuestion("show sales this month", { claudeClient: second, resolveEntity: resolver });
     check("system + tool bytes identical across different questions", JSON.stringify(second.requests[0].system) === JSON.stringify(req.system) && JSON.stringify(second.requests[0].tools) === JSON.stringify(req.tools));
@@ -147,6 +149,14 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     check("planner assumptions are capped (3), cleaned of control chars and length-bounded", r.plannerAssumptions.length === 3 && r.plannerAssumptions.every((a) => a.length <= 160 && !/[\u0000-\u001f]/.test(a)));
     check("result exposes validator warnings/assumptions and usage", Array.isArray(r.warnings) && Array.isArray(r.assumptions) && r.usage.calls === 1);
     check("the returned plan is a plain JSON clone (not Claude's object)", r.plan !== undefined && JSON.stringify(r.plan) === JSON.stringify(JSON.parse(JSON.stringify(r.plan))));
+    // the question's language (presentation only): passed through beside a plan, never fails the turn, never changes the plan
+    const hl = await planQuestion("pichle mahine ki sales", { claudeClient: fakeClaude(reply({ plan: plan({}), language: "hinglish" })) });
+    const noLang = await planQuestion("pichle mahine ki sales", { claudeClient: fakeClaude(reply({ plan: plan({}) })) });
+    check("language: a known value beside a plan is returned; the plan is the same as without it", hl.status === "supported" && hl.language === "hinglish" && noLang.status === "supported" && noLang.language === null && JSON.stringify(hl.plan) === JSON.stringify(noLang.plan), `${hl.status}/${hl.language}/${noLang.language}`);
+    const badLang = await planQuestion("sales", { claudeClient: fakeClaude(reply({ plan: plan({}), language: "french" })) });
+    check("language: an unknown value is dropped (null), the plan is still answered (not a protocol violation)", badLang.status === "supported" && badLang.language === null, `${badLang.status}/${badLang.code}/${badLang.language}`);
+    const decLang = await planQuestion("sales", { claudeClient: fakeClaude(reply({ decline: { code: "needs_clarification", message: "Which year?" }, language: "hi" })) });
+    check("language beside a decline: the decline is unchanged", decLang.status === "needs_clarification" && decLang.reason === "Which year?", `${decLang.status}/${decLang.code}`);
   }
 
   // =============================================================== D. hostile / malformed Claude output
@@ -249,8 +259,8 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     check("eq_ci name is replaced by the stored canonical spelling", r.status === "supported" && r.plan.filters[0].value === "Dhingra General Store", JSON.stringify(r.plan && r.plan.filters));
     r = await planQuestion("sales from nobody", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "eq_ci", value: "Invented Customer Ltd" })), resolveEntity: resolver });
     check("invented customer -> planner_entity_not_resolved, no plan", r.status === "planner_failed" && r.code === "planner_entity_not_resolved" && !r.plan);
-    r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["dhingra general store", "Nirmal FMCG Traders Ltd"] })), resolveEntity: resolver });
-    check("in_ci: every value canonicalised", r.status === "supported" && eq(r.plan.filters[0].value, ["Dhingra General Store", "Nirmal FMCG Traders Ltd"]));
+    r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["dhingra general store", "Globex Traders Ltd"] })), resolveEntity: resolver });
+    check("in_ci: every value canonicalised", r.status === "supported" && eq(r.plan.filters[0].value, ["Dhingra General Store", "Globex Traders Ltd"]));
     r = await planQuestion("sales from x", { claudeClient: fakeClaude(withFilter({ dim: "customer", op: "in_ci", value: ["Dhingra General Store", "Ghost Traders"] })), resolveEntity: resolver });
     check("in_ci: one invented value refuses the whole plan", r.status === "planner_failed" && r.code === "planner_entity_not_resolved");
     r = await planQuestion("what did we buy from acme", { claudeClient: fakeClaude(withFilter({ dim: "supplier", op: "eq_ci", value: "acme foods pvt ltd" }, "purchase")), resolveEntity: resolver });
@@ -1122,10 +1132,10 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
     const { getTenantVersion } = require("./src/services/query/dataVersion");
     const { executeQuery } = require("./src/services/query/execute");
     const companies = await Company.find({ isActive: true }).lean();
-    let we = companies.find((c) => c.companyName === "WE FOUR");
+    let we = companies.find((c) => c.companyName === REAL.A.name);
     let other = companies.find((c) => c.tenantId !== (we && we.tenantId));
     if (!we) {
-      // No WE FOUR here (always the case in the isolated CI database): run the same checks on two small synthetic tenants,
+      // No live tenant A here (always the case in the isolated CI database): run the same checks on two small synthetic tenants,
       // seeded here and removed in `finally`. connectDB() above already passed the test-mode guard (loopback test database
       // only). Tenant A's most frequent customer has a mixed-case name (canonicalisation), both tenants share one customer
       // name, and one customer exists only in tenant B (cross-tenant refusal).
@@ -1160,7 +1170,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       ]);
       we = { tenantId: SYN_A };
       other = { tenantId: SYN_B };
-      console.log("    no WE FOUR tenant in this database: running section N on two synthetic tenants (seeded here, removed afterwards)");
+      console.log("    no live tenant A in this database: running section N on two synthetic tenants (seeded here, removed afterwards)");
     }
     const realResolver = createEntityResolver({ tenantId: we.tenantId });
     const cache = createAnswerCache();
@@ -1203,7 +1213,7 @@ const plan = (o) => ({ v: 1, entity: "sales", mode: "aggregate", period: { kind:
       } else check("second tenant has a tenant-unique customer for the isolation check", false, "none found");
     } else check("second tenant exists for the isolation check", false);
   } catch (e) {
-    if (e && e.skip) console.log("  SKIPPED - section N needs the real WE FOUR tenant, which is not present in this database");
+    if (e && e.skip) console.log("  SKIPPED - section N needs the live tenant A, which is not present in this database");
     else {
       console.error(e);
       check("section N ran", false, e.message);

@@ -350,9 +350,15 @@ function stopReconciliationWorker() {
   }
 }
 
+// True while a reconciliation cycle is running (the graceful shutdown waits for it).
+function isReconciliationCycleRunning() {
+  return cycleInProgress;
+}
+
 module.exports = {
   startReconciliationWorker,
   stopReconciliationWorker,
+  isReconciliationCycleRunning,
   runReconciliationForAllCompanies,
   runReconciliationForCompanyModule,
   RECONCILIATION_MODULES,

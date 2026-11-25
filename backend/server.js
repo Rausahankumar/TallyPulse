@@ -2,11 +2,12 @@ const express = require("express");
 const dotenv = require("dotenv");
 
 const connectDB = require("./src/config/db");
-const { applyHttpSecurity } = require("./src/middleware/httpSecurity");
+const { applyHttpSecurity, parseTrustProxy } = require("./src/middleware/httpSecurity");
 const { errorHandler, notFoundHandler } = require("./src/middleware/errorHandler");
 const requestId = require("./src/middleware/requestId");
-const { startTallySyncWorker } = require("./src/services/sync/tallySyncWorker");
-const { startReconciliationWorker } = require("./src/services/sync/reconciliationWorker");
+const { startTallySyncWorker, stopTallySyncWorker, isSyncCycleRunning } = require("./src/services/sync/tallySyncWorker");
+const { startReconciliationWorker, stopReconciliationWorker, isReconciliationCycleRunning } = require("./src/services/sync/reconciliationWorker");
+const { createShutdown, resolveGraceMs } = require("./src/services/lifecycle/shutdown");
 
 const authRoutes = require("./src/routes/authRoutes");
 const importRoutes = require("./src/routes/importRoutes");
@@ -34,6 +35,13 @@ connectDB().then(() => {
 });
 
 const app = express();
+
+// Behind a reverse proxy, set TRUST_PROXY to the number of proxies in front of the app (see httpSecurity.parseTrustProxy);
+// otherwise every client looks like the proxy and the per-address rate limits are shared by all users. Logged at start so a
+// deployment that forgot it is visible.
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+if (trustProxy !== null) app.set("trust proxy", trustProxy);
+console.log(`[server] trust proxy: ${trustProxy === null ? "off" : trustProxy + " proxy hop(s)"}`);
 
 // Middleware
 // Security headers + CORS allow-list (audit F-11) - see src/middleware/httpSecurity.js
@@ -71,8 +79,24 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  // Whether Ask AI may run multi-step analysis plans in this process (off unless ASK_AI_ANALYSIS=on): visible at a glance.
-  console.log(`Ask AI analysis plans: ${process.env.ASK_AI_ANALYSIS === "on" ? "ON" : "off"}`);
+  const tally = require("./src/services/odbc/tallyAccess").describeTallyTarget();
+  console.log(tally.line);
+  if (tally.warning) console.warn(tally.warning);
+  // Which Ask AI analysis plans this process runs (ASK_AI_ANALYSIS: on | basic | off, default on): visible at a glance.
+  const analysis = require("./src/services/query/basicAnalysis");
+  console.log(`Ask AI analysis plans: ${analysis.analysisMode()}`);
+  if (analysis.analysisModeUnrecognised()) console.warn("ASK_AI_ANALYSIS has an unrecognised value (use on, basic or off): analysis plans are OFF.");
 });
+
+// Deploys and restarts send SIGTERM: let a running sync cycle finish (bounded by SHUTDOWN_GRACE_SECONDS) before the process exits.
+const shutdown = createShutdown({
+  server,
+  stopWorkers: [stopTallySyncWorker, stopReconciliationWorker],
+  isBusy: [isSyncCycleRunning, isReconciliationCycleRunning],
+  closeDb: () => require("mongoose").connection.close(),
+  graceMs: resolveGraceMs(process.env.SHUTDOWN_GRACE_SECONDS),
+});
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));

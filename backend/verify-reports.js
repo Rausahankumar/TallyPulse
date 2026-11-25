@@ -11,13 +11,14 @@
  *
  * Every number is independently cross-checked against a raw Mongo
  * aggregation computed a different way in this file, for both real
- * tenants (WE FOUR, Nirmal).
+ * tenants (live tenant A, live tenant B).
  *
  * Run: node verify-reports.js
  */
 
 require("dotenv").config();
 const jwt = require("jsonwebtoken");
+const REAL = require("./test/realTenants");
 const axios = require("axios");
 const mongoose = require("mongoose");
 const connectDB = require("./src/config/db");
@@ -268,12 +269,12 @@ async function testInvalidFilters() {
 async function main() {
   await connectDB();
 
-  const weFour = await Company.findOne({ companyName: "WE FOUR" }).lean();
-  const nirmal = await Company.findOne({ companyName: /Nirmal/i }).lean();
+  const tenantA = await Company.findOne({ companyName: REAL.A.name }).lean();
+  const tenantB = await Company.findOne({ companyName: REAL.B.nameRegex }).lean();
 
-  if (weFour) await testTenant("WE FOUR", weFour.tenantId);
-  if (nirmal) await testTenant("Nirmal", nirmal.tenantId);
-  if (weFour && nirmal) await testTenantIsolation(weFour.tenantId, nirmal.tenantId);
+  if (tenantA) await testTenant("live tenant A", tenantA.tenantId);
+  if (tenantB) await testTenant("live tenant B", tenantB.tenantId);
+  if (tenantA && tenantB) await testTenantIsolation(tenantA.tenantId, tenantB.tenantId);
 
   await testExportConsistency();
   await testInvalidFilters();

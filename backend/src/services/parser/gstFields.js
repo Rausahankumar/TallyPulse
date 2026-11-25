@@ -8,7 +8,7 @@
 //     A voucher line is a historical fact; it is never rewritten from the master.
 //
 // Field names below are the ones a real TallyPrime returned (read-only probe,
-// WE FOUR, 2026-10-09; see verify-stock-item-gst.js for the captured shape):
+// live tenant A, 2026-10-09; see verify-stock-item-gst.js for the captured shape):
 //   stock item: gstapplicable, gsttypeofsupply, hsndetails[{applicablefrom,
 //     hsncode, hsn, srcofhsndetails}], gstdetails[{applicablefrom, taxability,
 //     calculationtype, srcofgstdetails, reversechargerate, gstineligibleitc,
@@ -317,7 +317,7 @@ function parseStockItemGstRecord(record) {
 
 // The GST amounts (in rupees) Tally computed for one voucher line. They are returned only when the request asks for
 // `inventoryentries.computedigst` (which makes Tally add its whole computed-GST group to every line). Checked live over
-// August 2025 (WE FOUR): for SALES invoices they reconcile (631 checked: the lines' CGST/SGST equal the voucher's own
+// August 2025 (live tenant A): for SALES invoices they reconcile (631 checked: the lines' CGST/SGST equal the voucher's own
 // CGST/SGST ledgers on 627, and line amounts + taxes + rounding = the invoice total on 625); for PURCHASE vouchers they
 // do NOT (62 checked: CGST matched on 20, totals on 0), so purchase line tax amounts are stored as sent but must not be
 // relied on. SGST and UTGST are ONE head shown twice (utgst repeats sgst on 91% of lines): never add them, nor add
